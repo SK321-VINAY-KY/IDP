@@ -1,0 +1,14 @@
+extraction:
+  template: extraction_system.j2
+  temperature: 0.0
+  max_tokens: 800
+
+page_summary:
+  template: page_summary.j2
+  temperature: 0.0
+  max_tokens: 60
+
+navigation:
+  template: navigation.j2
+  temperature: 0.0
+  max_tokens: 300

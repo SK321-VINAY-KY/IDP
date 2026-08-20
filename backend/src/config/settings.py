@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434/v1"
     vlm_model_name: str = "qwen2-vl:2b"
 
+    #extraction settings
+    extraction_model_name: str = "qwen2.5:7b"
+    short_doc_page_limit: int = 10
+    page_summary_max_words: int = 25
+    max_extraction_retries: int = 2
     # --- PaddleOCR engine settings ---
     # Handwriting mode: lower detection threshold so thinner/more irregular
     # handwriting strokes are not missed at the DBNet detection stage.
