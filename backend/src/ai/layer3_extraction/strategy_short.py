@@ -14,4 +14,8 @@ def extract_short_doc(pages_md: List[str], schema: type[BaseModel], llm: Extract
     full_content = "\n\n---\n\n".join(
         f"[Page {i + 1}]\n{md}" for i, md in enumerate(pages_md)
     )
-    return llm.extract(full_content, schema)
+    result = llm.extract(full_content, schema)
+    complete_from_text = getattr(schema, "complete_from_text", None)
+    if complete_from_text is not None:
+        return complete_from_text(result, full_content)
+    return result

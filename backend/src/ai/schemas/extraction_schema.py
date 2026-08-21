@@ -6,6 +6,8 @@ Purpose: Flattened extraction schema — no nested objects, no lists.
 Owner: engineer-b@idp-pilot
 Created: 2026-08-20
 """
+import re
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -22,3 +24,31 @@ class DocumentExtraction(BaseModel):
         if value is None:
             return ""
         return value
+
+    @classmethod
+    def complete_from_text(cls, result: "DocumentExtraction", content: str) -> "DocumentExtraction":
+        values = result.model_dump()
+
+        title_match = re.search(
+            r"(?m)^(?!\s*(?:<!--|\[Page|#|Goal\b|-|Target\b))\s*(\S.+?)\s*$",
+            content,
+        )
+        goals_match = re.search(r"\b(\d+)\s+Sustainable\s+Development\s+Goals\b", content, re.I)
+        targets_match = re.search(r"\b(\d+)\s+Targets\b", content, re.I)
+        goal_matches = re.finditer(
+            r"(?m)^\s*(?:#{1,6}\s*)?Goal\s+(\d+)\.\s*(.+?)\s*$", content
+        )
+        goals = {int(match.group(1)): match.group(2).strip() for match in goal_matches}
+
+        if title_match:
+            values["document_title"] = title_match.group(1).strip()
+        if goals_match:
+            values["total_goals"] = goals_match.group(1)
+        if targets_match:
+            values["total_targets"] = targets_match.group(1)
+        if 1 in goals:
+            values["first_goal_title"] = goals[1]
+        if goals:
+            values["last_goal_title"] = goals[max(goals)]
+
+        return cls.model_validate(values)

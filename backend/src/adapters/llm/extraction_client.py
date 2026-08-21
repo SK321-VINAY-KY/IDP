@@ -29,6 +29,7 @@ class OllamaExtractionClient:
         if instructor is None:
             raise ImportError("pip install instructor openai")
         self.model = settings.extraction_model_name
+        self.summary_model = settings.summary_model_name
         self.client = instructor.from_openai(
             OpenAI(base_url=settings.ollama_base_url, api_key="ollama"),  # pragma: allowlist secret
             mode=instructor.Mode.JSON,
@@ -47,6 +48,7 @@ class OllamaExtractionClient:
             response_model=schema,
             temperature=params["temperature"],
             max_tokens=params["max_tokens"],
+            extra_body={"options": {"num_ctx": 16384}},
         )
         logger.info("extraction.ok", model=self.model)
         return result
@@ -55,11 +57,12 @@ class OllamaExtractionClient:
         prompt = render_prompt("page_summary", page_md=page_md, max_words=max_words)
         params = prompt_params("page_summary")
         resp = self.client.chat.completions.create(
-            model=self.model,
+            model=self.summary_model,
             messages=[{"role": "user", "content": prompt}],
             response_model=None,
             temperature=params["temperature"],
             max_tokens=params["max_tokens"],
+            extra_body={"options": {"num_ctx": 4096}},
         )
         return resp.choices[0].message.content.strip()
 
@@ -72,6 +75,7 @@ class OllamaExtractionClient:
             response_model=None,
             temperature=params["temperature"],
             max_tokens=params["max_tokens"],
+            extra_body={"options": {"num_ctx": 8192}},
         )
         raw = resp.choices[0].message.content
         try:

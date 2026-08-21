@@ -3,5 +3,9 @@ Document page summaries:
 
 Target fields to extract: {{ schema_fields }}
 
-Which pages contain information for each field?
-Return JSON only, no preamble: {"field_name": [page_numbers]}
+For each field, list the page numbers (as INTEGERS, not strings) where
+information for that field is likely to appear. If a field's information
+could be spread across most or all pages, include all relevant page numbers.
+
+Return ONLY valid JSON in this exact format, no explanation:
+{"field_name": [1, 2, 3]}

@@ -42,4 +42,8 @@ def extract_long_doc_pageindex(pages_md: List[str], schema: type[BaseModel], llm
     relevant_content = "\n\n---\n\n".join(
         f"[Page {p}]\n{pages_md[p - 1]}" for p in relevant_pages
     )
-    return llm.extract(relevant_content, schema)
+    result = llm.extract(relevant_content, schema)
+    complete_from_text = getattr(schema, "complete_from_text", None)
+    if complete_from_text is not None:
+        return complete_from_text(result, relevant_content)
+    return result

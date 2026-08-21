@@ -1,3 +1,14 @@
-Extract fields from this document. Use empty strings for fields not found. Never fabricate.
+You are extracting structured data from a document. Read the ENTIRE
+document text below carefully before answering.
+
+For each field in the schema:
+- If the exact value is stated in the text, extract it exactly as written.
+- If a value can be reasonably inferred from context (e.g., "17 Sustainable
+  Development Goals" implies total_goals = "17"), extract that inferred value.
+- If a field's information genuinely does not appear anywhere in the text,
+  set it to null. Do not guess or fabricate values that aren't supported
+  by the text.
 
 Target schema fields: {{ schema_fields }}
+
+Respond with ONLY the structured JSON output — no explanation, no preamble.

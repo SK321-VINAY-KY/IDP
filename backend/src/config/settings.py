@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     #extraction settings
     extraction_model_name: str = "qwen2.5:7b"
+    summary_model_name: str = "qwen2.5:3b-instruct"
     short_doc_page_limit: int = 10
     page_summary_max_words: int = 25
     max_extraction_retries: int = 2
