@@ -3,7 +3,7 @@ File: extraction_client.py
 Purpose: Ollama-backed text extraction for Layer 3 (Qwen2.5, text-only).
          Reuses settings.ollama_base_url already defined for Layer 1/2's
          vision client — same Ollama instance, different model pulled.
-Owner: genai-platform@shellkode
+Owner: engineer-b@idp-pilot
 Created: 2026-08-20 | Deps: instructor, openai
 """
 import json

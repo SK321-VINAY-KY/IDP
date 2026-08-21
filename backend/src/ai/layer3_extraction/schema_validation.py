@@ -1,7 +1,7 @@
 """
 File: schema_validation.py
 Purpose: Retry/repair loop for extraction validation failures.
-Owner: genai-platform@shellkode
+Owner: engineer-b@idp-pilot
 Created: 2026-08-20
 """
 from typing import Callable, Optional

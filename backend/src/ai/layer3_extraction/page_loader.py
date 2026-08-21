@@ -3,7 +3,7 @@ File: page_loader.py
 Purpose: Load per-page Markdown for Layer 3 extraction, parsed from Layer 2's
          real single-file output format (pages separated by
          "<!-- Page N | route=... | ... -->" comment markers).
-Owner: genai-platform@shellkode
+Owner: engineer-b@idp-pilot
 Created: 2026-08-20
 """
 import re

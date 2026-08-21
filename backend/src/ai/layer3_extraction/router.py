@@ -1,7 +1,7 @@
 """
 File: router.py
 Purpose: Route to Strategy A (short) or Strategy B (long/PageIndex) by page count.
-Owner: genai-platform@shellkode
+Owner: engineer-b@idp-pilot
 Created: 2026-08-20
 """
 from typing import List

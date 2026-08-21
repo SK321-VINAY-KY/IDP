@@ -1,7 +1,7 @@
 """
 File: loader.py
 Purpose: Load and render versioned prompt templates for Layer 3.
-Owner: genai-platform@shellkode
+Owner: engineer-b@idp-pilot
 Created: 2026-08-20 | Deps: jinja2, pyyaml
 """
 import yaml

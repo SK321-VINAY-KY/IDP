@@ -1,7 +1,7 @@
 """
 File: extraction_factory.py
 Purpose: Return the configured ExtractionLLMClient for Layer 3.
-Owner: genai-platform@shellkode
+Owner: engineer-b@idp-pilot
 Created: 2026-08-20
 """
 from src.adapters.llm.extraction_base import ExtractionLLMClient

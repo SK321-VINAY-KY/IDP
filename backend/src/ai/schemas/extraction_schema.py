@@ -3,7 +3,7 @@ File: extraction_schema.py
 Purpose: Flattened extraction schema — no nested objects, no lists.
          Normalize missing extraction values to empty strings so the local model
          does not emit JSON nulls for optional fields.
-Owner: genai-platform@shellkode
+Owner: engineer-b@idp-pilot
 Created: 2026-08-20
 """
 from pydantic import BaseModel, Field, field_validator

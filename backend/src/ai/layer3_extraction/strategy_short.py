@@ -1,7 +1,7 @@
 """
 File: strategy_short.py
 Purpose: Strategy A — concatenate all pages, extract schema directly.
-Owner: genai-platform@shellkode
+Owner: engineer-b@idp-pilot
 Created: 2026-08-20
 """
 from typing import List

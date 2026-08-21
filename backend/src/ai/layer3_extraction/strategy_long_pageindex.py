@@ -1,7 +1,7 @@
 """
 File: strategy_long_pageindex.py
 Purpose: Strategy B — PageIndex tree navigation for long docs.
-Owner: genai-platform@shellkode
+Owner: engineer-b@idp-pilot
 Created: 2026-08-20
 """
 from typing import List
