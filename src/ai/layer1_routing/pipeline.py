@@ -30,6 +30,7 @@ from src.ai.layer1_routing.inspect import inspect_page
 from src.ai.layer1_routing.router import (
     build_engine_plan,
     capabilities_from_classification,
+    capabilities_from_vlm_analysis,
     capabilities_from_profile,
     next_escalation_route,
     resolve_route_with_classification,
@@ -40,7 +41,7 @@ from src.ai.layer2_conversion.scanned import (
     convert_handwritten_via_paddle,
     convert_scanned_page,
 )
-from src.ai.schemas.page import EngineTask, PageCapabilities, PageOutput
+from src.ai.schemas.page import EngineTask, PageCapabilities, PageOutput, VLMAnalysis
 from src.ai.schemas.page_metadata import PageMetadata
 from src.config.settings import settings
 from src.utils.logger import get_logger
@@ -249,6 +250,61 @@ def _run_plan(
     return results
 
 
+def _analyze_with_vlm(
+    llm_client: LLMClient, image_bytes: bytes, profile
+) -> VLMAnalysis:
+    """Use rich analysis when available; base clients retain old compatibility."""
+    return llm_client.analyze_page(
+        image_bytes, page_profile_hint=profile.model_dump()
+    )
+
+
+def _finalize_direct_vlm(
+    page_number: int,
+    metadata: PageMetadata,
+    analysis: VLMAnalysis,
+    caps: PageCapabilities,
+    page_start: float,
+) -> tuple[PageOutput, PageMetadata]:
+    """Create the normal page contract for a terminal VLM extraction."""
+    capabilities = sorted(analysis.detected_capabilities)
+    logger.info(
+        "page.routing_decision",
+        page_number=page_number,
+        route="vlm_direct",
+        confidence=analysis.confidence,
+    )
+    metadata.capabilities = capabilities
+    metadata.set_routing(
+        engine_plan=["vlm_direct"],
+        routing_mode="vlm_direct",
+        selected_engine="vlm_direct",
+        route_confidence=analysis.confidence,
+    )
+    metadata.add_engine_result(
+        engine="vlm_direct",
+        confidence=analysis.confidence,
+        success=True,
+        output_type="markdown",
+    )
+    metadata.set_final_result(
+        engine="vlm_direct",
+        confidence=analysis.confidence,
+        success=True,
+        total_latency_ms=round((time.monotonic() - page_start) * 1000, 1),
+    )
+    return PageOutput(
+        page_number=page_number,
+        markdown=analysis.extracted_markdown,
+        engines_used=["vlm_direct"],
+        confidence=analysis.confidence,
+        capabilities=capabilities or caps.active_capabilities(),
+        escalated=False,
+        escalation_attempts=0,
+        low_confidence=False,
+    ), metadata
+
+
 # ---------------------------------------------------------------------------
 # Internal: merge + dedup
 # ---------------------------------------------------------------------------
@@ -329,6 +385,7 @@ def process_page(
     page_image_bytes: bytes,
     document_name: str = "",
     document_id: str = "",
+    extraction_requirements: dict | None = None,
 ) -> tuple[PageOutput, PageMetadata]:
     """
     Full pipeline for one page. Returns (PageOutput, PageMetadata).
@@ -375,33 +432,55 @@ def process_page(
     metadata.complexity_score = float(profile.complexity_score)
 
     # ── Steps 2–4: route resolution + engine plan ────────────────────────────
+    specialized_plan = None
     if settings.routing_mode == "capability_based":
         caps = capabilities_from_profile(profile)
 
         needs_vlm = (
             not caps.is_blank
             and not caps.has_indic_script
-            and not caps.has_digital_text
             and (caps.has_printed_scan or caps.has_handwriting)
-            and caps.handwriting_pct_hint is None
+            and (profile.is_scanned or profile.complexity_score >= 4 or
+                 profile.image_coverage > settings.mixed_content_min_image_coverage)
         )
         if needs_vlm:
             try:
-                classification = llm_client.classify_page(
-                    page_image_bytes,
-                    page_profile_hint=profile.model_dump(),
+                analysis = _analyze_with_vlm(llm_client, page_image_bytes, profile)
+                metadata.classification = (
+                    "vlm_direct" if analysis.can_extract_directly else "specialized"
                 )
-                caps = capabilities_from_classification(caps, classification, profile)
-                # Record VLM classification in metadata
-                metadata.classification            = classification.route
-                metadata.classification_confidence = classification.confidence
+                metadata.classification_confidence = analysis.confidence
+                logger.info(
+                    "pipeline.vlm_analysis",
+                    page_number=page_number,
+                    can_extract_directly=analysis.can_extract_directly,
+                    confidence=analysis.confidence,
+                    capabilities=sorted(analysis.required_capabilities),
+                )
+                exact_required = bool(
+                    (extraction_requirements or {}).get("exact_transcription")
+                )
+                if (
+                    analysis.can_extract_directly
+                    and analysis.confidence
+                    >= settings.vlm_direct_extraction_confidence_threshold
+                    and not exact_required
+                    and not analysis.exact_transcription_required
+                    and analysis.extracted_markdown.strip()
+                ):
+                    return _finalize_direct_vlm(
+                        page_number, metadata, analysis, caps, page_start
+                    )
+                caps = capabilities_from_vlm_analysis(profile, analysis)
+                specialized_plan = build_engine_plan(caps)
             except Exception as exc:
                 logger.warning(
                     "pipeline.vlm_classify_unavailable",
                     page_number=page_number,
                     error=str(exc),
-                    fallback="running_both_ocr_engines",
+                    fallback="scanned",
                 )
+                caps = PageCapabilities(has_printed_scan=True)
 
         plan = build_engine_plan(caps)
 
@@ -420,13 +499,38 @@ def process_page(
         single_route = route_from_profile(profile)
         if single_route is None:
             try:
-                classification = llm_client.classify_page(
-                    page_image_bytes,
-                    page_profile_hint=profile.model_dump(),
+                analysis = _analyze_with_vlm(llm_client, page_image_bytes, profile)
+                metadata.classification = (
+                    "vlm_direct" if analysis.can_extract_directly else "specialized"
                 )
-                single_route = resolve_route_with_classification(profile, classification)
-                metadata.classification            = classification.route
-                metadata.classification_confidence = classification.confidence
+                metadata.classification_confidence = analysis.confidence
+                exact_required = bool(
+                    (extraction_requirements or {}).get("exact_transcription")
+                )
+                if (
+                    analysis.can_extract_directly
+                    and analysis.confidence
+                    >= settings.vlm_direct_extraction_confidence_threshold
+                    and not exact_required
+                    and not analysis.exact_transcription_required
+                    and analysis.extracted_markdown.strip()
+                ):
+                    return _finalize_direct_vlm(
+                        page_number,
+                        metadata,
+                        analysis,
+                        capabilities_from_profile(profile),
+                        page_start,
+                    )
+                caps = capabilities_from_vlm_analysis(profile, analysis)
+                planned = build_engine_plan(caps)
+                specialized_plan = planned
+                engine_to_route = {v: k for k, v in _ROUTE_TO_ENGINE.items()}
+                single_route = (
+                    engine_to_route.get(planned[0].engine, "scanned")
+                    if planned
+                    else "scanned"
+                )
             except Exception as exc:
                 logger.warning(
                     "pipeline.vlm_classify_unavailable",
@@ -436,9 +540,10 @@ def process_page(
                 )
                 single_route = "scanned"
 
-        caps = capabilities_from_profile(profile)
+        if specialized_plan is None:
+            caps = capabilities_from_profile(profile)
 
-        plan = [EngineTask(
+        plan = specialized_plan or [EngineTask(
             engine=_ROUTE_TO_ENGINE.get(single_route, single_route),
             priority=1,
             reason=f"single_engine:{single_route}",

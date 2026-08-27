@@ -12,7 +12,7 @@ from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.adapters.llm.base import LLMClient
-from src.ai.schemas.page import PageClassification
+from src.ai.schemas.page import PageClassification, VLMAnalysis
 from src.config.settings import settings
 from src.utils.logger import get_logger
 
@@ -32,6 +32,30 @@ class OllamaClient(LLMClient):
             mode=instructor.Mode.JSON,
         )
         self._model = settings.vlm_model_name
+
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=4))
+    def analyze_page(self, image_bytes: bytes, page_profile_hint: dict) -> VLMAnalysis:
+        b64_image = base64.b64encode(image_bytes).decode("utf-8")
+        prompt = (
+            "Analyze this page and attempt the requested extraction. Identify only the "
+            "required capabilities from ocr, handwriting, table_structure, layout, "
+            "text_extraction. Set can_extract_directly true only for reliable output, "
+            "include extracted_markdown, confidence, and exact_transcription_required "
+            "for IDs, dates, amounts, codes, or exact table cells. If specialized "
+            "processing is needed, leave extracted_markdown empty."
+        )
+        result = self._client.chat.completions.create(
+            model=self._model,
+            response_model=VLMAnalysis,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": prompt + f"\nHints: {page_profile_hint}"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_image}"}},
+            ]}],
+        )
+        logger.info("vlm.analyze_page.success",
+                    can_extract_directly=result.can_extract_directly,
+                    confidence=result.confidence)
+        return result
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=4))
     def classify_page(self, image_bytes: bytes, page_profile_hint: dict) -> PageClassification:

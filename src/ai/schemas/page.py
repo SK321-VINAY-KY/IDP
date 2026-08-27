@@ -7,7 +7,7 @@ Owner: engineer-a@idp-pilot, engineer-b@idp-pilot
 Created: 2026-08-19 | Updated: 2026-08-20 (Stage 1 capability-based routing)
 Deps: pydantic
 """
-from typing import List
+from typing import List, Set
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +36,18 @@ class PageClassification(BaseModel):
     handwriting_pct: float = Field(ge=0.0, le=1.0)
     noise_level: float = Field(ge=0.0, le=1.0)
     needs_preprocessing: List[str] = Field(default_factory=list)
+
+
+class VLMAnalysis(BaseModel):
+    """VLM ambiguity resolution, including an optional terminal extraction."""
+
+    can_extract_directly: bool = False
+    confidence: float = Field(ge=0.0, le=1.0)
+    detected_capabilities: Set[str] = Field(default_factory=set)
+    required_capabilities: Set[str] = Field(default_factory=set)
+    extracted_markdown: str = ""
+    exact_transcription_required: bool = False
+    reason: str = ""
 
 
 # ---------------------------------------------------------------------------

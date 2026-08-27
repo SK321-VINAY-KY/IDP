@@ -34,7 +34,7 @@ except Exception:
         return None
 
 from src.adapters.llm.base import LLMClient
-from src.ai.schemas.page import PageClassification
+from src.ai.schemas.page import PageClassification, VLMAnalysis
 from src.config.settings import settings
 from src.utils.logger import get_logger
 
@@ -85,6 +85,29 @@ class GeminiClient(LLMClient):
                 self._mode = "unavailable"
 
         self._model = settings.vlm_model_name
+
+    def analyze_page(self, image_bytes: bytes, page_profile_hint: dict) -> VLMAnalysis:
+        """Request extraction-capable analysis from OpenAI-compatible Gemini proxies."""
+        if self._mode != "instructor_proxy":
+            return super().analyze_page(image_bytes, page_profile_hint)
+        b64_image = base64.b64encode(image_bytes).decode("utf-8")
+        result = self._client.chat.completions.create(
+            model=self._model,
+            response_model=VLMAnalysis,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": (
+                    "Analyze and attempt to extract this page. Return required capabilities "
+                    "(ocr, handwriting, table_structure, layout, text_extraction), whether "
+                    "direct extraction is reliable, confidence, extracted_markdown, and "
+                    "exact_transcription_required for IDs, dates, amounts, and codes."
+                ) + f"\nHints: {page_profile_hint}"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_image}"}},
+            ]}],
+        )
+        logger.info("vlm.analyze_page.success",
+                    can_extract_directly=result.can_extract_directly,
+                    confidence=result.confidence)
+        return result
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=4))
     def classify_page(self, image_bytes: bytes, page_profile_hint: dict) -> PageClassification:

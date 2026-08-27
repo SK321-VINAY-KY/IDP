@@ -12,6 +12,7 @@ from src.ai.schemas.page import (
     PageCapabilities,
     PageClassification,
     PageProfile,
+    VLMAnalysis,
 )
 from src.config.settings import settings
 from src.utils.logger import get_logger
@@ -290,6 +291,24 @@ def capabilities_from_classification(
         )
 
     return updated
+
+
+def capabilities_from_vlm_analysis(
+    profile: PageProfile, analysis: VLMAnalysis
+) -> PageCapabilities:
+    """Translate only VLM-declared required capabilities into an engine plan."""
+    required = set(analysis.required_capabilities)
+    caps = PageCapabilities(
+        has_digital_text=(
+            profile.has_text
+            and profile.char_count > settings.digital_char_count_threshold
+        ) or "table_structure" in required,
+        has_printed_scan=("ocr" in required and "handwriting" not in required),
+        has_handwriting="handwriting" in required,
+        has_tables="table_structure" in required,
+    )
+    caps.digital_confidence_hint = analysis.confidence if caps.has_digital_text else None
+    return caps
 
 
 # ---------------------------------------------------------------------------
