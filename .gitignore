@@ -1,0 +1,66 @@
+# === Secrets & environment ===
+.env
+*.env
+!.env.example
+
+# === Python ===
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pyzw
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
+
+# === Testing & coverage ===
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.cover
+.hypothesis/
+
+# === Type checkers & linters ===
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+
+# === Local model weights & data (never commit large binaries) ===
+ollama_models/
+*.bin
+*.safetensors
+*.onnx
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.pb
+
+# === IDE & OS ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Notebooks (outputs only) ===
+*.ipynb_checkpoints/
+
+# === Logs ===
+*.log
+logs/
