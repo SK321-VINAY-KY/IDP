@@ -20,8 +20,20 @@ def extract_long_doc_pageindex(pages_md: List[str], schema: type[BaseModel], llm
         for i, md in enumerate(pages_md)
     ]
 
+    # Log how much content each page has — empty pages here means Layer 2 produced no text
+    empty_pages = [i + 1 for i, md in enumerate(pages_md) if not md.strip()]
+    if empty_pages:
+        logger.warning("pageindex.empty_pages_detected", empty_pages=empty_pages, total_pages=len(pages_md))
+    logger.info(
+        "pageindex.page_content_sizes",
+        total_pages=len(pages_md),
+        avg_chars=round(sum(len(md) for md in pages_md) / len(pages_md)) if pages_md else 0,
+        empty_page_count=len(empty_pages),
+    )
+
     schema_fields = list(schema.model_fields.keys())
     page_map = llm.navigate(page_summaries, schema_fields)
+    logger.info("pageindex.page_map", page_map=page_map)
 
     # CHANGED: int(p) — the model can return page numbers as strings ("1")
     # instead of integers (1); this normalizes either case before the
@@ -41,6 +53,12 @@ def extract_long_doc_pageindex(pages_md: List[str], schema: type[BaseModel], llm
 
     relevant_content = "\n\n---\n\n".join(
         f"[Page {p}]\n{pages_md[p - 1]}" for p in relevant_pages
+    )
+    logger.info(
+        "pageindex.extract_input",
+        relevant_pages=relevant_pages,
+        content_chars=len(relevant_content),
+        content_preview=relevant_content[:300],
     )
     result = llm.extract(relevant_content, schema)
     complete_from_text = getattr(schema, "complete_from_text", None)

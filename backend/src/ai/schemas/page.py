@@ -50,3 +50,6 @@ class PageOutput(BaseModel):
     escalated: bool
     escalation_attempts: int
     low_confidence: bool  # terminal flag: ladder exhausted without resolving
+    primary_script: str = "unknown"
+    complexity_score: int = Field(default=0, ge=0, le=5)
+    has_images: bool = False

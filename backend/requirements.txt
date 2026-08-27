@@ -11,18 +11,37 @@ docling==2.4.0
 # PaddleOCR's built-in DBNet detector handles line segmentation automatically,
 # replacing TrOCR's manual line-splitting + whole-page collapse approach.
 paddleocr==2.7.3
-paddlepaddle==2.6.1        # CPU build
+paddlepaddle==2.6.2        # CPU build; 2.6.1 has no available Windows wheel
 
 # Image handling (still needed for PDF page rendering in tests)
 pillow==10.4.0
 
 # Ollama VLM classification + transcription client (top tier of escalation ladder)
 instructor==1.4.3
-openai==1.44.1
+openai==1.45.0
+httpx==0.27.2
 
 # Schemas, config, resilience
-pydantic==1.10.13
+pydantic==2.12.0
+pydantic-settings==2.3.4
 tenacity==8.5.0
+
+# Database
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+
+# Config and env
+python-dotenv==1.0.0
+pyyaml==6.0.2
+
+# Utils
+numpy==1.26.4
+requests==2.32.3
+
+# API (user-facing extraction endpoint)
+fastapi==0.115.0
+uvicorn==0.30.6
+python-multipart==0.0.9
 
 # Testing
 pytest==8.3.2

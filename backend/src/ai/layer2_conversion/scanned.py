@@ -7,7 +7,6 @@ Owner: engineer-a@idp-pilot
 Created: 2026-08-19 | Updated: 2026-08-20 (mode-aware engine, handwritten route)
 Deps: paddleocr, numpy
 """
-
 from typing import Any
 
 from src.config.settings import settings
@@ -70,28 +69,44 @@ def _get_paddle_engine(mode: str = "printed") -> Any:
 # Shared confidence rollup helper
 # ---------------------------------------------------------------------------
 
-
 def _rollup_confidence(result: Any) -> tuple[list[str], list[float]]:
     """
-    Parse raw PaddleOCR v3 result into (lines, word_confidences).
+    Parse raw PaddleOCR result into (lines, word_confidences).
 
-    PaddleOCR v3 changed the result format from the v2 nested list
-    [[bbox, (text, conf)], ...] to a list of page dicts, each with
-    'rec_texts' (list[str]) and 'rec_scores' (list[float]) at the top level.
+    Handles both result formats:
+    - v2 format: list of pages, each page is a list of [bbox, (text, conf)]
+    - v3 format: list of page dicts with 'rec_texts' and 'rec_scores' keys
 
-    Shared by both the scanned and handwritten converters so the rollup
-    logic is never duplicated.
+    Returns empty lists if result is None or contains only None entries.
     """
     lines: list[str] = []
     word_confidences: list[float] = []
 
     for page_result in result or []:
-        texts = page_result.get("rec_texts") or []
-        scores = page_result.get("rec_scores") or []
-        for text, conf in zip(texts, scores):
-            if text and text.strip():
-                lines.append(text)
-                word_confidences.append(float(conf))
+        if page_result is None:
+            continue
+
+        # v3 dict format
+        if isinstance(page_result, dict):
+            texts = page_result.get("rec_texts") or []
+            scores = page_result.get("rec_scores") or []
+            for text, conf in zip(texts, scores):
+                if text and text.strip():
+                    lines.append(text)
+                    word_confidences.append(float(conf))
+
+        # v2 list format: page_result is a list of [bbox, (text, conf)]
+        elif isinstance(page_result, list):
+            for item in page_result:
+                if item is None:
+                    continue
+                try:
+                    text, conf = item[1]
+                    if text and text.strip():
+                        lines.append(text)
+                        word_confidences.append(float(conf))
+                except (IndexError, TypeError, ValueError):
+                    continue
 
     return lines, word_confidences
 
@@ -99,7 +114,6 @@ def _rollup_confidence(result: Any) -> tuple[list[str], list[float]]:
 # ---------------------------------------------------------------------------
 # Scanned (printed) converter — unchanged contract
 # ---------------------------------------------------------------------------
-
 
 def convert_scanned_page(image_array: Any, page_number: int) -> tuple[str, float]:
     """
@@ -139,10 +153,7 @@ def convert_scanned_page(image_array: Any, page_number: int) -> tuple[str, float
 # Handwritten converter — PaddleOCR with handwriting-tuned config
 # ---------------------------------------------------------------------------
 
-
-def convert_handwritten_via_paddle(
-    image_array: Any, page_number: int
-) -> tuple[str, float]:
+def convert_handwritten_via_paddle(image_array: Any, page_number: int) -> tuple[str, float]:
     """
     Converts a handwritten page image (numpy array) to text via PaddleOCR
     using the "handwritten" mode engine (lower det_db_thresh, angle cls on).
@@ -186,24 +197,14 @@ def convert_handwritten_via_paddle(
 # Secondary quality signal (unchanged)
 # ---------------------------------------------------------------------------
 
-
 def low_confidence_word_ratio(image_array: Any, threshold: float = 0.6) -> float:
     """
     What fraction of words fell below a per-word confidence threshold.
-    A page can have a deceptively OK average while having a large garbled
-    minority — this catches that case for Engineer B's quality-scoring module.
     Uses the printed engine since this is a diagnostic helper, not a converter.
     """
     engine = _get_paddle_engine(mode="printed")
     result = engine.ocr(image_array)
-
-    total, low = 0, 0
-    for page_result in result or []:
-        texts = page_result.get("rec_texts") or []
-        scores = page_result.get("rec_scores") or []
-        for _text, conf in zip(texts, scores):
-            total += 1
-            if float(conf) < threshold:
-                low += 1
-
+    _, word_confidences = _rollup_confidence(result)
+    total = len(word_confidences)
+    low = sum(1 for c in word_confidences if c < threshold)
     return (low / total) if total > 0 else 0.0

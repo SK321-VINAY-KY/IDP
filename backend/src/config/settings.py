@@ -22,6 +22,17 @@ class Settings(BaseSettings):
     short_doc_page_limit: int = 10
     page_summary_max_words: int = 25
     max_extraction_retries: int = 2
+
+    #sarvam settings
+    sarvam_base_url: str = "https://api.sarvam.ai/v1"
+    sarvam_model_name: str = "sarvam-105b"
+    sarvam_api_key: str = ""
+    extraction_backend: str = "sarvam"  # "ollama" or "sarvam"
+
+    #postgres settings
+    database_url: str = "postgresql://postgres:Sahana%40089@localhost:5432/idp"
+
+
     # --- PaddleOCR engine settings ---
     # Handwriting mode: lower detection threshold so thinner/more irregular
     # handwriting strokes are not missed at the DBNet detection stage.

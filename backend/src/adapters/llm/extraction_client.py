@@ -36,7 +36,13 @@ class OllamaExtractionClient:
         )
 
     def extract(self, content: str, schema: type[BaseModel]) -> BaseModel:
-        system_prompt = render_prompt("extraction", schema_fields=list(schema.model_fields.keys()))
+        # Build list of {name, description} dicts so the prompt can show
+        # field descriptions alongside names for better extraction accuracy.
+        schema_fields = [
+            {"name": k, "description": v.description or k}
+            for k, v in schema.model_fields.items()
+        ]
+        system_prompt = render_prompt("extraction", schema_fields=schema_fields)
         params = prompt_params("extraction")
         logger.info("extraction.request", model=self.model, content_chars=len(content))
         result = self.client.chat.completions.create(

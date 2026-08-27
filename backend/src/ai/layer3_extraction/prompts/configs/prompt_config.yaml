@@ -1,7 +1,7 @@
 extraction:
   template: extraction_system.j2
   temperature: 0.0
-  max_tokens: 500
+  max_tokens: 2000
 
 page_summary:
   template: page_summary.j2
@@ -11,4 +11,4 @@ page_summary:
 navigation:
   template: navigation.j2
   temperature: 0.0
-  max_tokens: 200
+  max_tokens: 400

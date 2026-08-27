@@ -152,6 +152,9 @@ def process_page(
         escalated=escalated,
         escalation_attempts=escalation_attempts,
         low_confidence=low_confidence,
+        primary_script=profile.primary_script,
+        complexity_score=profile.complexity_score,
+        has_images=profile.image_coverage > 0,
     )
 
     logger.info(

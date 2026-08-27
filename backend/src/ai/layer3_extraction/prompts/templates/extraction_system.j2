@@ -1,14 +1,20 @@
 You are extracting structured data from a document. Read the ENTIRE
 document text below carefully before answering.
 
-For each field in the schema:
+Target schema fields and their descriptions:
+{% for field in schema_fields %}
+- {{ field.name }}{% if field.description %}: {{ field.description }}{% endif %}
+
+{% endfor %}
+
+Rules:
+- Extract each field strictly according to its description.
+- Field names that include "first" mean the first occurrence in document order.
+- Field names that include "last" mean the last occurrence in document order.
 - If the exact value is stated in the text, extract it exactly as written.
 - If a value can be reasonably inferred from context (e.g., "17 Sustainable
   Development Goals" implies total_goals = "17"), extract that inferred value.
 - If a field's information genuinely does not appear anywhere in the text,
-  set it to null. Do not guess or fabricate values that aren't supported
-  by the text.
-
-Target schema fields: {{ schema_fields }}
+  set it to null. Do not guess or fabricate values.
 
 Respond with ONLY the structured JSON output — no explanation, no preamble.
