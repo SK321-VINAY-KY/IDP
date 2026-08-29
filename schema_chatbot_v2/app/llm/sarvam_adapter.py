@@ -37,38 +37,33 @@ logger = logging.getLogger(__name__)
 
 # Reuses the same shape as the Bedrock tool schema - one schema, one
 # source of truth for "what an extraction looks like" across providers.
+# One "operations" list (add/update/remove) replaces the old separate
+# new_fields/field_answers/removals lists, so a single reply can add,
+# correct, and remove fields together; "reply" lets the model compose the
+# actual response text shown to the user instead of a template picking it.
 _EXTRACTION_JSON_SCHEMA = {
     "type": "object",
     "properties": {
         "document_type": {"type": ["string", "null"]},
-        "new_fields": {
+        "operations": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string"},
+                    "op": {"type": "string", "enum": ["add", "update", "remove"]},
+                    "field_name": {"type": "string"},
                     "type": {"type": ["string", "null"]},
                     "required": {"type": ["boolean", "null"]},
                     "currency": {"type": ["string", "null"]},
                     "item_type": {"type": ["string", "null"]},
+                    "pattern": {"type": ["string", "null"]},
+                    "description": {"type": ["string", "null"]},
                 },
-                "required": ["name"],
+                "required": ["op", "field_name"],
             },
         },
-        "field_answers": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "field_name": {"type": "string"},
-                    "attribute": {"type": "string"},
-                    "value": {},
-                },
-                "required": ["field_name", "attribute", "value"],
-            },
-        },
-        "removals": {"type": "array", "items": {"type": "string"}},
         "confirmation": {"type": ["boolean", "null"]},
+        "reply": {"type": ["string", "null"]},
         "needs_clarification": {"type": "boolean"},
         "clarification_reason": {"type": ["string", "null"]},
     },
@@ -124,24 +119,18 @@ class SarvamAdapter(LLMAdapter):
 
     def extract(self, state: str, user_message: str, context: Dict[str, Any]) -> ExtractionResult:
         user_prompt = build_extraction_user_prompt(state, user_message, context)
+        sys_prompt = (
+            EXTRACTION_SYSTEM_PROMPT
+            + "\n\nCRITICAL: Respond with ONLY the raw valid JSON object matching the ExtractionResult schema. No prose or explanations."
+        )
         try:
             raw = self._chat(
-                system=EXTRACTION_SYSTEM_PROMPT,
+                system=sys_prompt,
                 user=user_prompt,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "schema_extraction",
-                        "strict": False,  # our schema has null-unions; keep non-strict for robustness
-                        "schema": _EXTRACTION_JSON_SCHEMA,
-                    },
-                },
-                # This is a structured extraction task, not open-ended reasoning -
-                # disable thinking mode for lower latency/cost.
-                reasoning_effort=None,
                 temperature=0.1,
+                max_tokens=4096,
             )
-            parsed = json.loads(raw)
+            parsed = self._parse_json(raw)
         except Exception:
             logger.exception("Sarvam extraction call failed")
             return ExtractionResult(extraction_failed=True, needs_clarification=True,
@@ -162,7 +151,7 @@ class SarvamAdapter(LLMAdapter):
         )
         template = fallback_question(gap_field, gap_attribute)
         try:
-            text = self._chat(system=system, user=template, reasoning_effort=None, temperature=0.3)
+            text = self._chat(system=system, user=template, reasoning_effort=None, temperature=0.3, max_tokens=512)
             return text.strip() or template
         except Exception:
             logger.warning("Sarvam phrase_question call failed, using template fallback")
@@ -185,28 +174,41 @@ class SarvamAdapter(LLMAdapter):
             logger.exception("Sarvam Document AI digitise failed")
             return SchemaProposal(extraction_failed=True, failure_reason="document OCR failed")
 
-        # Truncate OCR text to avoid hitting API limits (max ~10K chars per sample)
-        truncated_texts = [text[:10000] for text in texts]
-        user_prompt = build_document_inference_prompt(truncated_texts)
+        # Cap each sample to ~12,000 characters to safely fit within Sarvam context window
+        capped_texts = [t[:12000] if len(t) > 12000 else t for t in texts]
+        user_prompt = build_document_inference_prompt(capped_texts)
+        sys_prompt = (
+            DOCUMENT_INFERENCE_SYSTEM_PROMPT
+            + "\n\nCRITICAL: Keep reasoning extremely brief. Output ONLY the valid JSON object with keys 'document_type' and 'fields'. Do not wrap in commentary."
+        )
         try:
             raw = self._chat(
-                system=DOCUMENT_INFERENCE_SYSTEM_PROMPT,
+                system=sys_prompt,
                 user=user_prompt,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "schema_proposal",
-                        "strict": False,
-                        "schema": _SCHEMA_PROPOSAL_JSON_SCHEMA,
-                    },
-                },
-                reasoning_effort=None,
                 temperature=0.1,
+                reasoning_effort="low",
+                max_tokens=16384,
             )
-            parsed = json.loads(raw)
+            parsed = self._parse_json(raw)
         except Exception:
             logger.exception("Sarvam schema-inference call failed")
             return SchemaProposal(extraction_failed=True, failure_reason="LLM provider error")
+
+        # Normalize fields dict -> list if model formatted fields as an object map
+        if isinstance(parsed, dict) and isinstance(parsed.get("fields"), dict):
+            normalized_fields = []
+            for k, v in parsed["fields"].items():
+                if isinstance(v, dict):
+                    field_dict = {"name": str(k)}
+                    for subk, subv in v.items():
+                        if subk not in field_dict:
+                            field_dict[subk] = subv
+                    normalized_fields.append(field_dict)
+                elif isinstance(v, str):
+                    normalized_fields.append({"name": str(k), "type": v})
+                else:
+                    normalized_fields.append({"name": str(k)})
+            parsed["fields"] = normalized_fields
 
         try:
             proposal = SchemaProposal.model_validate(parsed)
@@ -267,6 +269,67 @@ class SarvamAdapter(LLMAdapter):
                 raise RuntimeError("Sarvam digitise result did not contain a markdown file")
             return zf.read(candidates[0]).decode("utf-8", errors="replace")
 
+    @staticmethod
+    def _parse_json(raw: str | None) -> Any:
+        if not raw or not isinstance(raw, str):
+            raise ValueError(f"Expected JSON string, got {type(raw)}")
+        raw = raw.strip()
+
+        # 1. Direct parse attempt
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+
+        # 2. Markdown code fences
+        if "```" in raw:
+            blocks = raw.split("```")
+            for block in blocks:
+                cleaned = block.strip()
+                if cleaned.startswith("json"):
+                    cleaned = cleaned[4:].strip()
+                try:
+                    return json.loads(cleaned)
+                except Exception:
+                    # try raw_decode on code block
+                    start = cleaned.find("{")
+                    if start != -1:
+                        try:
+                            obj, _ = json.JSONDecoder().raw_decode(cleaned[start:])
+                            return obj
+                        except Exception:
+                            pass
+
+        # 3. Iterative raw_decode across the text to find the schema dictionary
+        start = 0
+        decoder = json.JSONDecoder()
+        candidates = []
+        while start < len(raw):
+            idx = raw.find("{", start)
+            if idx == -1:
+                break
+            try:
+                obj, end_idx = decoder.raw_decode(raw[idx:])
+                if isinstance(obj, dict):
+                    # prioritize the object that contains schema keys
+                    if "document_type" in obj or "fields" in obj:
+                        return obj
+                    candidates.append(obj)
+                start = idx + max(1, end_idx)
+            except Exception:
+                start = idx + 1
+
+        if candidates:
+            return candidates[0]
+
+        # 4. Fallback slice
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(raw[start:end+1])
+
+        raise ValueError(f"Could not parse valid JSON from model output: {raw[:200]}")
+
     # ---- low-level HTTP ----
 
     def _chat(
@@ -274,8 +337,9 @@ class SarvamAdapter(LLMAdapter):
         system: str,
         user: str,
         response_format: Dict[str, Any] | None = None,
-        reasoning_effort: str | None = "medium",
-        temperature: float = 0.2,
+        reasoning_effort: str | None = "low",
+        temperature: float = 0.1,
+        max_tokens: int = 8192,
     ) -> str:
         payload: Dict[str, Any] = {
             "model": self.model,
@@ -284,8 +348,10 @@ class SarvamAdapter(LLMAdapter):
                 {"role": "user", "content": user},
             ],
             "temperature": temperature,
-            "reasoning_effort": reasoning_effort,
+            "max_tokens": max_tokens,
         }
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
         if response_format is not None:
             payload["response_format"] = response_format
 
@@ -296,8 +362,22 @@ class SarvamAdapter(LLMAdapter):
                 "api-subscription-key": self.api_key or "",
                 "Content-Type": "application/json",
             },
-            timeout=self.timeout_s,
+            timeout=max(self.timeout_s, 180.0),
         )
-        resp.raise_for_status()
+        if not resp.is_success:
+            logger.error(
+                "Sarvam API error HTTP %d: %s | Model: %s",
+                resp.status_code,
+                resp.text,
+                self.model,
+            )
+            resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        choices = data.get("choices", [])
+        if not choices:
+            raise ValueError(f"Sarvam API returned no choices: {data}")
+        msg = choices[0].get("message", {})
+        content = msg.get("content")
+        if not content and msg.get("reasoning_content"):
+            content = msg.get("reasoning_content")
+        return content or ""

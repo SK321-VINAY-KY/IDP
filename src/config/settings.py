@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="IDP_")
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="IDP_", extra="ignore")
 
     # --- LLM / VLM (provider selection) ---
     # Set `llm_provider` to the concrete provider you want to use.

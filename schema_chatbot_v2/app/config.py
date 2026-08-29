@@ -5,9 +5,13 @@ against Ollama locally today and Bedrock in AWS later without code changes.
 import os
 from dataclasses import dataclass
 
+from pathlib import Path
+
 from dotenv import load_dotenv
 
-load_dotenv()  # was missing - .env was silently ignored before this
+# Load from CWD first, then schema_chatbot_v2 root so env vars are found regardless of launch location
+load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 @dataclass(frozen=True)

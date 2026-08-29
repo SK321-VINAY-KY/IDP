@@ -21,6 +21,7 @@ import os
 from contextvars import ContextVar
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
@@ -29,7 +30,8 @@ from zoneinfo import ZoneInfo
 # ============================================================
 
 SERVICE_NAME = "idp-pipeline-a"
-LOG_FILE     = "logs/pipeline.log"
+_ROOT_DIR    = Path(__file__).resolve().parents[2]
+LOG_FILE     = str(_ROOT_DIR / "logs" / "pipeline.log")
 LOG_TIMEZONE = ZoneInfo("Asia/Kolkata")   # IST — all timestamps in local time
 
 # ============================================================

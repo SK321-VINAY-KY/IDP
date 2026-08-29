@@ -29,6 +29,9 @@ from app.llm.prompts import (
 
 logger = logging.getLogger(__name__)
 
+# "operations" (add/update/remove) replaces the old new_fields/field_answers/
+# removals split - one reply can add, correct, and remove fields together.
+# "reply" lets the model compose the actual response text.
 _EXTRACTION_TOOL = {
     "toolSpec": {
         "name": "record_extraction",
@@ -38,10 +41,9 @@ _EXTRACTION_TOOL = {
                 "type": "object",
                 "properties": {
                     "document_type": {"type": ["string", "null"]},
-                    "new_fields": {"type": "array", "items": {"type": "object"}},
-                    "field_answers": {"type": "array", "items": {"type": "object"}},
-                    "removals": {"type": "array", "items": {"type": "string"}},
+                    "operations": {"type": "array", "items": {"type": "object"}},
                     "confirmation": {"type": ["boolean", "null"]},
+                    "reply": {"type": ["string", "null"]},
                     "needs_clarification": {"type": "boolean"},
                     "clarification_reason": {"type": ["string", "null"]},
                 },

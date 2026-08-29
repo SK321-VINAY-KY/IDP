@@ -25,6 +25,44 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Skip and Indic decisions sit outside the capability vocabulary (skip needs
+# no processor; Indic engine is deferred). Public (no leading underscore) so
+# tests and future pipeline phases can re-use the same thresholds.
+_INDIC_SCRIPTS = {
+    "devanagari", "tamil", "bengali", "gujarati",
+    "gurmukhi", "kannada", "malayalam", "odia", "telugu",
+}
+
+
+def precheck_skip_or_indic(profile) -> str | None:
+    """
+    Shared pre-check used (or available to) any capability-based path.
+    Returns a route string ("skip" or "scanned") if the decision is
+    conclusive without entering the capability vocabulary, or None to
+    continue with full capability detection.
+
+    Mirrors the skip/Indic branch of router.route_from_profile() exactly.
+    Two tests in test_capability_router.py assert this copy stays in
+    agreement with the original:
+        test_precheck_agrees_with_router_on_skip
+        test_precheck_agrees_with_router_on_indic
+    """
+    if (
+        profile.char_count < settings.skip_char_count_threshold
+        and profile.image_coverage < settings.skip_image_coverage_threshold
+    ):
+        return "skip"
+
+    if profile.primary_script in _INDIC_SCRIPTS:
+        logger.warning(
+            "router.indic_engine_deferred",
+            page_number=profile.page_number,
+            primary_script=profile.primary_script,
+        )
+        return "scanned"
+
+    return None
+
 
 def _is_mixed_content_signal(profile: PageProfile) -> bool:
     """

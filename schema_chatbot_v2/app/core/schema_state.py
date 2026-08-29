@@ -15,10 +15,55 @@ from pydantic import BaseModel, Field
 
 SUPPORTED_TYPES = {"string", "number", "integer", "boolean", "date", "object", "array"}
 
+# Common synonyms a model (or a user typing "make it a float") might use.
+# normalize_type() maps these onto SUPPORTED_TYPES rather than letting them
+# through raw - an unrecognized type used to be able to slip into FieldSpec
+# and silently fail validation later; now it either normalizes or turns
+# back into a gap immediately, in the same turn.
+_TYPE_ALIASES = {
+    "str": "string", "text": "string", "varchar": "string", "name": "string",
+    "float": "number", "double": "number", "decimal": "number", "num": "number", "amount": "number",
+    "int": "integer", "count": "integer",
+    "bool": "boolean", "yes/no": "boolean", "flag": "boolean",
+    "datetime": "date", "timestamp": "date", "day": "date",
+    "list": "array", "list_of": "array",
+    "dict": "object", "nested": "object",
+}
+
 # The attributes we consider "required to know" before a field is complete.
 # Kept small and explicit on purpose (see design note in README about
 # avoiding a 30-question interrogation).
 REQUIRED_ATTRIBUTES = ["type", "required"]
+
+
+def normalize_type(raw: Optional[str]) -> "tuple[Optional[str], Optional[str]]":
+    """
+    Guards every type value before it reaches a FieldSpec.
+
+    Returns (normalized_type_or_None, note_or_None):
+      - raw is None                -> (None, None): nothing to normalize.
+      - raw already a valid type   -> (raw, None): passed through as-is.
+      - raw is a known alias       -> (normalized, "normalized ...' note):
+        the value is fixed up AND the caller is told, so it can be surfaced
+        to the user instead of silently rewritten.
+      - raw is unrecognized        -> (None, "unrecognized type ...' note):
+        deliberately NOT written into the field. This keeps the field
+        incomplete (next_gap()/all_gaps() will pick it back up) rather than
+        letting a bad value corrupt the schema and fail validate_schema()
+        with no path back into the conversation.
+    """
+    if raw is None:
+        return None, None
+    key = raw.strip().lower()
+    if key in SUPPORTED_TYPES:
+        return key, None
+    if key in _TYPE_ALIASES:
+        normalized = _TYPE_ALIASES[key]
+        return normalized, f"normalized type '{raw}' to '{normalized}'"
+    return None, (
+        f"'{raw}' isn't a type I recognize (string, number, integer, boolean, "
+        "date, object, array) - left it unset so it doesn't silently break"
+    )
 
 
 class FieldSpec(BaseModel):
@@ -111,16 +156,64 @@ class SchemaState(BaseModel):
         setattr(self.fields[key], attribute, value)
         return True
 
+    def apply_operations(self, operations: List[Any]) -> List[str]:
+        """
+        Applies a batch of add/update/remove operations (app.llm.base.FieldOp)
+        in one pass - the mechanism that makes "add a field, fix another
+        field's type, and remove a third, all from one message" possible.
+        Still fully deterministic: this is the only method that turns LLM
+        output into schema mutations, same design boundary as add_field/
+        remove_field/update_field_attribute above.
+
+        Returns human-readable notes about anything normalized or rejected
+        along the way (e.g. a type alias that got fixed up, or an
+        unrecognized type that was deliberately left unset), so the caller
+        can surface it instead of silently swallowing it.
+        """
+        notes: List[str] = []
+        for op in operations:
+            if op.op == "remove":
+                self.remove_field(op.field_name)
+                continue
+
+            attrs: Dict[str, Any] = {}
+            if op.type is not None:
+                normalized, note = normalize_type(op.type)
+                if note:
+                    notes.append(note)
+                if normalized is not None:
+                    attrs["type"] = normalized
+            for attr in ("required", "currency", "item_type", "pattern", "description"):
+                value = getattr(op, attr, None)
+                if value is not None:
+                    attrs[attr] = value
+
+            key = _normalize_field_name(op.field_name)
+            if op.op == "add" or key not in self.fields:
+                self.add_field(op.field_name, **attrs)
+            else:  # op.op == "update" on a field that already exists
+                for attr, value in attrs.items():
+                    self.update_field_attribute(op.field_name, attr, value)
+        return notes
+
     # ---- queries ----
 
     def next_gap(self) -> Optional[Gap]:
         """Returns the next missing piece of info, in field-add order."""
+        gaps = self.all_gaps()
+        return gaps[0] if gaps else None
+
+    def all_gaps(self) -> List[Gap]:
+        """
+        Every missing piece of info across every field, in field-add order -
+        not just the first one. This is what lets the LLM see (and a user
+        answer) several open gaps in a single turn instead of one at a time.
+        """
+        gaps: List[Gap] = []
         for key in self.field_order:
-            spec = self.fields[key]
-            missing = spec.missing_attributes()
-            if missing:
-                return Gap(field_name=key, attribute=missing[0])
-        return None
+            for attr in self.fields[key].missing_attributes():
+                gaps.append(Gap(field_name=key, attribute=attr))
+        return gaps
 
     def has_fields(self) -> bool:
         return len(self.fields) > 0

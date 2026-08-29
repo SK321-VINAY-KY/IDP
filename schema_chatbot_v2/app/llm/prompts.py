@@ -1,7 +1,8 @@
 """
 Prompt construction shared across providers, and deterministic fallback
-question templates used if a provider call fails (per-field question
-phrasing should never be a hard dependency on the LLM being up).
+text used if a provider call fails or declines to compose a reply itself
+(neither per-field question phrasing nor the overall reply should ever be
+a hard dependency on the LLM being up).
 """
 from __future__ import annotations
 
@@ -9,34 +10,62 @@ import json
 from typing import Any, Dict, List, Optional
 
 EXTRACTION_SYSTEM_PROMPT = """You are the natural-language-understanding layer of a document schema \
-builder. You do NOT control the conversation flow and you must NOT invent \
-information the user did not say.
+builder having an ONGOING, open-ended conversation with a user about the \
+schema they want. You do NOT control what actually happens to the schema \
+and you must NOT invent information the user did not say - but unlike a \
+rigid interview, you are shown the ENTIRE current schema, every field still \
+missing information, and any validation problems on every single turn, and \
+you should use as much of the user's message as applies, in one pass. A \
+message might name the document type, add three fields, fix another \
+field's type, remove a fourth, and answer two open questions - extract all \
+of it, not just the first thing you notice.
 
-Given the conversation state, the schema built so far, and the user's latest \
-message, extract ONLY what the user actually stated. Respond with STRICT JSON \
-matching this shape and nothing else - no markdown fences, no commentary:
+Respond with STRICT JSON matching this shape and nothing else - no \
+markdown fences, no commentary:
 
 {
   "document_type": string or null,
-  "new_fields": [ {"name": string, "type": string or null, "required": bool or null,
-                    "currency": string or null, "item_type": string or null} ],
-  "field_answers": [ {"field_name": string, "attribute": string, "value": any} ],
-  "removals": [string, ...],
+  "operations": [
+    {"op": "add" | "update" | "remove", "field_name": string,
+     "type": string or null, "required": bool or null,
+     "currency": string or null, "item_type": string or null,
+     "pattern": string or null, "description": string or null}
+  ],
   "confirmation": true, false, or null,
+  "reply": string or null,
   "needs_clarification": bool,
   "clarification_reason": string or null
 }
 
 Rules:
-- "type" must be one of: string, number, integer, boolean, date, object, array.
-- Only set "confirmation" when the user is responding to a yes/no confirmation prompt.
-- Only include "field_answers" entries when the user is directly answering a
-  question about a SPECIFIC field attribute that was just asked about.
-- If the user says things like "remove X" or "drop X", put X's normalized
-  field name in "removals".
+- "type" must be one of: string, number, integer, boolean, date, object,
+  array - or your best guess in the user's own words if none of those fit;
+  unrecognized values are normalized or safely dropped downstream, so
+  don't withhold an operation just because you're unsure of the exact
+  type keyword.
+- Use "op": "add" for a field that doesn't exist in "schema_so_far" yet,
+  "update" to change an attribute of a field that already exists (e.g.
+  answering an open gap, or a correction like "make total a number"), and
+  "remove" for "remove X" / "drop X" / "delete X". Only set the fields on
+  an operation that this message actually gives you - leave the rest null.
+- "confirmation": true/false ONLY when the user is clearly approving or
+  rejecting the schema as a whole (e.g. after you've shown it back to
+  them) - not for answering an individual yes/no gap like "is this always
+  present?".
+- "reply" is what gets shown to the user verbatim, so write it as the
+  actual next thing you'd say in this conversation - acknowledge what you
+  just changed if anything, then either ask about the single most useful
+  remaining gap/error, or (if the schema has no open gaps and no
+  validation errors) show a brief summary and ask the user to confirm.
+  Keep it natural and conversational, not a template. Leave "reply" null
+  only if you genuinely can't produce one (use "needs_clarification"
+  instead in that case).
 - If the user's message is genuinely ambiguous and you cannot confidently
-  extract structured data, set "needs_clarification": true and explain why.
-- Never fabricate fields or attributes the user did not mention.
+  extract structured data, set "needs_clarification": true and explain why
+  in "clarification_reason" - still fill in "reply" with a clarifying
+  question if you can.
+- Never fabricate fields, attributes, or a confirmation the user did not
+  actually state.
 """
 
 
@@ -45,7 +74,11 @@ def build_extraction_user_prompt(state: str, user_message: str, context: Dict[st
         {
             "conversation_state": state,
             "schema_so_far": context.get("schema"),
-            "current_gap": context.get("current_gap"),
+            "document_type_missing": context.get("document_type_missing", False),
+            # ALL open gaps, not just one - this is what lets a single reply
+            # address several of them at once.
+            "open_gaps": context.get("gaps", []),
+            "validation_errors": context.get("validation_errors", []),
             "user_message": user_message,
         },
         indent=2,
@@ -53,13 +86,24 @@ def build_extraction_user_prompt(state: str, user_message: str, context: Dict[st
 
 
 def fallback_question(field_name: str, attribute: str) -> str:
-    """Deterministic template used if the LLM phrasing call fails."""
+    """Deterministic template used if the LLM phrasing/reply call fails."""
     templates = {
         "type": f"What kind of value is '{field_name}' — text, a number, a date, or something else?",
         "required": f"Is '{field_name}' always present in the document, or can it be missing sometimes?",
         "item_type": f"'{field_name}' can have multiple values — what type is each individual value?",
     }
     return templates.get(attribute, f"Can you tell me more about '{field_name}' ({attribute})?")
+
+
+def greeting_message() -> str:
+    """Opens the one REVIEW loop - replaces the old fixed
+    ASK_DOCUMENT_TYPE-only opener so the very first turn can already accept
+    a document type, a field list, or both at once."""
+    return (
+        "Let's build your schema. You can upload a few sample documents, or "
+        "just tell me about them - what type of documents are these, and "
+        "what would you like to extract?"
+    )
 
 
 def document_type_question() -> str:
@@ -114,7 +158,9 @@ Rules:
   a plain number and another has a currency symbol, or the field is only
   present in some samples), set "type" and/or "required" to null for that
   field rather than guessing, and briefly explain the disagreement in
-  "notes". A later step will ask the user directly about anything left null.
+  "notes". This schema then lands in the same open REVIEW conversation as
+  the text interview, so anything left null just becomes a normal thing to
+  ask the user about there.
 - Only set "required": true if the field appears in EVERY sample; only set
   it false if it's consistently present in some but genuinely absent (not
   just illegible) in others; leave it null if you're unsure.
@@ -143,7 +189,7 @@ def document_inference_user_text(num_samples: int) -> str:
 
 
 def document_intake_intro() -> str:
-    return "I read through your sample documents. A few things need confirming:\n\n"
+    return "I read through your sample documents. "
 
 
 def document_intake_failed_message(failure_reason: Optional[str] = None) -> str:

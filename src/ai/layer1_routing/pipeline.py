@@ -20,20 +20,12 @@ import time
 from typing import Any
 
 from src.adapters.llm.base import LLMClient
-from src.ai.layer1_routing.capability_router import (
-    CapabilityRouter,
-    decision_to_pipeline_route,
-    detect_required_capabilities,
-    detect_required_capabilities_with_classification,
-)
 from src.ai.layer1_routing.inspect import inspect_page
 from src.ai.layer1_routing.router import (
     build_engine_plan,
-    capabilities_from_classification,
-    capabilities_from_vlm_analysis,
     capabilities_from_profile,
+    capabilities_from_vlm_analysis,
     next_escalation_route,
-    resolve_route_with_classification,
     route_from_profile,
 )
 from src.ai.layer2_conversion.digital import convert_digital_page
@@ -41,22 +33,13 @@ from src.ai.layer2_conversion.scanned import (
     convert_handwritten_via_paddle,
     convert_scanned_page,
 )
+from src.ai.output import write_document
 from src.ai.schemas.page import EngineTask, PageCapabilities, PageOutput, VLMAnalysis
 from src.ai.schemas.page_metadata import PageMetadata
 from src.config.settings import settings
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-# Shared across both routing modes — skip and Indic decisions sit outside the
-# capability vocabulary (skip needs no processor; Indic engine is deferred).
-_INDIC_SCRIPTS = {
-    "devanagari", "tamil", "bengali", "gujarati",
-    "gurmukhi", "kannada", "malayalam", "odia", "telugu",
-}
-
-# Singleton capability router (stateless — safe to reuse across pages).
-_capability_router = CapabilityRouter()
 
 # Route string → engine name mapping used by both single_engine plan wrapping
 # and the escalation ladder's engine lookup.
@@ -67,94 +50,6 @@ _ROUTE_TO_ENGINE: dict[str, str] = {
     "vlm_transcribe": "vlm_transcribe",
     "skip":           "skip",
 }
-
-
-# ---------------------------------------------------------------------------
-# Routing mode helpers
-# ---------------------------------------------------------------------------
-
-def _precheck_skip_or_indic(profile) -> str | None:
-    """
-    Shared pre-check used by the capability-based routing path.
-    Returns a route string ("skip" or "scanned") if the decision is
-    conclusive without entering the capability vocabulary, or None to
-    continue with full capability detection.
-
-    Duplicated in miniature from router.route_from_profile() rather than
-    re-using it directly, to keep the capability path self-contained and
-    avoid coupling it to the legacy routing API. Two tests in
-    test_capability_router.py (test_precheck_agrees_with_router_on_skip /
-    _on_indic) assert this copy stays in agreement with the original.
-    """
-    if (
-        profile.char_count < settings.skip_char_count_threshold
-        and profile.image_coverage < settings.skip_image_coverage_threshold
-    ):
-        return "skip"
-
-    if profile.primary_script in _INDIC_SCRIPTS:
-        logger.warning(
-            "router.indic_engine_deferred",
-            page_number=profile.page_number,
-            primary_script=profile.primary_script,
-        )
-        return "scanned"
-
-    return None
-
-
-def _resolve_route_capability_based(
-    profile, page_number: int, page_image_bytes: bytes, llm_client: LLMClient
-) -> tuple[str, object]:
-    """
-    Capability-based route resolution: detect requirements → match processor
-    → bridge to pipeline route string. Returns (route, classification) where
-    classification is None if Step B was not needed.
-
-    Bridges back to the same route strings ("digital", "scanned",
-    "handwritten", "vlm_transcribe", "skip") that _run_engine_task() already
-    understands — PageOutput and the escalation ladder are unaffected.
-    """
-    precheck = _precheck_skip_or_indic(profile)
-    if precheck is not None:
-        return precheck, None
-
-    # Step A: deterministic capability detection
-    requirements = detect_required_capabilities(profile)
-    classification = None
-
-    # Step B: VLM classification when Step A is inconclusive
-    if requirements is None:
-        try:
-            classification = llm_client.classify_page(
-                page_image_bytes,
-                page_profile_hint=profile.model_dump(),
-            )
-            requirements = detect_required_capabilities_with_classification(
-                profile, classification
-            )
-        except Exception as exc:
-            logger.warning(
-                "pipeline.capability_vlm_unavailable",
-                page_number=page_number,
-                error=str(exc),
-                fallback="scanned",
-            )
-            # Safe fallback: treat as scanned (printed OCR)
-            return "scanned", None
-
-    decision = _capability_router.route(requirements)
-    route = decision_to_pipeline_route(decision)
-
-    logger.info(
-        "pipeline.capability_route_resolved",
-        page_number=page_number,
-        processor=decision.processor,
-        bridged_route=route,
-        reason=decision.reason,
-        routing_mode="capability_based",
-    )
-    return route, classification
 
 
 # ---------------------------------------------------------------------------
@@ -703,6 +598,9 @@ def process_document(
     llm_client: LLMClient,
     document_name: str = "",
     document_id: str = "",
+    write_output: bool = False,
+    output_dir: str | None = None,
+    overwrite: bool = True,
 ) -> list[tuple[PageOutput, PageMetadata]]:
     """
     Process every page in a document.
@@ -711,6 +609,9 @@ def process_document(
       page_number   — int
       context       — dict with pdf_path, image_array, image_bytes
       image_bytes   — PNG bytes of the rendered page
+
+    If write_output=True and output_dir is set, the merged per-document
+    markdown is written to <output_dir>/<document_stem>.md via md_writer.
 
     Returns a list of (PageOutput, PageMetadata) pairs, one per page.
     """
@@ -739,4 +640,18 @@ def process_document(
         low_confidence_pages=low_conf_pages,
         escalated_pages=escalated_pages,
     )
+
+    if write_output and output_dir and document_name:
+        out_path = write_document(
+            document_name=document_name,
+            pages=results,
+            output_dir=output_dir,
+            overwrite=overwrite,
+        )
+        logger.info(
+            "pipeline.document_written",
+            document=document_name,
+            output_path=out_path,
+        )
+
     return results

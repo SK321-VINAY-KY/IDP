@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import List
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.core.conversation_manager import MAX_DOCUMENT_SAMPLES, MIN_DOCUMENT_SAMPLES, ConversationManager, TurnResult
 from app.llm.factory import get_llm_adapter
@@ -49,6 +49,10 @@ def chat(req: ChatRequest, manager: ConversationManager = Depends(get_conversati
 @router.post("/schema/infer", response_model=ChatResponse, response_model_by_alias=True)
 async def infer_schema(
     files: List[UploadFile] = File(..., description=f"{MIN_DOCUMENT_SAMPLES}-{MAX_DOCUMENT_SAMPLES} sample PDFs of the same document type"),
+    session_id: str | None = Form(
+        default=None,
+        description="Optional - feed samples into an existing session (e.g. one already mid-chat) instead of starting a new one",
+    ),
     manager: ConversationManager = Depends(get_conversation_manager),
 ) -> ChatResponse:
     if not (MIN_DOCUMENT_SAMPLES <= len(files) <= MAX_DOCUMENT_SAMPLES):
@@ -64,9 +68,11 @@ async def infer_schema(
         samples.append(await f.read())
 
     try:
-        result = manager.start_from_documents(samples)
+        result = manager.start_from_documents(samples, session_id=session_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="session not found")
     return _to_response(result)
 
 

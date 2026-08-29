@@ -19,28 +19,48 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
-class NewFieldProposal(BaseModel):
-    name: str
+class FieldOp(BaseModel):
+    """
+    One add/update/remove operation on a field, proposed by the LLM.
+
+    Replaces the old split between NewFieldProposal (one shot, on add only)
+    and FieldAnswer (one attribute, on an already-open gap): a single
+    ExtractionResult.operations list can now add a field, correct another
+    field's type, and remove a third, all from one user message, regardless
+    of which fields already exist or which gaps are currently open. Applied
+    by SchemaState.apply_operations - the LLM proposes, that method decides
+    what actually lands (including normalizing/rejecting "type").
+    """
+    op: str  # "add" | "update" | "remove"
+    field_name: str
     type: Optional[str] = None
     required: Optional[bool] = None
     currency: Optional[str] = None
     item_type: Optional[str] = None
-
-
-class FieldAnswer(BaseModel):
-    """A structured answer to a specific gap question we asked."""
-    field_name: str
-    attribute: str
-    value: Any
+    pattern: Optional[str] = None
+    description: Optional[str] = None
 
 
 class ExtractionResult(BaseModel):
-    """What the LLM proposes after seeing one user message."""
+    """
+    What the LLM proposes after seeing one user message, in the single open
+    REVIEW loop. The model is shown the *entire* current schema, every open
+    gap, and any validation errors on every turn (see
+    build_extraction_user_prompt) - so a message can answer several gaps,
+    add/edit/remove fields, and/or confirm, all in the same reply. Which of
+    those actually happen is still decided deterministically by
+    ConversationManager/SchemaState, never by the LLM directly.
+    """
     document_type: Optional[str] = None
-    new_fields: List[NewFieldProposal] = Field(default_factory=list)
-    field_answers: List[FieldAnswer] = Field(default_factory=list)
-    removals: List[str] = Field(default_factory=list)
-    confirmation: Optional[bool] = None  # yes/no, only meaningful in CONFIRMATION state
+    operations: List[FieldOp] = Field(default_factory=list)
+    confirmation: Optional[bool] = None  # yes/no, only meaningful if the user was asked to confirm
+    # The LLM composes the actual reply text shown to the user, so responses
+    # read like a normal conversation instead of picking from prompts.py
+    # templates every time. None (or extraction_failed/needs_clarification)
+    # falls back to a deterministic template - see
+    # ConversationManager._review_fallback_reply - so a reply is never a
+    # hard dependency on the provider being up.
+    reply: Optional[str] = None
     needs_clarification: bool = False
     clarification_reason: Optional[str] = None
     # Set to True if the adapter itself failed to produce valid structured
@@ -99,9 +119,13 @@ class LLMAdapter(ABC):
         context: Dict[str, Any],
     ) -> ExtractionResult:
         """
-        Interpret one user message given the current conversation state and
-        schema context. Must not raise on malformed model output - catch it
-        and return ExtractionResult(extraction_failed=True) instead.
+        Interpret one user message given the full current schema, every open
+        gap, and any validation errors (all passed via `context` - see
+        build_extraction_user_prompt). `state` is passed through for
+        logging/prompt context but the REVIEW loop no longer branches
+        behavior on it the way the old per-state handlers did. Must not
+        raise on malformed model output - catch it and return
+        ExtractionResult(extraction_failed=True) instead.
         """
         raise NotImplementedError
 
