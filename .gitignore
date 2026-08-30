@@ -1,3 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.env
+.venv
+venv/
+env/
+
+# Test fixtures — PDFs and generated markdown outputs (large files)
+tests/fixtures/*.pdf
+tests/fixtures/*.md
+
+# HuggingFace model cache (downloaded at runtime)
+.cache/
+*.bin
+*.safetensors
+
+# Kiro / IDE
+.kiro/
+
+# OS
+.DS_Store
+Thumbs.db
 # === Secrets & environment ===
 .env
 *.env
