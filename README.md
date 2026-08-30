@@ -474,3 +474,84 @@ The merge function then **only appends new lines** from lower-priority engines t
 4. **Thou shalt not make VLM the default path**. Every page > 100 chars embedded text MUST route Docling directly per the shortcut. VLM is expensive and slow. Use it only for genuinely ambiguous cases where Step A heuristics actually produce `None` / ambiguous capability flags.
 5. **Escalation is a ladder, not a restart**. Each rung is a superset engine that handles the failure mode of the last. Re-running the same engine with a different seed is never an escalation step.
 6. **Singletons for heavy engines**. Both Docling (in [digital.py `_DoclingStore`](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/layer2_conversion/digital.py#L28-L37)) and PaddleOCR (in [scanned.py `_paddle_engines` dict](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/layer2_conversion/scanned.py#L20-L23)) cache at the module top level per mode. Instantiating a fresh PaddleX model for every page = 30 s/page cold start. With singleton reuse, subsequent pages < 3 s scanned.
+
+---
+
+## 🐳 Docker Deployment & Containerization Guide
+
+The IDP project is fully containerized with Docker and Docker Compose, separating concerns across two dedicated container services while persisting datasets, outputs, schemas, and model caches.
+
+### 📦 Container Architecture
+
+| Service Name | Description | Execution Type | Exposed Ports | Default Command |
+|---|---|---|---|---|
+| **`idp-layer12`** | Layer 1 (Routing) + Layer 2 (Conversion) Pipeline | Batch / CLI | None | `python demo_resume_pipeline.py` |
+| **`schema-chatbot`** | Layer 3 Schema Discovery Chatbot | FastAPI HTTP API | `8000:8000` | `uvicorn app.main:app --host 0.0.0.0 --port 8000` |
+
+---
+
+### 🚀 Quick Start
+
+#### 1. Configure Environment Variables
+Copy the environment template and configure any external API keys (Sarvam, Ollama, Google Gemini, AWS Bedrock):
+```bash
+cp .env.example .env
+```
+
+#### 2. Build Docker Images
+Build both images locally:
+```bash
+docker compose build
+```
+
+#### 3. Run Layer 3 Schema Chatbot
+Start the FastAPI server in the background:
+```bash
+docker compose up -d schema-chatbot
+```
+- **Health check**: `curl http://localhost:8000/health` (returns `{"status":"ok","llm_provider":"..."}`)
+- **Swagger Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
+- **View Logs**: `docker compose logs -f schema-chatbot`
+- **Stop Server**: `docker compose down`
+
+#### 4. Run Layer 1 + 2 Document Processing Pipeline
+Execute batch document conversion jobs:
+```bash
+# Run resume processing demo
+docker compose run --rm idp-layer12 python demo_resume_pipeline.py
+
+# Run PDF extraction accuracy harness
+docker compose run --rm idp-layer12 python tests/test_pdf_extraction.py
+
+# Run handwritten document OCR extraction
+docker compose run --rm idp-layer12 python tests/test_handwritten_extraction.py
+
+# Process custom documents in dataset/
+docker compose run --rm idp-layer12 python -c "from src.ai.layer1_routing.pipeline import process_document; process_document('dataset/sample.pdf', 'dataset_output/sample.md')"
+```
+
+---
+
+### 🧪 Running Tests Inside Docker
+
+Run the comprehensive unit test suites in isolation:
+
+```bash
+# Layer 1 + Layer 2 Pipeline Tests (Router, Escalation, Capabilities, VLM)
+docker compose run --rm idp-layer12 pytest tests/test_router_smoke.py tests/test_router_edgecases.py tests/test_capability_router.py tests/test_vlm_routing.py -v
+
+# Layer 3 Schema Chatbot Tests (State Machine, Conversation, Validation, Pipeline Jobs)
+docker compose run --rm schema-chatbot pytest /app/schema_chatbot_v2/tests -v
+```
+
+---
+
+### 💾 Volumes & Model Caching Strategy
+
+The Docker setup uses bind mounts for application data and named volumes for AI model weights:
+- **`./dataset`**: Input PDF documents mount at `/app/dataset`
+- **`./dataset_output`**: Processed Markdown & schema reference sidecars output to `/app/dataset_output`
+- **`./schema_registry`**: Generated JSON schemas saved at `/app/schema_registry`
+- **`idp-paddle-cache`** (`/root/.paddleocr`): Persists downloaded PaddleOCR / PaddleX weights across runs.
+- **`idp-hf-cache`** (`/root/.cache`): Persists Hugging Face / Docling layout analysis weights.
+

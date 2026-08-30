@@ -1,0 +1,36 @@
+# Git
+.git/
+.gitignore
+
+# Virtual Environments
+.venv/
+venv/
+env/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+
+# Environment and secrets
+.env
+
+# Model and local caches
+.cache/
+*.bin
+*.safetensors
+.kiro/
+
+# Runtime outputs & temporary logs
+logs/
+scratch/
+dataset_output/
+
+# OS specific
+.DS_Store
+Thumbs.db

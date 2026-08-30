@@ -1,0 +1,57 @@
+# ==============================================================================
+# Docker Compose for IDP Project:
+#   1. idp-layer12   : Layer 1 Routing + Layer 2 Conversion Pipeline (Batch / CLI)
+#   2. schema-chatbot: Layer 3 Schema Discovery Chatbot (FastAPI on Port 8000)
+# ==============================================================================
+
+services:
+  schema-chatbot:
+    build:
+      context: .
+      dockerfile: schema_chatbot_v2/Dockerfile
+    container_name: schema-chatbot
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app/schema_chatbot_v2:/app
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./dataset:/app/dataset
+      - ./dataset_output:/app/dataset_output
+      - ./schema_registry:/app/schema_registry
+      - ./schema_chatbot_v2/logs:/app/schema_chatbot_v2/logs
+      - ./logs:/app/logs
+      - paddle-cache:/root/.paddleocr
+      - hf-cache:/root/.cache
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  idp-layer12:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: idp-layer12
+    environment:
+      - PYTHONPATH=/app
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./dataset:/app/dataset
+      - ./dataset_output:/app/dataset_output
+      - ./schema_registry:/app/schema_registry
+      - ./logs:/app/logs
+      - paddle-cache:/root/.paddleocr
+      - hf-cache:/root/.cache
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["python", "demo_resume_pipeline.py"]
+
+volumes:
+  paddle-cache:
+    name: idp-paddle-cache
+  hf-cache:
+    name: idp-hf-cache

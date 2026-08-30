@@ -1,9 +1,15 @@
 fastapi>=0.111
 uvicorn[standard]>=0.30
 pydantic>=2.7
+pydantic-settings>=2.0
 httpx>=0.27
 python-dotenv>=1.0
 python-multipart>=0.0.9   # needed by FastAPI for the /schema/infer file-upload route
-boto3>=1.34   # only needed at runtime if LLM_PROVIDER=bedrock
-sarvamai>=0.1   # only needed at runtime for LLM_PROVIDER=sarvam document intake (Document AI / digitise)
+boto3>=1.34               # only needed at runtime if LLM_PROVIDER=bedrock
+sarvamai>=0.1             # only needed at runtime for LLM_PROVIDER=sarvam document intake (Document AI / digitise)
 pytest>=8.2
+
+# Document & image dependencies for pipeline triggers
+pymupdf>=1.28.0
+pillow>=11.0.0
+numpy>=1.24.0
