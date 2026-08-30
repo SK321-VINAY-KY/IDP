@@ -71,13 +71,14 @@ def _get_paddle_engine(mode: str = "printed") -> Any:
 
 def _rollup_confidence(result: Any) -> tuple[list[str], list[float]]:
     """
-    Parse raw PaddleOCR result into (lines, word_confidences).
+    Parse raw PaddleOCR v3 result into (lines, word_confidences).
 
-    Handles both result formats:
-    - v2 format: list of pages, each page is a list of [bbox, (text, conf)]
-    - v3 format: list of page dicts with 'rec_texts' and 'rec_scores' keys
+    PaddleOCR v3 changed the result format from the v2 nested list
+    [[bbox, (text, conf)], ...] to a list of page dicts, each with
+    'rec_texts' (list[str]) and 'rec_scores' (list[float]) at the top level.
 
-    Returns empty lists if result is None or contains only None entries.
+    Shared by both the scanned and handwritten converters so the rollup
+    logic is never duplicated.
     """
     lines: list[str] = []
     word_confidences: list[float] = []
@@ -86,7 +87,7 @@ def _rollup_confidence(result: Any) -> tuple[list[str], list[float]]:
         if page_result is None:
             continue
 
-        # v3 dict format
+        # PaddleOCR v3 dict format: {"rec_texts": [...], "rec_scores": [...]}
         if isinstance(page_result, dict):
             texts = page_result.get("rec_texts") or []
             scores = page_result.get("rec_scores") or []
@@ -95,7 +96,7 @@ def _rollup_confidence(result: Any) -> tuple[list[str], list[float]]:
                     lines.append(text)
                     word_confidences.append(float(conf))
 
-        # v2 list format: page_result is a list of [bbox, (text, conf)]
+        # PaddleOCR v2 list format: [[bbox, (text, conf)], ...]
         elif isinstance(page_result, list):
             for item in page_result:
                 if item is None:
@@ -200,11 +201,20 @@ def convert_handwritten_via_paddle(image_array: Any, page_number: int) -> tuple[
 def low_confidence_word_ratio(image_array: Any, threshold: float = 0.6) -> float:
     """
     What fraction of words fell below a per-word confidence threshold.
+    A page can have a deceptively OK average while having a large garbled
+    minority — this catches that case for Engineer B's quality-scoring module.
     Uses the printed engine since this is a diagnostic helper, not a converter.
     """
     engine = _get_paddle_engine(mode="printed")
     result = engine.ocr(image_array)
-    _, word_confidences = _rollup_confidence(result)
-    total = len(word_confidences)
-    low = sum(1 for c in word_confidences if c < threshold)
+
+    total, low = 0, 0
+    for page_result in result or []:
+        texts = page_result.get("rec_texts") or []
+        scores = page_result.get("rec_scores") or []
+        for _text, conf in zip(texts, scores):
+            total += 1
+            if float(conf) < threshold:
+                low += 1
+
     return (low / total) if total > 0 else 0.0

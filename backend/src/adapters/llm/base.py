@@ -5,7 +5,6 @@ Purpose: Abstract LLMClient interface. Local Ollama implementation today;
 Owner: engineer-a@idp-pilot
 Created: 2026-08-19 | Deps: pydantic
 """
-
 from abc import ABC, abstractmethod
 
 from src.ai.schemas.page import PageClassification
@@ -16,9 +15,7 @@ class LLMClient(ABC):
     Layer 1/2 code must depend only on this — never on a concrete provider."""
 
     @abstractmethod
-    def classify_page(
-        self, image_bytes: bytes, page_profile_hint: dict
-    ) -> PageClassification:
+    def classify_page(self, image_bytes: bytes, page_profile_hint: dict) -> PageClassification:
         """Vision classification for ambiguous pages: route, handwriting_pct, noise_level."""
         raise NotImplementedError
 

@@ -1,223 +1,237 @@
-# Engineer A — Pipeline (Layer 1 + Layer 2)
+# IDP Backend
 
-Implements page inspection, routing, the escalation ladder, and the three
-Layer 2 conversion engines (digital/scanned/handwritten), per
-`IDP_Pilot_Build_Guide.md` and `IDP_Pilot_Split_Plan.md`.
+Intelligent Document Processing — backend pipeline.
 
-## What's here
+**Layer 1 + Layer 2** (Engineer A): Accept a PDF, detect what's on each page, pick the right OCR engine, output Markdown text with provenance metadata.
 
-```
-src/
-  config/settings.py              # Pydantic settings, all thresholds tunable via .env
-  utils/logger.py                 # Structured JSON logger + correlation ID (framework pattern)
-  ai/schemas/page.py               # THE CONTRACT — PageProfile, PageClassification, PageOutput
-  ai/layer1_routing/
-    inspect.py                     # Step A: PyMuPDF programmatic inspection
-    router.py                      # Routing table, dead-zone fix, mixed-content detection, escalation ladder
-    pipeline.py                    # Top-level orchestration: inspect -> route -> convert -> escalate -> PageOutput
-  ai/layer2_conversion/
-    digital.py                     # Docling
-    scanned.py                     # PaddleOCR v6 (CPU)
-    handwritten.py                 # TrOCR (CPU) — top tier of the escalation ladder
-  adapters/llm/
-    base.py                        # Abstract LLMClient — swap target for Bedrock later
-    ollama_client.py                # Local Ollama (Qwen2-VL-2B) implementation
-tests/
-  test_router_smoke.py            # Passing smoke tests for routing/escalation logic (no model calls)
-```
+**Layer 3** (Engineer B): Take the Markdown text, scan each page against a user-defined target schema, extract field values using Sarvam AI, return structured JSON.
 
-## What's implemented vs. what's a known pilot-scope limitation
+**API + Storage** (Engineer B): FastAPI HTTP layer, dynamic schema building, PostgreSQL persistence.
 
-**Fully implemented and tested:**
-- Routing table (digital/scanned/skip via Step A, VLM fallback via Step B)
-- The handwriting_pct dead-zone fix (0.1–0.3 gap now resolves conservatively to `handwritten`)
-- Mixed-content page detection (forces VLM classification instead of trusting a pure-digital route)
-- Escalation ladder with hard cap (`MAX_ESCALATION_ATTEMPTS`), verified to terminate rather than loop
-- Structured logging with correlation ID at every routing/escalation decision
+---
 
-**Implemented but with a noted limitation (see inline comments in code):**
-- `handwritten.py` — TrOCR is a line-level recognizer; the pilot passes the whole
-  page as one region unless a caller supplies pre-split line regions. Multi-line
-  handwritten pages will read as one blob until a layout-splitting step is added.
-- `_detect_tables()` in `inspect.py` — the horizontal/vertical line geometry check
-  is a placeholder; real bbox-angle geometry logic still needs to be filled in.
-- Indic script pages currently route to `scanned` as a placeholder (IndicPhotoOCR
-  is out of pilot scope per the build guide) — logged as a warning so it's visible
-  in the audit trail rather than silent, not left undefined.
+## Quick Start
 
-## How this hands off to Engineer B
-
-Call `process_document(pages, llm_client)` — it returns `list[PageOutput]`.
-Engineer B's Layer 3 depends only on that return type, never on anything inside
-this package. Until this pipeline is wired to real PDF input, B should build
-against the fixture set described in `IDP_Pilot_Split_Plan.md` §3.
-
-## Setup and Running
-
-### Dependencies
-
-Install all dependencies:
 ```bash
-pip install pydantic==1.10.13 tenacity --break-system-packages
-python3 tests/test_router_smoke.py
+cd backend
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+pip install -r requirements.txt
+
+# Start the API
+uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
+
+# Dev test (no PDF needed)
+python run_extraction.py 
 ```
 
-These test the routing/escalation *logic* without requiring PaddleOCR/TrOCR/
-Docling model downloads. Full integration tests (real OCR calls) need the
-Docker Compose stack from the build guide running, with models pulled via Ollama.
+---
 
+## Project Structure
 
-
-## Engineer B — Contextual Search & Extraction (Layer 3)
- 
-Consumes finished per-page Markdown (produced by Layer 1 + Layer 2) and
-extracts structured fields as validated JSON. Supports both:
-- **Ollama** (local, open-source Qwen2.5 — no API keys, fully offline)
-- **Sarvam** (API-based backend, configured via `IDP_EXTRACTION_BACKEND` and `IDP_SARVAM_API_KEY`)
-
-This is a **pilot** — the core extraction logic is built and tested
-against real Layer 2 output. Currently **working and tested**.
- 
-## What it does
- 
-Per the original system design (Section 5), once all pages are uniform
-Markdown, extraction doesn't care which OCR engine produced them. Two
-strategies, chosen automatically by page count:
- 
-- **Strategy A — Direct extraction (< 10 pages):** concatenate all
-  pages into one block, extract the schema in a single request.
-
-- **Strategy B — PageIndex navigation (≥ 10 pages):** 3-pass approach —
-  (1) summarize each page cheaply, (2) ask the model which pages are
-  relevant to which schema fields, (3) extract only from that narrowed
-  page set. Avoids dumping very long documents into a single prompt and
-  improves accuracy by keeping the final extraction call focused.
-  (The original design also names a second long-document option, RLM —
-  recursive hierarchical summarization. Not implemented in this pilot;
-  PageIndex was built and validated first.)
-
-## Structure
- 
 ```
-backend/src/
-├── adapters/llm/
-│   ├── extraction_base.py       # ExtractionLLMClient interface (Layer 3's own —
-│   │                             #   distinct from adapters/llm/base.py, which is
-│   │                             #   Layer 1/2's vision-classification interface)
-│   ├── extraction_client.py     # Ollama implementation (Qwen2.5)
-│   └── extraction_factory.py    # returns the configured client
-├── ai/
-│   ├── layer3_extraction/
-│   │   ├── page_loader.py       # see "Integration with Layer 1/2" below
-│   │   ├── router.py            # picks Strategy A vs B by page count
-│   │   ├── strategy_short.py
-│   │   ├── strategy_long_pageindex.py
-│   │   ├── schema_validation.py # retry/repair loop on validation failure
-│   │   └── prompts/
-│   │       ├── templates/       # extraction_system.j2, page_summary.j2, navigation.j2
-│   │       ├── versions/v1.0/   # frozen snapshot; versions/latest.txt points to it
-│   │       ├── configs/prompt_config.yaml  # temperature/max_tokens per prompt
-│   │       └── loader.py        # renders templates via Jinja2
-│   └── schemas/
-│       └── extraction_schema.py # what fields to extract — edit per document type
-└── config/settings.py            # extraction_model_name, short_doc_page_limit, etc.
+backend/
+├── src/
+│   ├── adapters/llm/          LLM clients (Ollama VLM + Sarvam extraction)
+│   ├── ai/
+│   │   ├── layer1_routing/    Page inspection + route decision
+│   │   ├── layer2_conversion/ OCR engines (Docling, PaddleOCR)
+│   │   ├── layer3_extraction/ Field extraction from Markdown
+│   │   └── schemas/           Shared Pydantic contracts
+│   ├── api/                   FastAPI app + document processor
+│   └── config/settings.py     All settings (env var overridable)
+├── tests/
+│   ├── fixtures/              Saved Layer 2 .md outputs for offline testing
+│   └── schemas/               Target schema JSON files
+├── run_extraction.py          Dev runner (no PDF needed)
+└── generate_fixture.py        Generate .md fixture from a real PDF
 ```
- 
-## Design notes
- 
-- **Extraction logic never talks to a specific model directly.**
-  `router.py` and both strategies depend only on `ExtractionLLMClient`
-  (an interface, `extraction_base.py`). Swapping the underlying model
-  or provider is contained entirely to `extraction_client.py` +
-  `extraction_factory.py` — nothing else changes.
-- **Two models, split by task**, to reduce runtime on CPU-only
-  hardware: `extraction_model_name` (7B, e.g. `qwen2.5:latest`) handles
-  `extract()` and `navigate()`, where accuracy matters most.
-  `summary_model_name` (3B, e.g. `qwen2.5:3b-instruct`) handles
-  `summarize_page()`, which runs once per page and doesn't need the
-  larger model's reasoning power.
-- **Per-call context window (`num_ctx`)**, passed via `extra_body` in
-  `extraction_client.py`, sized to what each call actually needs:
-  smaller for single-page summaries, larger for the final extraction
-  call (which sees the full concatenated relevant-page content).
-  Undersized context windows were the confirmed/suspected cause of an
-  earlier null-output bug — Ollama's small default silently truncates
-  long inputs rather than erroring.
-- **Prompts are centralized** in `.j2` template files, not inline
-  strings, and versioned. `navigation.j2` was tightened to explicitly
-  require integer page numbers (fixes a bug where the model returned
-  `"1"` instead of `1`, breaking downstream page-list arithmetic).
-  `extraction_system.j2` was tightened to distinguish literal vs.
-  reasonably-inferred field values and to require JSON-only output.
-- 
 
-## Integration with Layer 1/2
- 
-`page_loader.py` :
+---
 
-- **`load_pages_from_fixture(doc_id: str)`** — Reads a
-  saved `.md` fixture (e.g. `tests/fixtures/sdg_goals_output.md`) with
-  `<!-- Page N | ... -->` markers, for manual testing without running
-  the full Layer 1/2 pipeline.
+## Layer 3 — Field Extraction
 
- 
+### What It Does
+
+Layer 3 takes the Markdown text from Layer 1+2 and extracts specific fields from it. The user defines which fields they want (e.g. `invoice_number`, `vendor_name`, `total_amount`). Layer 3 finds those values in the text and returns them as JSON.
+
+---
+
+### Evolution of the Approach
+
+#### Phase 1 — Strategy A and B (Deleted)
+
+**Strategy A (short docs, < 10 pages):** Concatenate all pages → one LLM call → extract everything at once.
+*Problem:* Inconsistent. LLM sees too much and gets confused on documents with repetitive structure.
+
+**Strategy B (long docs, ≥ 10 pages):** Summarise each page → ask LLM which pages have which fields → extract from relevant pages only.
+*Problem:* Navigation step made mistakes. Still sent multiple pages together. Two extra LLM calls before extraction even started.
+
+Both were deleted. Files removed: `router.py`, `strategy_short.py`, `strategy_long_pageindex.py`.
+
+
+---
+
+#### Phase 2 — Current: Page-by-Page Scan with Scratchpad
+
+**Core idea:** Check each page individually. Accumulate results in a scratchpad. Stop when all fields are found.
+
+**How it works:**
+
+1. **Cache the schema once.** Build `[{name, description}]` from the target schema before the page loop starts.
+
+2. **Loop through every page:**
+   - Find fields still missing from scratchpad
+   - If all found → stop early
+   - Send page text + missing fields to Sarvam AI (with page number and total pages in the prompt)
+   - Sarvam returns what it found on this page
+   - Store in scratchpad — first-seen wins, already-found fields are never re-asked
+3. **Build final result.** Overlay scratchpad values on schema defaults. Validate. Return JSON.
+
+---
+
+### Layer 3 Files
+
+| File | What it does |
+|---|---|
+| `layer3_extraction/extractor.py` | Main function `extract_by_page_scan()`. Page loop, early exit, final model. |
+| `layer3_extraction/scratchpad.py` | In-memory accumulator. First-seen wins. Hallucination guard. |
+| `layer3_extraction/page_loader.py` | Converts `PageOutput` list to `list[{markdown, page_number}]`. Reads fixture files. |
+| `layer3_extraction/schema_validation.py` | Retry wrapper — retries up to 2 times on validation failure. |
+| `layer3_extraction/storage.py` | Saves extraction run to PostgreSQL. |
+| `prompts/templates/page_field_check.j2` | Per-page scan prompt. Page N of M, field list, page content. |
+| `prompts/templates/extraction_system.j2` | System prompt for whole-document extraction calls. |
+| `prompts/configs/prompt_config.yaml` | Maps prompt names to templates and LLM parameters. |
+| `adapters/llm/extraction_base.py` | Protocol interface for extraction LLM clients. |
+| `adapters/llm/sarvam_client.py` | Sarvam AI client. Contains `_strip_fences()`. |
+| `adapters/llm/extraction_client.py` | Ollama fallback client. |
+| `adapters/llm/extraction_factory.py` | Returns right client based on `IDP_EXTRACTION_BACKEND`. |
+
+---
+
+## API
+
+### `POST /api/extract`
+
+**Request:** `multipart/form-data`
+- `file` — PDF file
+- `target_schema` — JSON string: `[{"name": "field_name", "description": "what to look for"}]`
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "document_title": "5th SDG Youth Summer Camp...",
+    "goal_1_title": "End poverty in all its forms everywhere"
+  },
+  "meta": {
+    "strategy_used": "page_scan",
+    "processing_time_seconds": 18.4,
+    "llm_provider": "sarvam",
+    "saved_to_db": true,
+    "db_result_id": 63
+  }
+}
 ```
- 
-## Config
- 
-Add to `.env` (never committed — see `.env.example` for the template):
-```
-# LLM Models
-IDP_EXTRACTION_MODEL_NAME=qwen2.5:7b
-IDP_SUMMARY_MODEL_NAME=qwen2.5:3b-instruct
-IDP_SHORT_DOC_PAGE_LIMIT=10
 
-# Backend selection
-IDP_EXTRACTION_BACKEND=sarvam  # or "ollama"
-IDP_SARVAM_API_KEY=your_key_here
+### `GET /api/health`
+Returns `{"status": "ok"}`.
+
+---
+
+## API Files
+
+| File | What it does |
+|---|---|
+| `src/api/main.py` | FastAPI app. `/api/extract` orchestrates the full pipeline. |
+| `src/api/dynamic_schema.py` | Builds a Pydantic model at runtime from user-supplied fields. No hardcoded field names. |
+| `src/api/document_processor.py` | Opens PDF, renders pages at 200 DPI, packages page dicts for Layer 1+2. |
+
+---
+
+## PostgreSQL
+
+### Table: `extraction_runs`
+
+One row per extraction request.
+
+| Column | What it stores |
+|---|---|
+| `id` | Auto-generated ID |
+| `doc_id` | PDF filename |
+| `page_count` | Total pages |
+| `schema_name` | Field keys used (comma-joined) |
+| `result_json` | Extracted field values (JSONB) |
+| `page_details` | Per-page engine, confidence, escalated, capabilities (JSONB) |
+| `llm_provider` | `"sarvam"` or `"ollama"` |
+| `model_name` | `"sarvam-105b"` or `"qwen2.5:7b"` |
+| `processing_time_seconds` | Wall-clock time |
+| `created_at` | Timestamp |
+
+**`page_details` shape:**
+```json
+{
+  "1":  {"engines_used": ["paddleocr_printed"], "confidence": 0.99, "escalated": false, "low_confidence": false, "capabilities": ["has_digital_text"]},
+  "17": {"engines_used": ["paddleocr_printed"], "confidence": 0.99, "escalated": false, "low_confidence": false, "capabilities": ["has_digital_text"]}
+}
+```
+
+Null for fixture runs (no real `PageOutput` objects).
+
+---
+
+## Dev & Test Tools
+
+### `run_extraction.py` — Dev runner (no PDF needed)
+
+```bash
+python run_extraction.py                                        
+```
+
+Reads `tests/fixtures/<doc>.md` + `tests/schemas/<schema>.json`. Runs Layer 3 only. Saves result to DB.
+
+### `generate_fixture.py` — Generate fixture from real PDF
+
+```bash
+python generate_fixture.py --pdf tests/fixtures/my_doc.pdf
+# → saves tests/fixtures/my_doc_output.md
+```
+
+Runs the PDF through the full Layer 1+2 pipeline and saves the Markdown output as a fixture file. Run once, then use `run_extraction.py` for all subsequent testing.
+
+### `tests/fixtures/`
+
+Saved Layer 2 outputs in `.md` format. Each page has a comment header:
+```
+<!-- Page 1 | engines=paddleocr_printed | confidence=0.9911 | escalated=false | ... -->
+```
+
+### `tests/schemas/`
+
+JSON schema files — list of `{name, description}` objects. Swap files to test different extraction tasks with no code changes.
+
+---
+
+## Configuration
+
+All settings use `IDP_` prefix in `.env`:
+
+```env
+# Layer 3 extraction LLM
+IDP_EXTRACTION_BACKEND=sarvam       # "sarvam" or "ollama"
+IDP_SARVAM_API_KEY=sk_...
+IDP_SARVAM_MODEL_NAME=sarvam-105b
+IDP_SARVAM_BASE_URL=https://api.sarvam.ai/v1
+IDP_EXTRACTION_MODEL_NAME=qwen2.5:7b   # Ollama fallback
+
+# Layer 1+2 VLM
+IDP_LLM_PROVIDER=ollama
+IDP_VLM_MODEL_NAME=qwen2-vl:2b
 
 # Database
-IDP_DATABASE_URL=postgresql://postgres:PASSWORD@localhost:5432/idp
-
-# Ollama (if using local backend)
-IDP_OLLAMA_BASE_URL=http://localhost:11434/v1
+IDP_DATABASE_URL=postgresql://postgres:password@localhost:5432/idp
 ```
 
-Reuses `IDP_OLLAMA_BASE_URL`, already defined for Layer 1/2's vision
-client — same local Ollama instance, different models pulled per
-request depending on the call.
- 
-## Running it (fixture-based, tested 2026-08-25)
- 
-```bash
-# Pull Ollama models if using local backend
-ollama pull qwen2.5:7b
-ollama pull qwen2.5:3b-instruct
+---
 
-# Install dependencies
-pip install -r requirements.txt --break-system-packages
- 
-cd backend
-python run_extraction.py
-```
-
-**Recent fixes (2026-08-25):**
-- ✅ Removed Groq configuration (unused, was causing Pydantic validation errors)
-- ✅ Added `extraction_backend` field to Settings (supports "ollama" or "sarvam")
-- ✅ Updated all dependencies in requirements.txt (Pydantic v2, SQLAlchemy, psycopg2, etc.)
-- ✅ **Tested with Sarvam backend** — extracts document fields and saves to PostgreSQL
-- ✅ Database storage working (DocumentExtraction schema saves successfully)
-
-`run_extraction.py` currently points at a hardcoded fixture via
-`load_pages_from_fixture("sdg_goals_output")` — swap the argument to
-target `camscanner_output` or any other saved fixture, or extend the
-script into a real CLI once live Layer 2 wiring is in place.
- 
-## What to change for a new document type
- 
-Only `backend/src/ai/schemas/extraction_schema.py` needs editing —
-define the fields you want as a `pydantic.BaseModel` (nested models and
-lists are supported), then pass it into `route_and_extract(...)`
-instead of the current schema. Nothing else in `layer3_extraction/`
-needs to change; the router and both strategies are generic over
-`schema: type[BaseModel]` throughout.

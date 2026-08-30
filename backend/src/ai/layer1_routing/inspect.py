@@ -4,7 +4,7 @@ Purpose: Layer 1 Step A — programmatic page inspection (PyMuPDF, no GPU, ~10ms
 Owner: engineer-a@idp-pilot
 Created: 2026-08-19 | Deps: pymupdf (fitz)
 """
-
+import unicodedata
 from typing import Any
 
 from src.ai.schemas.page import PageProfile
@@ -90,8 +90,7 @@ def inspect_page(page: Any, page_number: int) -> PageProfile:
     has_vector_drawings = len(page.get_drawings()) > 0
     primary_script = detect_unicode_script(words)
     is_scanned = (
-        char_count < settings.scanned_char_count_threshold
-        and image_coverage > settings.scanned_image_coverage_threshold
+        char_count < settings.scanned_char_count_threshold and image_coverage > settings.scanned_image_coverage_threshold
     )
 
     complexity_score = _compute_complexity_score(

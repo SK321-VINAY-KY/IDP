@@ -24,7 +24,7 @@ from src.ai.layer3_extraction.extractor import extract_by_page_scan
 from src.ai.layer3_extraction.schema_validation import extract_with_retry
 from src.api.dynamic_schema import SchemaFieldIn, build_dynamic_schema
 from src.adapters.llm.extraction_factory import get_extraction_client
-from src.ai.layer3_extraction.storage import init_db, save_processing_result
+from src.ai.layer3_extraction.storage import init_db, save_extraction_run
 from src.config.settings import settings
 
 SCHEMAS_DIR = Path("tests/schemas")
@@ -67,25 +67,15 @@ def main():
     )
     elapsed = round(time.time() - start, 2)
 
-    result_id = save_processing_result(
+    result_id = save_extraction_run(
         doc_id=args.doc,
         page_count=len(pages),
-        routes_used=None,
-        engines_used=None,
-        primary_scripts=None,
-        avg_confidence=None,
-        min_confidence=None,
-        low_confidence_page_count=None,
-        escalated_page_count=None,
-        total_escalation_attempts=None,
-        max_complexity_score=None,
-        has_images=None,
         schema_name=args.schema,
         result_json=result.model_dump(),
         llm_provider=settings.extraction_backend,
         model_name=settings.extraction_model_name if settings.extraction_backend == "ollama" else settings.sarvam_model_name,
-        strategy_used="page_scan",
         processing_time_seconds=elapsed,
+        page_outputs=None,   # fixture run — no real PageOutput objects
     )
     print(f"\nSaved to database, row id={result_id}, took {elapsed}s")
     print(result.model_dump_json(indent=2))

@@ -5,7 +5,6 @@ Purpose: Local Ollama implementation of LLMClient (Qwen2-VL-2B), OpenAI-compatib
 Owner: engineer-a@idp-pilot
 Created: 2026-08-19 | Deps: instructor, openai, tenacity
 """
-
 import base64
 
 import instructor
@@ -29,18 +28,13 @@ Respond only with the structured fields requested."""
 class OllamaClient(LLMClient):
     def __init__(self) -> None:
         self._client = instructor.from_openai(
-            OpenAI(
-                base_url=settings.ollama_base_url,
-                api_key="ollama",  # pragma: allowlist secret
-            ),  # Ollama ignores the key — not a real credential
+            OpenAI(base_url=settings.ollama_base_url, api_key="ollama"),  # Ollama ignores the key
             mode=instructor.Mode.JSON,
         )
         self._model = settings.vlm_model_name
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=4))
-    def classify_page(
-        self, image_bytes: bytes, page_profile_hint: dict
-    ) -> PageClassification:
+    def classify_page(self, image_bytes: bytes, page_profile_hint: dict) -> PageClassification:
         b64_image = base64.b64encode(image_bytes).decode("utf-8")
         try:
             result = self._client.chat.completions.create(
@@ -50,33 +44,16 @@ class OllamaClient(LLMClient):
                     {
                         "role": "user",
                         "content": [
-                            {
-                                "type": "text",
-                                "text": _CLASSIFY_PROMPT
-                                + f"\nHints: {page_profile_hint}",
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{b64_image}"
-                                },
-                            },
+                            {"type": "text", "text": _CLASSIFY_PROMPT + f"\nHints: {page_profile_hint}"},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_image}"}},
                         ],
                     }
                 ],
             )
-            logger.info(
-                "vlm.classify_page.success",
-                route=result.route,
-                confidence=result.confidence,
-            )
+            logger.info("vlm.classify_page.success", route=result.route, confidence=result.confidence)
             return result
         except Exception as exc:
-            logger.error(
-                "vlm.classify_page.failed",
-                error=str(exc),
-                error_type=type(exc).__name__,
-            )
+            logger.error("vlm.classify_page.failed", error=str(exc), error_type=type(exc).__name__)
             raise
 
     def transcribe_handwriting(self, image_bytes: bytes) -> tuple[str, float]:
@@ -91,14 +68,8 @@ class OllamaClient(LLMClient):
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": "Transcribe all handwritten and printed text on this page, preserving structure as markdown.",
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{b64_image}"},
-                        },
+                        {"type": "text", "text": "Transcribe all handwritten and printed text on this page, preserving structure as markdown."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_image}"}},
                     ],
                 }
             ],
