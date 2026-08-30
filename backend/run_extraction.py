@@ -1,47 +1,95 @@
+﻿"""
+run_extraction.py — generic dev/test runner for Layer 3.
+
+Usage:
+    python run_extraction.py
+    python run_extraction.py --doc sdg_goals_output --schema sdg_goals_schema
+    python run_extraction.py --doc my_invoice --schema invoice_schema
+
+Arguments:
+    --doc     Name of the fixture file (without .md) in tests/fixtures/
+              Default: sdg_goals_output
+    --schema  Name of the schema file (without .json) in tests/schemas/
+              Default: sdg_goals_schema
+
+The schema JSON must be a list of {"name": "...", "description": "..."} objects.
+"""
+import argparse
+import json
 import time
+from pathlib import Path
+
 from src.ai.layer3_extraction.page_loader import load_pages_from_fixture
-from src.ai.layer3_extraction.router import route_and_extract
+from src.ai.layer3_extraction.extractor import extract_by_page_scan
 from src.ai.layer3_extraction.schema_validation import extract_with_retry
+from src.api.dynamic_schema import SchemaFieldIn, build_dynamic_schema
 from src.adapters.llm.extraction_factory import get_extraction_client
-from src.ai.schemas.extraction_schema import DocumentExtraction
 from src.ai.layer3_extraction.storage import init_db, save_processing_result
 from src.config.settings import settings
 
-init_db()
+SCHEMAS_DIR = Path("tests/schemas")
 
-pages = load_pages_from_fixture("sdg_goals_output")
-print(f"Loaded {len(pages)} pages")
+def load_schema(schema_name: str):
+    schema_path = SCHEMAS_DIR / f"{schema_name}.json"
+    if not schema_path.exists():
+        raise FileNotFoundError(f"Schema file not found: {schema_path}")
+    with open(schema_path, encoding="utf-8") as f:
+        raw = json.load(f)
+    fields = [SchemaFieldIn(**item) for item in raw]
+    return build_dynamic_schema(fields)
 
-llm = get_extraction_client()
 
-start = time.time()
-result = extract_with_retry(
-    lambda: route_and_extract(pages, DocumentExtraction, llm),
-    DocumentExtraction,
-)
-elapsed = round(time.time() - start, 2)
+def main():
+    parser = argparse.ArgumentParser(description="Run Layer 3 extraction from fixture + schema files")
+    parser.add_argument("--doc",    default="sdg_goals_output", help="Fixture doc name (no .md)")
+    parser.add_argument("--schema", default="schema", help="Schema file name (no .json)")
+    args = parser.parse_args()
 
-# Placeholder values below (None) until real Layer 1/2 PageOutput data is wired in —
-# these columns exist and are ready, just unpopulated when testing from fixtures.
-result_id = save_processing_result(
-    doc_id="sdg_goals_output",
-    page_count=len(pages),
-    routes_used=None,
-    engines_used=None,
-    primary_scripts=None,
-    avg_confidence=None,
-    min_confidence=None,
-    low_confidence_page_count=None,
-    escalated_page_count=None,
-    total_escalation_attempts=None,
-    max_complexity_score=None,
-    has_images=None,
-    schema_name="DocumentExtraction",
-    result_json=result.model_dump(),
-    llm_provider=settings.extraction_backend,
-    model_name=settings.extraction_model_name if settings.extraction_backend == "ollama" else settings.sarvam_model_name,
-    strategy_used="B_pageindex" if len(pages) >= settings.short_doc_page_limit else "A_short",
-    processing_time_seconds=elapsed,
-)
-print(f"Saved to database, row id={result_id}, took {elapsed}s")
-print(result.model_dump_json(indent=2))
+    print(f"Doc   : tests/fixtures/{args.doc}.md")
+    print(f"Schema: tests/schemas/{args.schema}.json")
+
+    init_db()
+
+    # Load pages from fixture
+    pages = load_pages_from_fixture(args.doc)
+    print(f"Loaded {len(pages)} pages")
+
+    # Load schema from JSON file
+    schema = load_schema(args.schema)
+    print(f"Schema fields: {list(schema.model_fields.keys())}")
+
+    llm = get_extraction_client()
+
+    start = time.time()
+    result = extract_with_retry(
+        lambda: extract_by_page_scan(pages, schema, llm),
+        schema,
+    )
+    elapsed = round(time.time() - start, 2)
+
+    result_id = save_processing_result(
+        doc_id=args.doc,
+        page_count=len(pages),
+        routes_used=None,
+        engines_used=None,
+        primary_scripts=None,
+        avg_confidence=None,
+        min_confidence=None,
+        low_confidence_page_count=None,
+        escalated_page_count=None,
+        total_escalation_attempts=None,
+        max_complexity_score=None,
+        has_images=None,
+        schema_name=args.schema,
+        result_json=result.model_dump(),
+        llm_provider=settings.extraction_backend,
+        model_name=settings.extraction_model_name if settings.extraction_backend == "ollama" else settings.sarvam_model_name,
+        strategy_used="page_scan",
+        processing_time_seconds=elapsed,
+    )
+    print(f"\nSaved to database, row id={result_id}, took {elapsed}s")
+    print(result.model_dump_json(indent=2))
+
+
+if __name__ == "__main__":
+    main()

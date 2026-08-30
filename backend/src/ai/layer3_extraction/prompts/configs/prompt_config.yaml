@@ -3,12 +3,7 @@ extraction:
   temperature: 0.0
   max_tokens: 2000
 
-page_summary:
-  template: page_summary.j2
+page_field_check:
+  template: page_field_check.j2
   temperature: 0.0
-  max_tokens: 60
-
-navigation:
-  template: navigation.j2
-  temperature: 0.0
-  max_tokens: 400
+  max_tokens: 1000

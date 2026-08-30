@@ -19,8 +19,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.adapters.llm.extraction_factory import get_extraction_client
 from src.adapters.llm.ollama_client import OllamaClient
 from src.ai.layer1_routing.pipeline import process_document
-from src.ai.layer3_extraction.page_loader import load_pages_from_outputs
-from src.ai.layer3_extraction.router import route_and_extract
+from src.ai.layer3_extraction.extractor import extract_by_page_scan
+from src.ai.layer3_extraction.page_loader import load_pages_with_confidence
 from src.ai.layer3_extraction.schema_validation import extract_with_retry
 from src.ai.layer3_extraction.storage import init_db, save_processing_result
 from src.api.dynamic_schema import SchemaFieldIn, build_dynamic_schema
@@ -81,11 +81,11 @@ async def extract(file: UploadFile = File(...), target_schema: str = Form(...)) 
 
         start = time.time()
         page_outputs = _run_layer1_2(pdf_path)
-        pages_md = load_pages_from_outputs(page_outputs)
+        pages_md = load_pages_with_confidence(page_outputs)
 
         extraction_llm = get_extraction_client()
         result = extract_with_retry(
-            lambda: route_and_extract(pages_md, dynamic_schema, extraction_llm),
+            lambda: extract_by_page_scan(pages_md, dynamic_schema, extraction_llm),
             dynamic_schema,
         )
         elapsed = round(time.time() - start, 2)
@@ -98,9 +98,7 @@ async def extract(file: UploadFile = File(...), target_schema: str = Form(...)) 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    strategy_used = (
-        "A_short" if len(pages_md) < settings.short_doc_page_limit else "B_pageindex"
-    )
+    strategy_used = "page_scan"
     schema_name = ",".join(sorted(dynamic_schema.model_fields.keys()))[:250]
 
     db_result_id, db_error = _save_to_db(
