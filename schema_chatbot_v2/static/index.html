@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>IDP — Extraction Pipeline Console</title>
-    <link rel="stylesheet" href="style.css?v=2">
+    <link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
     <header class="app-header">
@@ -108,7 +108,8 @@
                     <div class="card">
                         <div class="card-header">
                             <h2>Current Schema</h2>
-                            <div>
+                            <div class="card-actions">
+                                <button class="btn btn-outline btn-sm" id="addSchemaFieldBtn" disabled>+ Add Field</button>
                                 <button class="btn btn-ghost btn-sm" id="copySchemaBtn" disabled>Copy</button>
                                 <button class="btn btn-ghost btn-sm" id="printSchemaBtn" disabled>/schema</button>
                             </div>
@@ -207,6 +208,6 @@
         </section>
     </main>
 
-    <script src="app.js?v=2"></script>
+    <script src="app.js?v=3"></script>
 </body>
 </html>

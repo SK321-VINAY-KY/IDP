@@ -215,53 +215,252 @@
         b.textContent = s.toLowerCase() + (s2 ? '  ' + s2 : '');
     }
 
-    function renderSchemaPanel() {
+    let schemaSyncTimer = null;
+
+    function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function collectSchemaFromInputs() {
+        if (!state.currentSchema) {
+            state.currentSchema = { document_type: '', fields: [] };
+        }
+        const docTypeInput = $('editDocType');
+        if (docTypeInput) {
+            state.currentSchema.document_type = docTypeInput.value.trim().toLowerCase().replace(/\s+/g, '_');
+        }
+
+        const rows = document.querySelectorAll('#schemaPanel table.schema-table tbody tr');
+        const fields = [];
+        rows.forEach(tr => {
+            const nameInput = tr.querySelector('.field-name-input');
+            const typeSelect = tr.querySelector('.field-type-select');
+            const reqBtn = tr.querySelector('.req-toggle');
+            const descInput = tr.querySelector('.field-desc-input');
+
+            const name = nameInput ? nameInput.value.trim().toLowerCase().replace(/[\s-]+/g, '_') : '';
+            if (!name) return;
+
+            let rawType = typeSelect ? typeSelect.value : 'string';
+            let itemType = null;
+            if (rawType.startsWith('array[')) {
+                itemType = rawType.substring(6, rawType.length - 1);
+                rawType = 'array';
+            }
+
+            fields.push({
+                name: name,
+                type: rawType,
+                item_type: itemType,
+                required: reqBtn ? reqBtn.classList.contains('is-req') : true,
+                description: descInput ? descInput.value.trim() : ''
+            });
+        });
+
+        state.currentSchema.fields = fields;
+        const jsonView = $('schemaJsonView');
+        if (jsonView) {
+            jsonView.textContent = JSON.stringify(state.currentSchema, null, 2);
+        }
+        return state.currentSchema;
+    }
+
+    function validateAndRefreshUI() {
         const schema = state.currentSchema;
-        const panel = $('schemaPanel');
         const errs = $('schemaErrors');
         if (!schema) {
-            panel.innerHTML = '<p class="muted">No schema yet. Start a session or upload samples.</p>';
             errs.classList.add('hidden');
-            $('copySchemaBtn').disabled = true;
-            $('printSchemaBtn').disabled = true;
             $('confirmBtn').disabled = true;
             return;
         }
-        $('copySchemaBtn').disabled = false;
-        $('printSchemaBtn').disabled = false;
 
-        const parts = [];
-        const docType = schema.document_type || '(not set)';
-        parts.push(`<div class="doc-type-row"><span>Document type</span><strong>${docType}</strong></div>`);
+        const errors = [];
+        if (!schema.document_type) errors.push('document_type is not set');
+        if (!schema.fields || !schema.fields.length) errors.push('schema has no fields');
+        const seen = new Set();
+        (schema.fields || []).forEach(f => {
+            if (!f.name) errors.push('field name cannot be blank');
+            else if (seen.has(f.name)) errors.push(`duplicate field name: ${f.name}`);
+            seen.add(f.name);
+            if (f.type === 'array' && !f.item_type) errors.push(`field '${f.name}' is an array but has no item_type`);
+        });
 
-        const fields = schema.fields || [];
-        if (!fields.length) {
-            parts.push('<p class="muted small">No fields yet.</p>');
-        } else {
-            parts.push('<table class="field-table"><thead><tr><th>Field</th><th>Type</th><th>Req</th><th>Description</th></tr></thead><tbody>');
-            fields.forEach(f => {
-                parts.push(`<tr>
-                    <td class="field-name">${f.name}</td>
-                    <td class="field-type">${f.type || '--'}${f.item_type ? '[' + f.item_type + ']' : ''}</td>
-                    <td class="${f.required ? 'req-yes' : 'req-no'}">${f.required ? 'YES' : 'no'}</td>
-                    <td class="muted small">${f.description || ''}</td>
-                </tr>`);
-            });
-            parts.push('</tbody></table>');
-        }
-
-        parts.push('<details style="margin-top:10px"><summary class="muted small">Full JSON</summary><pre>' + JSON.stringify(schema, null, 2) + '</pre></details>');
-        panel.innerHTML = parts.join('');
-
-        if (state.currentErrors && state.currentErrors.length) {
-            errs.innerHTML = '<strong> Schema issues:</strong><ul>' + state.currentErrors.map(e => '<li>' + e + '</li>').join('') + '</ul>';
+        state.currentErrors = errors;
+        if (errors.length) {
+            errs.innerHTML = '<strong>⚠️ Schema issues:</strong><ul>' + errors.map(e => '<li>' + escapeHtml(e) + '</li>').join('') + '</ul>';
             errs.classList.remove('hidden');
         } else {
             errs.classList.add('hidden');
         }
 
-        const canConfirm = state.currentState === 'REVIEW' && !state.currentErrors.length && fields.length > 0 && !!schema.document_type;
+        const canConfirm = (state.currentState === 'REVIEW' || state.currentState === 'START') && !errors.length && (schema.fields || []).length > 0 && !!schema.document_type;
         $('confirmBtn').disabled = state.completed || !canConfirm;
+    }
+
+    async function syncSchemaToServer() {
+        if (!state.sessionId || state.completed) return;
+        const syncStatus = $('schemaSyncStatus');
+        if (syncStatus) syncStatus.textContent = '⏳ Saving...';
+        try {
+            const data = await api('/session/' + state.sessionId + '/schema', {
+                method: 'POST',
+                json: {
+                    document_type: state.currentSchema.document_type,
+                    fields: state.currentSchema.fields
+                }
+            });
+            state.currentState = data.state;
+            state.currentErrors = data.errors || [];
+            validateAndRefreshUI();
+            if (syncStatus) syncStatus.textContent = '✓ Saved';
+            setTimeout(() => { if (syncStatus) syncStatus.textContent = '✓ Interactive Editor'; }, 1500);
+        } catch (e) {
+            if (syncStatus) syncStatus.textContent = '⚠️ Sync error';
+        }
+    }
+
+    function scheduleSchemaSync() {
+        collectSchemaFromInputs();
+        validateAndRefreshUI();
+        clearTimeout(schemaSyncTimer);
+        schemaSyncTimer = setTimeout(syncSchemaToServer, 500);
+    }
+
+    function addNewSchemaField() {
+        if (!state.currentSchema) {
+            state.currentSchema = { document_type: 'document', fields: [] };
+        }
+        const count = (state.currentSchema.fields || []).length + 1;
+        state.currentSchema.fields.push({
+            name: 'field_' + count,
+            type: 'string',
+            required: true,
+            description: ''
+        });
+        renderSchemaPanel();
+        scheduleSchemaSync();
+        setTimeout(() => {
+            const inputs = document.querySelectorAll('.field-name-input');
+            if (inputs.length) {
+                inputs[inputs.length - 1].focus();
+                inputs[inputs.length - 1].select();
+            }
+        }, 50);
+    }
+
+    function renderSchemaPanel() {
+        const schema = state.currentSchema;
+        const panel = $('schemaPanel');
+        const errs = $('schemaErrors');
+        const addBtn = $('addSchemaFieldBtn');
+
+        if (!schema) {
+            panel.innerHTML = '<p class="muted">No schema yet. Start a session, upload samples, or click "+ Add Field".</p>';
+            errs.classList.add('hidden');
+            $('copySchemaBtn').disabled = true;
+            $('printSchemaBtn').disabled = true;
+            $('confirmBtn').disabled = true;
+            if (addBtn) addBtn.disabled = !state.sessionId;
+            return;
+        }
+
+        $('copySchemaBtn').disabled = false;
+        $('printSchemaBtn').disabled = false;
+        if (addBtn) addBtn.disabled = state.completed;
+
+        const docType = schema.document_type || '';
+        const fields = schema.fields || [];
+
+        const typeOptions = [
+            'string',
+            'number',
+            'integer',
+            'boolean',
+            'date',
+            'array[string]',
+            'array[object]',
+            'object'
+        ];
+
+        let html = `
+            <div class="doc-type-edit-row">
+                <label for="editDocType">Document Type:</label>
+                <input id="editDocType" class="doc-type-input" type="text" value="${escapeHtml(docType)}" placeholder="e.g. resume, invoice, insurance_claim" ${state.completed ? 'disabled' : ''}>
+            </div>
+        `;
+
+        if (!fields.length) {
+            html += `
+                <div style="padding: 16px; text-align: center;">
+                    <p class="muted small">No fields defined yet.</p>
+                    <button type="button" class="btn btn-outline btn-sm" id="addFieldInlineBtn" ${state.completed ? 'disabled' : ''}>➕ Add First Field</button>
+                </div>
+            `;
+        } else {
+            html += `
+                <table class="schema-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 28%;">Field Name</th>
+                            <th style="width: 26%;">Type</th>
+                            <th style="width: 14%; text-align: center;">Req</th>
+                            <th style="width: 26%;">Description</th>
+                            <th style="width: 6%; text-align: center;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            fields.forEach((f, idx) => {
+                const curType = f.type === 'array' ? (f.item_type ? `array[${f.item_type}]` : 'array[string]') : (f.type || 'string');
+                const isReq = !!f.required;
+                const opts = typeOptions.map(t => `<option value="${t}" ${t === curType ? 'selected' : ''}>${t}</option>`).join('');
+
+                html += `
+                    <tr data-idx="${idx}">
+                        <td>
+                            <input type="text" class="schema-input field-name-input" data-field="name" value="${escapeHtml(f.name || '')}" placeholder="field_name" ${state.completed ? 'disabled' : ''}>
+                        </td>
+                        <td>
+                            <select class="schema-select field-type-select" data-field="type" ${state.completed ? 'disabled' : ''}>
+                                ${opts}
+                            </select>
+                        </td>
+                        <td style="text-align: center;">
+                            <button type="button" class="req-toggle ${isReq ? 'is-req' : 'is-opt'}" data-idx="${idx}" ${state.completed ? 'disabled' : ''}>
+                                ${isReq ? 'YES' : 'NO'}
+                            </button>
+                        </td>
+                        <td>
+                            <input type="text" class="schema-input field-desc-input" data-field="description" value="${escapeHtml(f.description || '')}" placeholder="Description..." ${state.completed ? 'disabled' : ''}>
+                        </td>
+                        <td style="text-align: center;">
+                            <button type="button" class="btn-del-field" data-idx="${idx}" title="Delete field" ${state.completed ? 'disabled' : ''}>✕</button>
+                        </td>
+                    </tr>
+                `;
+            });
+
+            html += `
+                    </tbody>
+                </table>
+                <div class="schema-bottom-actions">
+                    <button type="button" class="btn btn-ghost btn-sm" id="addFieldInlineBtn" ${state.completed ? 'disabled' : ''}>➕ Add Field</button>
+                    <span id="schemaSyncStatus" class="sync-badge">✓ Interactive Editor</span>
+                </div>
+            `;
+        }
+
+        html += `<details style="margin-top:12px"><summary class="muted small" style="cursor:pointer">View Full JSON Schema</summary><pre id="schemaJsonView">${escapeHtml(JSON.stringify(schema, null, 2))}</pre></details>`;
+        panel.innerHTML = html;
+
+        validateAndRefreshUI();
     }
 
     function handleChatResponse(data) {
@@ -400,6 +599,50 @@
         if (!state.sessionId || state.completed) return;
         $('chatInput').value = '/confirm';
         sendChat();
+    });
+
+    const addSchemaFieldHeaderBtn = $('addSchemaFieldBtn');
+    if (addSchemaFieldHeaderBtn) {
+        addSchemaFieldHeaderBtn.addEventListener('click', addNewSchemaField);
+    }
+
+    $('schemaPanel').addEventListener('input', (e) => {
+        if (e.target.matches('#editDocType, .field-name-input, .field-desc-input')) {
+            scheduleSchemaSync();
+        }
+    });
+
+    $('schemaPanel').addEventListener('change', (e) => {
+        if (e.target.matches('.field-type-select')) {
+            scheduleSchemaSync();
+        }
+    });
+
+    $('schemaPanel').addEventListener('click', (e) => {
+        const toggleBtn = e.target.closest('.req-toggle');
+        if (toggleBtn) {
+            const isReq = toggleBtn.classList.contains('is-req');
+            toggleBtn.classList.toggle('is-req', !isReq);
+            toggleBtn.classList.toggle('is-opt', isReq);
+            toggleBtn.textContent = !isReq ? 'YES' : 'NO';
+            scheduleSchemaSync();
+            return;
+        }
+
+        const delBtn = e.target.closest('.btn-del-field');
+        if (delBtn) {
+            const idx = parseInt(delBtn.getAttribute('data-idx'), 10);
+            if (!isNaN(idx) && state.currentSchema && state.currentSchema.fields) {
+                state.currentSchema.fields.splice(idx, 1);
+                renderSchemaPanel();
+                scheduleSchemaSync();
+            }
+            return;
+        }
+
+        if (e.target.matches('#addFieldInlineBtn')) {
+            addNewSchemaField();
+        }
     });
 
     // Sample inference upload

@@ -402,14 +402,14 @@ h2 { font-size: 16px; }
     opacity: 0.5;
 }
 
-/* ========================= Schema Panel ========================= */
+/* ========================= Schema Panel & Editor ========================= */
 
 #schemaPanel {
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    padding: 14px;
-    max-height: 320px;
+    padding: 12px;
+    max-height: 420px;
     overflow-y: auto;
 }
 
@@ -419,6 +419,185 @@ h2 { font-size: 16px; }
     font-size: 12px;
     line-height: 1.5;
     color: #e2e8f0;
+}
+
+.doc-type-edit-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: rgba(59, 130, 246, 0.1);
+    border: 1px solid rgba(59, 130, 246, 0.25);
+    border-radius: var(--radius-sm);
+    margin-bottom: 10px;
+    font-size: 12.5px;
+}
+
+.doc-type-edit-row label {
+    font-weight: 600;
+    color: var(--fg);
+    white-space: nowrap;
+}
+
+.doc-type-input {
+    flex: 1;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: #93c5fd;
+    font-weight: 600;
+    padding: 4px 8px;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+}
+
+.doc-type-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.schema-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.schema-table th {
+    color: var(--fg-muted);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+}
+
+.schema-table td {
+    padding: 5px 6px;
+    border-bottom: 1px solid rgba(71, 85, 105, 0.4);
+    vertical-align: middle;
+}
+
+.schema-input {
+    width: 100%;
+    background: var(--bg-2);
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--fg);
+    padding: 5px 7px;
+    font-size: 12px;
+    font-family: inherit;
+    box-sizing: border-box;
+    transition: all 0.15s ease;
+}
+
+.schema-input:hover {
+    border-color: var(--border);
+}
+
+.schema-input:focus {
+    background: var(--bg-3);
+    border-color: var(--accent);
+    outline: none;
+}
+
+.schema-input.field-name-input {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    color: #93c5fd;
+    font-weight: 500;
+}
+
+.schema-select {
+    width: 100%;
+    background: var(--bg-2);
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: #fcd34d;
+    padding: 5px 6px;
+    font-size: 11.5px;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.schema-select:hover {
+    border-color: var(--border);
+}
+
+.schema-select:focus {
+    background: var(--bg-3);
+    border-color: var(--accent);
+    outline: none;
+}
+
+.req-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: all 0.15s;
+    font-family: inherit;
+}
+
+.req-toggle.is-req {
+    background: rgba(16, 185, 129, 0.2);
+    color: #6ee7b7;
+    border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.req-toggle.is-req:hover {
+    background: rgba(16, 185, 129, 0.3);
+}
+
+.req-toggle.is-opt {
+    background: rgba(148, 163, 184, 0.15);
+    color: var(--fg-muted);
+    border: 1px solid rgba(148, 163, 184, 0.3);
+}
+
+.req-toggle.is-opt:hover {
+    background: rgba(148, 163, 184, 0.25);
+    color: var(--fg);
+}
+
+.btn-del-field {
+    background: transparent;
+    border: none;
+    color: var(--fg-muted);
+    cursor: pointer;
+    font-size: 13px;
+    padding: 4px 6px;
+    border-radius: var(--radius-sm);
+    transition: all 0.15s;
+}
+
+.btn-del-field:hover {
+    background: rgba(239, 68, 68, 0.15);
+    color: #fca5a5;
+}
+
+.schema-bottom-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(71, 85, 105, 0.4);
+}
+
+.sync-badge {
+    font-size: 11px;
+    color: var(--fg-muted);
+    display: flex;
+    align-items: center;
+    gap: 4px;
 }
 
 .doc-type-row {
