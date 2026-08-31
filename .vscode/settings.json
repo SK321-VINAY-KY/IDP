@@ -1,0 +1,16 @@
+{
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/src",
+        "${workspaceFolder}/schema_chatbot_v2"
+    ],
+    "python.autoComplete.extraPaths": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/src",
+        "${workspaceFolder}/schema_chatbot_v2"
+    ],
+    "python.analysis.ignore": [
+        "*_pyrefly_virtual_*",
+        "**/_pyrefly_virtual_/**"
+    ]
+}

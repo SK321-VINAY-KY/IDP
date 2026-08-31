@@ -5,11 +5,19 @@ Owner: engineer-a@idp-pilot
 Created: 2026-08-19 | Updated: 2026-08-20 (Stage 1 capability-based routing thresholds)
 Deps: pydantic-settings
 """
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_ROOT_DIR = Path(__file__).resolve().parents[2]
+_ROOT_ENV = _ROOT_DIR / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="IDP_", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=[_ROOT_ENV, ".env"],
+        env_prefix="IDP_",
+        extra="ignore",
+    )
 
     # --- LLM / VLM (provider selection) ---
     # Set `llm_provider` to the concrete provider you want to use.

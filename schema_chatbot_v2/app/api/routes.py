@@ -67,7 +67,15 @@ async def infer_schema(
     for f in files:
         if not (f.filename or "").lower().endswith(".pdf") and f.content_type != "application/pdf":
             raise HTTPException(status_code=400, detail=f"'{f.filename}' doesn't look like a PDF")
-        samples.append(await f.read())
+        content = await f.read()
+        samples.append(content)
+
+        # Store input sample document in PostgreSQL
+        try:
+            from src.ai.layer3_extraction.storage import save_document
+            save_document(filename=f.filename or f"sample_{len(samples)}.pdf", file_bytes=content, content_type=f.content_type or "application/pdf")
+        except Exception:
+            pass
 
     from starlette.concurrency import run_in_threadpool
 

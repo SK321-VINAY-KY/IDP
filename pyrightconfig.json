@@ -1,0 +1,13 @@
+{
+  "extraPaths": [
+    ".",
+    "src",
+    "schema_chatbot_v2"
+  ],
+  "exclude": [
+    "**/_pyrefly_virtual_/**",
+    "**/node_modules/**",
+    "**/.venv/**"
+  ]
+}
+

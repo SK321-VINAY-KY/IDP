@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pymupdf
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -79,7 +79,8 @@ def _render_page(page: Any) -> Tuple[np.ndarray, bytes]:
 def _build_pages_for_pdf(pdf_path: Path) -> List[Dict[str, Any]]:
     doc = pymupdf.open(pdf_path)
     pages = []
-    for i, page in enumerate(doc):
+    for i in range(len(doc)):
+        page = doc[i]
         arr, png = _render_page(page)
         pages.append({
             "page": page,
@@ -143,6 +144,13 @@ async def upload_documents(files: List[UploadFile] = File(...)) -> Dict[str, Any
         target = DATASET_DIR / Path(f.filename or f"doc_{uuid.uuid4().hex[:8]}.pdf").name
         target.write_bytes(content)
         saved.append(target.name)
+
+        # Persist uploaded document into PostgreSQL documents table
+        try:
+            from src.ai.layer3_extraction.storage import save_document
+            save_document(filename=target.name, file_bytes=content, content_type=f.content_type or "application/pdf")
+        except Exception:
+            pass
     return {"saved": saved, "count": len(saved)}
 
 
@@ -265,6 +273,43 @@ def kill_pipeline_job(job_id: str) -> Dict[str, Any]:
     return {"job_id": job_id, "status": "killed", "message": f"Job {job_id} killed."}
 
 
+@router.get("/pipeline/jobs/{job_id}/pdf")
+def download_job_pdf_report(job_id: str):
+    """
+    Download the generated PDF report for a job directly from PostgreSQL.
+    If not yet stored in PostgreSQL, generate it now, save it, and stream it.
+    """
+    from src.ai.layer3_extraction.storage import get_job_pdf, save_job_pdf
+    from src.utils.job_pdf_report import generate_job_pdf
+
+    res = get_job_pdf(job_id)
+    if res:
+        pdf_bytes, filename = res
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    # If not stored yet in PostgreSQL, check if the job is in memory
+    if job_id not in _pipeline_jobs:
+        raise HTTPException(status_code=404, detail="Job report not found in database or memory")
+
+    job = _pipeline_jobs[job_id]
+    try:
+        pdf_bytes = generate_job_pdf(job)
+        filename = f"{job_id}_report.pdf"
+        save_job_pdf(job_id, pdf_bytes, filename)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as exc:
+        logger.error("pipeline.job_pdf_generation_failed", job_id=job_id, error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {exc}")
+
+
 @router.post("/pipeline/run")
 async def run_pipeline(
     schema_id: str = Form(...),
@@ -378,28 +423,45 @@ def _run_pipeline_job(
 
             md_path = OUTPUT_DIR / f"{pdf.stem}.md"
             ref_path = OUTPUT_DIR / f"{pdf.stem}.schema_ref.json"
+            ref_dict = {
+                "source_pdf": pdf.name,
+                "output_md": md_path.name,
+                "schema_id": schema_id,
+                "schema_registry_file": schema_path.name,
+                "document_type": schema_record.get("document_type") or (schema_record.get("schema") or {}).get("document_type"),
+                "pages": [
+                    {
+                        "page_number": output.page_number,
+                        "engines_used": output.engines_used,
+                        "capabilities": output.capabilities,
+                        "confidence": output.confidence,
+                        "escalated": output.escalated,
+                        "low_confidence": output.low_confidence,
+                        "chars": len(output.markdown.strip()),
+                    }
+                    for output, _meta in results
+                ],
+            }
             ref_path.write_text(
-                json.dumps({
-                    "source_pdf": pdf.name,
-                    "output_md": md_path.name,
-                    "schema_id": schema_id,
-                    "schema_registry_file": schema_path.name,
-                    "document_type": schema_record.get("document_type") or (schema_record.get("schema") or {}).get("document_type"),
-                    "pages": [
-                        {
-                            "page_number": output.page_number,
-                            "engines_used": output.engines_used,
-                            "capabilities": output.capabilities,
-                            "confidence": output.confidence,
-                            "escalated": output.escalated,
-                            "low_confidence": output.low_confidence,
-                            "chars": len(output.markdown.strip()),
-                        }
-                        for output, _meta in results
-                    ],
-                }, indent=2) + "\n",
+                json.dumps(ref_dict, indent=2) + "\n",
                 encoding="utf-8",
             )
+
+            # Persist converted Markdown (.md) into PostgreSQL document_markdowns table
+            try:
+                from src.ai.layer3_extraction.storage import save_markdown_record
+                md_text = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
+                save_markdown_record(
+                    doc_id=pdf.name,
+                    md_filename=md_path.name,
+                    markdown_content=md_text,
+                    schema_id=schema_id,
+                    schema_ref_json=ref_dict,
+                    page_count=len(results),
+                    pages_json=[{"page_number": r[0].page_number, "markdown": r[0].markdown} for r in results],
+                )
+            except Exception:
+                pass
 
             elapsed = time.monotonic() - t0
             outputs = [r[0] for r in results]
@@ -510,6 +572,16 @@ def _run_pipeline_job(
     job["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     job["wall_time_s"] = round(time.monotonic() - t_start, 2)
 
+    # Automatically generate full JSON PDF report and persist into PostgreSQL
+    try:
+        from src.ai.layer3_extraction.storage import save_job_pdf
+        from src.utils.job_pdf_report import generate_job_pdf
+        pdf_bytes = generate_job_pdf(job)
+        save_job_pdf(job_id=job_id, pdf_bytes=pdf_bytes, filename=f"{job_id}_report.pdf")
+        logger.info("pipeline.job_pdf_auto_saved", job_id=job_id, size=len(pdf_bytes))
+    except Exception as pdf_exc:
+        logger.warning("pipeline.job_pdf_auto_save_failed", job_id=job_id, error=str(pdf_exc))
+
 
 # ========================= Layer 3 Extraction =========================
 
@@ -522,11 +594,16 @@ def _parse_pages_from_markdown(md_text: str) -> List[Dict[str, Any]]:
         return [{"markdown": md_text.strip(), "page_number": 1}]
     pages = []
     for i, m in enumerate(matches):
+        pg_num = int(m.group(1))
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(md_text)
         content = md_text[start:end]
-        content = re.sub(r"<!--\s*/PAGE\s+\d+\s*-->", "", content).strip()
-        pages.append({"markdown": content, "page_number": int(m.group(1))})
+        close_match = re.search(rf"<!--\s*/PAGE\s+{pg_num}\s*-->", content, re.I)
+        if close_match:
+            content = content[:close_match.start()]
+        else:
+            content = re.sub(r"<!--\s*/PAGE\s+\d+\s*-->", "", content)
+        pages.append({"markdown": content.strip(), "page_number": pg_num})
     return pages
 
 
@@ -748,8 +825,9 @@ async def extract_document(
     from src.ai.layer3_extraction.storage import init_db, save_extraction_run
     from src.api.dynamic_schema import SchemaFieldIn, build_dynamic_schema
 
-    if not (file.filename or "").lower().endswith(".pdf"):
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+    filename: str = file.filename
 
     # 1. Resolve Target Schema
     fields_in: List[SchemaFieldIn] = []
@@ -792,8 +870,15 @@ async def extract_document(
 
     # 2. Save uploaded PDF temporarily
     pdf_bytes = await file.read()
-    temp_pdf = DATASET_DIR / file.filename
+    temp_pdf = DATASET_DIR / filename
     temp_pdf.write_bytes(pdf_bytes)
+
+    # Persist uploaded document into PostgreSQL documents table
+    try:
+        from src.ai.layer3_extraction.storage import save_document
+        save_document(filename=filename, file_bytes=pdf_bytes, content_type=file.content_type or "application/pdf")
+    except Exception:
+        pass
 
     def _execute():
         t_start = time.time()
@@ -807,12 +892,30 @@ async def extract_document(
         results = process_document(
             pages=pages,
             llm_client=llm_client,
-            document_name=file.filename,
+            document_name=filename,
             document_id=f"extract-{uuid.uuid4().hex[:6]}",
             write_output=True,
             output_dir=str(OUTPUT_DIR),
             overwrite=True,
         )
+
+        stem = Path(filename).stem
+        md_file = OUTPUT_DIR / f"{stem}.md"
+
+        # Persist converted Markdown (.md) into PostgreSQL document_markdowns table
+        try:
+            from src.ai.layer3_extraction.storage import save_markdown_record
+            md_text = md_file.read_text(encoding="utf-8") if md_file.exists() else ""
+            save_markdown_record(
+                doc_id=filename,
+                md_filename=md_file.name,
+                markdown_content=md_text,
+                schema_id=schema_id or schema_name,
+                page_count=len(results),
+                pages_json=[{"page_number": r[0].page_number, "markdown": r[0].markdown} for r in results],
+            )
+        except Exception:
+            pass
 
         page_outputs = [r[0] for r in results]
         pages_md = load_pages_with_confidence(page_outputs)
@@ -826,10 +929,9 @@ async def extract_document(
         elapsed = round(time.time() - t_start, 2)
         result_dict = extracted_result.model_dump()
 
-        stem = Path(file.filename).stem
         json_out_path = OUTPUT_DIR / f"{stem}.extracted.json"
         json_out_path.write_text(json.dumps({
-            "source_pdf": file.filename,
+            "source_pdf": filename,
             "schema_used": schema_name,
             "processing_time_seconds": elapsed,
             "extracted_data": result_dict,
@@ -840,7 +942,7 @@ async def extract_document(
         try:
             init_db()
             db_id = save_extraction_run(
-                doc_id=file.filename,
+                doc_id=filename,
                 page_count=len(page_outputs),
                 schema_name=schema_name,
                 result_json=result_dict,
@@ -855,7 +957,7 @@ async def extract_document(
 
         return {
             "success": True,
-            "doc_id": file.filename,
+            "doc_id": filename,
             "schema": schema_name,
             "data": result_dict,
             "meta": {

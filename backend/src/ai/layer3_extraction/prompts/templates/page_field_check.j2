@@ -1,0 +1,26 @@
+You are extracting structured data from page {{ page_number }} of {{ total_pages }} in a document.
+
+Target schema fields:
+{% for field in schema_fields %}
+- {{ field.name }}: {{ field.description }}
+{% endfor %}
+
+Page content:
+{{ page_md }}
+
+Instructions:
+- Go through EVERY schema field listed above one by one and check if this page contains it.
+- Do NOT stop after finding a few fields — check ALL fields against this page.
+- "first" means the very first occurrence in the entire document. Only extract if this page is likely the first occurrence.
+- "last" means the very last occurrence in the entire document. Only extract if this page is likely the last occurrence.
+- Only include a field if its value is explicitly stated or directly inferable from THIS page's content.
+- Extract exact values as written — do not paraphrase.
+
+Respond with ONLY this JSON format:
+{
+  "matches": [
+    {"field": "<field_name>", "value": "<extracted_value>"}
+  ]
+}
+
+If no fields are found on this page, respond with exactly: {"matches": []}

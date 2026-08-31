@@ -193,6 +193,11 @@ class PipelineLogger:
     def error(self, event: str, **fields: Any) -> None:
         self._log(logging.ERROR, event, **fields)
 
+    def exception(self, event: str, **fields: Any) -> None:
+        fields["correlation_id"] = correlation_id.get()
+        fields["service"]        = self.service_name
+        self.logger.exception(event, extra=fields)
+
     def debug(self, event: str, **fields: Any) -> None:
         self._log(logging.DEBUG, event, **fields)
 

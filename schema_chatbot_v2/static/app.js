@@ -1004,10 +1004,18 @@
                 </div>
                 ` : ''}
                 <div class="job-section">
-                    <h3>Full JSON</h3>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+                        <h3 style="margin:0;">Full JSON</h3>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <button class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(JSON.stringify(window.__currentJobDetail, null, 2)); this.textContent='✓ Copied!'; setTimeout(()=>this.textContent='📋 Copy JSON', 1500)">📋 Copy JSON</button>
+                            <button class="btn btn-sm btn-outline" onclick="downloadJobJson()">📥 Download JSON</button>
+                            <button class="btn btn-sm btn-primary" onclick="downloadJobPdf('${j.job_id}')">📄 Download PDF</button>
+                        </div>
+                    </div>
                     <pre>${JSON.stringify(j, null, 2)}</pre>
                 </div>
             `;
+            window.__currentJobDetail = j;
         } catch (e) {
             console.warn('job detail failed', e);
         }
@@ -1068,6 +1076,33 @@
     });
 
 
+
+    // ======================= Job Downloads =======================
+    window.downloadJobJson = function() {
+        if (!window.__currentJobDetail) return;
+        const jsonStr = JSON.stringify(window.__currentJobDetail, null, 2);
+        const blob = new Blob([jsonStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${window.__currentJobDetail.job_id || 'pipeline_job'}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    window.downloadJobPdf = function(jobId) {
+        if (!jobId && window.__currentJobDetail) jobId = window.__currentJobDetail.job_id;
+        if (!jobId) return;
+        const downloadUrl = `/pipeline/jobs/${jobId}/pdf`;
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = `${jobId}_report.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    };
 
     // ======================= Init =======================
 
