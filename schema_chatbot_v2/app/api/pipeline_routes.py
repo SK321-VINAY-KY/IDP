@@ -270,7 +270,7 @@ async def run_pipeline(
     documents: Optional[str] = Form(default=None),
 ) -> Dict[str, Any]:
     if not PIPELINE_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Engineer A pipeline unavailable (import failed)")
+        raise HTTPException(status_code=503, detail="Extraction pipeline unavailable (import failed)")
 
     schema_path = SCHEMA_REGISTRY / f"{schema_id}.json"
     if not schema_path.exists():

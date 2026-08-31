@@ -21,6 +21,9 @@ services:
       - ./dataset:/app/dataset
       - ./dataset_output:/app/dataset_output
       - ./schema_registry:/app/schema_registry
+      - ./schema_chatbot_v2/static:/app/schema_chatbot_v2/static
+      - ./schema_chatbot_v2/app:/app/schema_chatbot_v2/app
+      - ./src:/app/src
       - ./schema_chatbot_v2/logs:/app/schema_chatbot_v2/logs
       - ./logs:/app/logs
       - paddle-cache:/root/.paddleocr

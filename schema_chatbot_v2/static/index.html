@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IDP Engineer A — Pipeline Console</title>
-    <link rel="stylesheet" href="style.css">
+    <title>IDP — Extraction Pipeline Console</title>
+    <link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
     <header class="app-header">
         <div class="header-left">
-            <h1>IDP Engineer A Console</h1>
-            <span class="subtitle">Schema Discovery &middot; Document Conversion Pipeline</span>
+            <h1>IDP Console</h1>
+            <span class="subtitle">Schema Discovery &middot; Document Extraction Pipeline</span>
         </div>
         <div class="header-right">
             <span id="healthBadge" class="badge badge-info">connecting…</span>
@@ -29,7 +29,7 @@
         <section id="tab-documents" class="tab-panel active">
             <div class="card">
                 <h2>Upload Documents</h2>
-                <p class="muted">Add PDFs to the dataset folder. They'll be used for schema inference (2–5 samples) and Engineer A batch processing.</p>
+                <p class="muted">Add PDFs to the dataset folder. They'll be used for schema inference (2–5 samples) and extraction pipeline batch processing.</p>
                 <div class="upload-zone" id="uploadZone">
                     <input type="file" id="fileInput" multiple accept="application/pdf,.pdf" hidden>
                     <div class="upload-inner">
@@ -125,12 +125,12 @@
                         <div id="postConfirmBox" class="mt-1 hidden">
                             <div class="pipeline-actions">
                                 <button class="btn btn-success btn-lg btn-full" id="quickRunPipelineBtn" disabled>
-                                    ⚡ Run Engineer A Pipeline (Layers A &amp; B) on All Documents Now
+                                    ⚡ Run Extraction Pipeline on All Documents Now
                                 </button>
                             </div>
                             <p class="muted small mt-1">
                                 Pre-selects the schema you just confirmed, checks every document, and launches
-                                the Engineer A batch pipeline (Layer 1 routing + Layer 2 conversion/writing markdown outputs).
+                                the extraction pipeline (page routing, document conversion, and markdown generation).
                             </p>
                         </div>
                     </div>
@@ -142,7 +142,7 @@
         <section id="tab-pipeline" class="tab-panel">
             <div class="card">
                 <div class="card-header">
-                    <h2>Run Engineer A Pipeline</h2>
+                    <h2>Run Extraction Pipeline</h2>
                     <span id="pipelineAvail" class="badge badge-mute">checking…</span>
                 </div>
 
@@ -171,13 +171,13 @@
 
                 <div class="pipeline-actions">
                     <button class="btn btn-primary btn-lg" id="runPipelineBtn" disabled>
-                        ⚙  Run Engineer A Pipeline (Layers A &amp; B)
+                        ⚙  Run Extraction Pipeline
                     </button>
                 </div>
                 <p class="muted small">
                     This runs <code>process_document()</code> for each selected PDF with <code>write_output=True</code>.
-                    <strong>Layer A (routing)</strong> classifies each page (digital / scanned / handwritten / mixed),
-                    then <strong>Layer B (conversion)</strong> runs the chosen engine(s) and writes structured markdown to <code>dataset_output/</code>.
+                    <strong>Page Routing</strong> classifies each page (digital / scanned / handwritten / mixed),
+                    then <strong>Document Conversion</strong> runs the chosen engine(s) and writes structured markdown to <code>dataset_output/</code>.
                     Scanned/handwritten pages need a real VLM adapter wired up — they will loudly fail otherwise so you can detect it early.
                 </p>
             </div>
@@ -207,6 +207,6 @@
         </section>
     </main>
 
-    <script src="app.js"></script>
+    <script src="app.js?v=2"></script>
 </body>
 </html>
