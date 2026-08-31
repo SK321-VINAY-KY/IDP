@@ -171,14 +171,11 @@
 
                 <div class="pipeline-actions">
                     <button class="btn btn-primary btn-lg" id="runPipelineBtn" disabled>
-                        ⚙  Run Engineer A Pipeline (Layers A &amp; B)
+                        ⚡ Extract
                     </button>
                 </div>
                 <p class="muted small">
-                    This runs <code>process_document()</code> for each selected PDF with <code>write_output=True</code>.
-                    <strong>Layer A (routing)</strong> classifies each page (digital / scanned / handwritten / mixed),
-                    then <strong>Layer B (conversion)</strong> runs the chosen engine(s) and writes structured markdown to <code>dataset_output/</code>.
-                    Scanned/handwritten pages need a real VLM adapter wired up — they will loudly fail otherwise so you can detect it early.
+                    Processes each selected document through <strong>Layer 1 (Routing)</strong>, <strong>Layer 2 (Conversion &amp; OCR)</strong>, and continues directly into <strong>Layer 3 (Contextual Field Extraction via Sarvam 105B)</strong> using the selected schema. Results are saved in <code>dataset_output/</code> and recorded in PostgreSQL.
                 </p>
             </div>
 

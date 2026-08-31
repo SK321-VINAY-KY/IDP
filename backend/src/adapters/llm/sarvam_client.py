@@ -120,17 +120,41 @@ class SarvamExtractionClient:
         try:
             parsed = json.loads(raw)
             matches = parsed.get("matches", [])
-            if not isinstance(matches, list):
-                logger.warning("sarvam.check_page_for_fields.bad_matches", raw=raw[:200])
-                return []
-            valid_names = {f["name"] for f in schema_fields}
-            result = []
-            for m in matches:
-                field = m.get("field", "")
-                value = m.get("value", "")
-                if field in valid_names and value not in ("", None):
-                    result.append({"field": field, "value": value})
-            return result
         except json.JSONDecodeError:
-            logger.warning("sarvam.check_page_for_fields.parse_failed", raw=raw[:200])
+            # Fallback 1: Try closing truncated array/object
+            matches = []
+            try:
+                # Find last completed field object
+                last_obj_end = raw.rfind("}")
+                if last_obj_end != -1:
+                    repaired = raw[:last_obj_end + 1] + "\n]}"
+                    parsed = json.loads(repaired)
+                    matches = parsed.get("matches", [])
+            except Exception:
+                pass
+
+            # Fallback 2: Regex extraction of {"field": "...", "value": "..."} pairs
+            if not matches:
+                pattern = re.compile(r'\{\s*"field"\s*:\s*"([^"]+)"\s*,\s*"value"\s*:\s*"((?:[^"\\]|\\.)*)"', re.DOTALL)
+                for m in pattern.finditer(raw):
+                    f_name = m.group(1)
+                    val = m.group(2).encode().decode('unicode_escape', errors='ignore')
+                    matches.append({"field": f_name, "value": val})
+
+            if not matches:
+                logger.warning("sarvam.check_page_for_fields.parse_failed", raw=raw[:200])
+                return []
+
+        if not isinstance(matches, list):
+            logger.warning("sarvam.check_page_for_fields.bad_matches", raw=raw[:200])
             return []
+
+        valid_names = {f["name"] for f in schema_fields}
+        result = []
+        for m in matches:
+            field = m.get("field", "")
+            value = m.get("value", "")
+            if field in valid_names and value not in ("", None):
+                result.append({"field": field, "value": value})
+        return result
+

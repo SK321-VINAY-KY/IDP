@@ -1,9 +1,10 @@
 extraction:
   template: extraction_system.j2
   temperature: 0.0
-  max_tokens: 2000
+  max_tokens: 4000
 
 page_field_check:
   template: page_field_check.j2
   temperature: 0.0
-  max_tokens: 1000
+  max_tokens: 4000
+

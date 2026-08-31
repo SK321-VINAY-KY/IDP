@@ -9,8 +9,17 @@ Deps: pydantic-settings
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+from pathlib import Path
+
+_BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
+_ENV_PATHS = (Path(".env"), _BACKEND_DIR / ".env")
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="IDP_")
+    model_config = SettingsConfigDict(
+        env_file=_ENV_PATHS,
+        env_prefix="IDP_",
+        extra="ignore",
+    )
 
     # -------------------------------------------------------------------------
     # Layer 1+2 — VLM provider

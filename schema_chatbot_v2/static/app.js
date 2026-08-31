@@ -694,12 +694,26 @@
                 <div class="job-section">
                     <h3> Successful (${sucs.length})</h3>
                     ${sucs.map(s => `
-                        <div class="result-row ok">
-                            <div>
-                                <span class="result-name">${s.pdf}</span>
-                                <div class="result-meta">pages: ${s.pages}  chars: ${s.chars}  avg conf: ${(s.avg_conf || 0).toFixed(3)}  ${s.elapsed_s}s</div>
+                        <div class="result-row ok" style="flex-direction: column; align-items: stretch; gap: 8px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div>
+                                    <span class="result-name">${s.pdf}</span>
+                                    <div class="result-meta">pages: ${s.pages} &nbsp;•&nbsp; conf: ${(s.avg_conf || 0).toFixed(3)} &nbsp;•&nbsp; Layer 1+2: ${s.elapsed_s}s ${s.extract_elapsed_s ? `&nbsp;•&nbsp; Layer 3 (Sarvam 105B): ${s.extract_elapsed_s}s` : ''}</div>
+                                </div>
+                                <div style="display: flex; gap: 6px; align-items: center;">
+                                    ${s.db_run_id ? `<span class="badge badge-success">PostgreSQL: Run #${s.db_run_id}</span>` : ''}
+                                    <span class="result-meta"><code>${s.md}</code></span>
+                                </div>
                             </div>
-                            <div class="result-meta">--&gt; <code>${s.md}</code></div>
+                            ${s.extracted_data ? `
+                            <div style="background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 10px 14px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                    <strong style="color: #38bdf8; font-size: 12.5px;">⚡ Layer 3 Extracted JSON (${s.extracted_json})</strong>
+                                    <button class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(JSON.stringify(${JSON.stringify(s.extracted_data).replace(/"/g, '&quot;')}, null, 2)); this.textContent='✓ Copied!'; setTimeout(()=>this.textContent='Copy JSON', 1500)">Copy JSON</button>
+                                </div>
+                                <pre style="margin: 0; font-size: 12px; color: #a5f3fc; max-height: 160px; overflow: auto; background: transparent; border: none; padding: 0;">${JSON.stringify(s.extracted_data, null, 2)}</pre>
+                            </div>
+                            ` : ''}
                         </div>
                     `).join('')}
                 </div>
@@ -782,6 +796,245 @@
         }
     });
 
+    // ======================= Extraction (Layer 3) Tab =======================
+
+    let currentExtractionOutputs = [];
+
+    async function loadExtractionOutputs() {
+        const listDiv = $('extractOutputsList');
+        const countSpan = $('extractOutputsCount');
+        const extractAllBtn = $('extractAllBtn');
+        try {
+            listDiv.innerHTML = '<p class="muted">Scanning <code>dataset_output/</code> for pipeline converted documents...</p>';
+            const res = await api('/pipeline/outputs');
+            currentExtractionOutputs = res.outputs || [];
+            countSpan.textContent = currentExtractionOutputs.length;
+
+            if (currentExtractionOutputs.length === 0) {
+                listDiv.innerHTML = `
+                    <div style="padding: 24px; text-align: center; border: 1px dashed var(--border); border-radius: var(--radius);">
+                        <p class="upload-icon">📂</p>
+                        <p><strong>No pipeline outputs found in <code>dataset_output/</code> yet.</strong></p>
+                        <p class="muted small">Go to the <strong>Run Pipeline</strong> tab and run Layers A &amp; B on your documents first. When finished, converted markdown files will appear here automatically for Layer 3 extraction.</p>
+                    </div>
+                `;
+                extractAllBtn.disabled = true;
+                return;
+            }
+
+            const unextractedCount = currentExtractionOutputs.filter(o => !o.has_extracted).length;
+            extractAllBtn.disabled = unextractedCount === 0;
+            extractAllBtn.textContent = `⚡ Extract All Pending (${unextractedCount})`;
+
+            renderExtractionOutputsList(currentExtractionOutputs);
+        } catch (e) {
+            listDiv.innerHTML = `<p class="muted">Failed to load pipeline outputs: ${e.message}</p>`;
+        }
+    }
+
+    function renderExtractionOutputsList(outputs) {
+        const listDiv = $('extractOutputsList');
+        listDiv.innerHTML = '';
+
+        outputs.forEach(item => {
+            const card = el('div', 'card', '');
+            card.style.padding = '14px 18px';
+            card.style.marginBottom = '10px';
+            card.style.display = 'flex';
+            card.style.justifyContent = 'space-between';
+            card.style.alignItems = 'center';
+
+            const left = el('div', '', '');
+            const titleRow = el('div', '', '');
+            titleRow.style.display = 'flex';
+            titleRow.style.alignItems = 'center';
+            titleRow.style.gap = '10px';
+
+            const nameEl = el('strong', '', item.source_pdf || item.md_name);
+            nameEl.style.fontSize = '14.5px';
+            titleRow.appendChild(nameEl);
+
+            const docTypeBadge = el('span', 'badge badge-info', item.document_type || 'Document');
+            titleRow.appendChild(docTypeBadge);
+
+            if (item.schema_id) {
+                const schemaBadge = el('span', 'badge badge-mute', `Schema: ${item.schema_id}`);
+                titleRow.appendChild(schemaBadge);
+            }
+
+            if (item.has_extracted) {
+                const extBadge = el('span', 'badge badge-success', '✓ Extracted to JSON & Postgres');
+                titleRow.appendChild(extBadge);
+            } else {
+                const pendBadge = el('span', 'badge badge-warn', 'Pending Layer 3');
+                titleRow.appendChild(pendBadge);
+            }
+
+            left.appendChild(titleRow);
+
+            const subRow = el('div', 'muted small', '');
+            subRow.style.marginTop = '4px';
+            subRow.innerHTML = `Markdown: <code>dataset_output/${item.md_name}</code> &nbsp;•&nbsp; ${item.page_count ? item.page_count + ' page(s)' : ''} &nbsp;•&nbsp; Modified: ${new Date(item.modified).toLocaleTimeString()}`;
+            left.appendChild(subRow);
+
+            card.appendChild(left);
+
+            const right = el('div', '', '');
+            right.style.display = 'flex';
+            right.style.gap = '8px';
+
+            if (item.has_extracted && item.extracted_data) {
+                const viewBtn = el('button', 'btn btn-sm btn-outline', '👁 View JSON');
+                viewBtn.addEventListener('click', () => {
+                    displayExtractedResult(item.source_pdf || item.md_name, item.extracted_data, {
+                        source_md: item.md_name,
+                        output_json: `${item.stem}.extracted.json`,
+                        saved_to_db: true,
+                        time_text: 'Saved in dataset_output/',
+                        db_text: 'PostgreSQL: Recorded',
+                    });
+                });
+                right.appendChild(viewBtn);
+            }
+
+            const extractBtn = el('button', 'btn btn-sm btn-primary', item.has_extracted ? '↻ Re-Extract' : '⚡ Run Layer 3');
+            extractBtn.id = `btn-extract-${item.stem}`;
+            extractBtn.addEventListener('click', () => {
+                runExtractForDoc(item, extractBtn);
+            });
+            right.appendChild(extractBtn);
+
+            card.appendChild(right);
+            listDiv.appendChild(card);
+        });
+    }
+
+    async function runExtractForDoc(item, btn) {
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '⏳ Extracting...';
+
+        const card = $('extractResultCard');
+        const loading = $('extractLoading');
+        const output = $('extractOutputArea');
+        const docName = $('extractDocName');
+        const timeBadge = $('extractTimeBadge');
+        const dbBadge = $('extractDbBadge');
+        const jsonView = $('extractJsonView');
+        const fileRefs = $('extractFileRefs');
+
+        card.classList.remove('hidden');
+        loading.classList.remove('hidden');
+        output.classList.add('hidden');
+        docName.textContent = '— ' + (item.source_pdf || item.md_name);
+        timeBadge.textContent = 'Running Layer 3...';
+        dbBadge.className = 'badge badge-mute';
+        dbBadge.textContent = 'PostgreSQL: writing...';
+
+        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+        try {
+            const formData = new FormData();
+            formData.append('md_name', item.md_name);
+
+            const res = await api('/pipeline/extract/from-output', {
+                method: 'POST',
+                body: formData,
+            });
+
+            loading.classList.add('hidden');
+            output.classList.remove('hidden');
+
+            timeBadge.className = 'badge badge-info';
+            timeBadge.textContent = `Time: ${res.meta.processing_time_seconds}s (${res.meta.pages_processed} pages)`;
+
+            if (res.meta.saved_to_db) {
+                dbBadge.className = 'badge badge-success';
+                dbBadge.textContent = `PostgreSQL: Saved (Run #${res.meta.db_run_id})`;
+            } else {
+                dbBadge.className = 'badge badge-warn';
+                dbBadge.textContent = 'PostgreSQL: Save skipped';
+            }
+
+            fileRefs.innerHTML = `Saved JSON: <code>dataset_output/${res.meta.output_json}</code> &nbsp;•&nbsp; Source: <code>dataset_output/${res.meta.source_md}</code> &nbsp;•&nbsp; LLM: <code>${res.meta.llm_provider}</code>`;
+            jsonView.textContent = JSON.stringify(res.data, null, 2);
+
+            // Update item in local list and refresh
+            item.has_extracted = true;
+            item.extracted_data = res.data;
+            loadExtractionOutputs();
+        } catch (err) {
+            loading.classList.add('hidden');
+            output.classList.remove('hidden');
+            timeBadge.className = 'badge badge-danger';
+            timeBadge.textContent = 'Extraction Failed';
+            dbBadge.className = 'badge badge-danger';
+            dbBadge.textContent = 'PostgreSQL: error';
+            jsonView.textContent = JSON.stringify({ error: err.message }, null, 2);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+    }
+
+    function displayExtractedResult(docTitle, data, meta) {
+        const card = $('extractResultCard');
+        const loading = $('extractLoading');
+        const output = $('extractOutputArea');
+        const docName = $('extractDocName');
+        const timeBadge = $('extractTimeBadge');
+        const dbBadge = $('extractDbBadge');
+        const jsonView = $('extractJsonView');
+        const fileRefs = $('extractFileRefs');
+
+        card.classList.remove('hidden');
+        loading.classList.add('hidden');
+        output.classList.remove('hidden');
+
+        docName.textContent = '— ' + docTitle;
+        timeBadge.className = 'badge badge-info';
+        timeBadge.textContent = meta.time_text || 'Completed';
+        dbBadge.className = 'badge badge-success';
+        dbBadge.textContent = meta.db_text || 'PostgreSQL: Saved';
+
+        fileRefs.innerHTML = `Output JSON: <code>dataset_output/${meta.output_json}</code> &nbsp;•&nbsp; Source: <code>dataset_output/${meta.source_md}</code>`;
+        jsonView.textContent = JSON.stringify(data, null, 2);
+        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    $('extractAllBtn').addEventListener('click', async () => {
+        const pending = currentExtractionOutputs.filter(o => !o.has_extracted);
+        if (pending.length === 0) return;
+
+        const allBtn = $('extractAllBtn');
+        allBtn.disabled = true;
+        for (let i = 0; i < pending.length; i++) {
+            allBtn.textContent = `⚡ Extracting ${i + 1} of ${pending.length}...`;
+            const item = pending[i];
+            const btn = document.getElementById(`btn-extract-${item.stem}`);
+            if (btn) await runExtractForDoc(item, btn);
+        }
+        allBtn.textContent = '⚡ Extract All Pending';
+        loadExtractionOutputs();
+    });
+
+    $('refreshExtractOutputsBtn').addEventListener('click', loadExtractionOutputs);
+
+    $('closeExtractCardBtn').addEventListener('click', () => {
+        $('extractResultCard').classList.add('hidden');
+    });
+
+    $('copyExtractJsonBtn').addEventListener('click', () => {
+        const text = $('extractJsonView').textContent;
+        if (!text) return;
+        navigator.clipboard.writeText(text).then(() => {
+            const btn = $('copyExtractJsonBtn');
+            const old = btn.textContent;
+            btn.textContent = '✓ Copied!';
+            setTimeout(() => btn.textContent = old, 1500);
+        });
+    });
+
     // ======================= Init =======================
 
     checkHealth();
@@ -793,3 +1046,5 @@
     }, 400);
 
 })();
+
+
