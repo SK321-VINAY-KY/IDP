@@ -78,14 +78,20 @@
 
     async function switchUser(username) {
         try {
+            state.selectedJobId = null;
+            const detailCard = $('jobDetailCard');
+            if (detailCard) detailCard.classList.add('hidden');
+            const detailHost = $('jobDetail');
+            if (detailHost) detailHost.innerHTML = '';
+
             const res = await api('/auth/login', { json: { username: username } });
             state.currentUser = res.user;
             state.token = res.token;
             localStorage.setItem(AUTH_USER_KEY, res.user.username);
             localStorage.setItem(AUTH_TOKEN_KEY, res.token);
             renderUserProfile();
-            loadPipelineStatus();
-            loadJobs();
+            await loadPipelineStatus();
+            await loadJobs();
             if (res.user.role === 'admin') {
                 loadAdminOverview();
                 loadAdminUsers();
@@ -870,9 +876,20 @@
             const data = await api('/pipeline/status');
             const jobs = Object.values(data.jobs || {});
             state.jobs = jobs;
+
+            // Always synchronize mini KPI strip with current user's summary
+            const mySummary = data.my_summary || {};
+            if ($('kpiCompleted')) $('kpiCompleted').textContent = mySummary.completed || 0;
+            if ($('kpiRemaining')) $('kpiRemaining').textContent = mySummary.remaining || 0;
+            if ($('kpiRunning')) $('kpiRunning').textContent = mySummary.running || 0;
+            if ($('kpiErrors')) $('kpiErrors').textContent = mySummary.errors || 0;
+            if ($('userJobsBadge')) $('userJobsBadge').textContent = `${mySummary.total || 0} Total`;
+
             const host = $('jobList');
             if (!jobs.length) {
                 host.innerHTML = '<p class="muted">No jobs yet.</p>';
+                $('jobDetailCard').classList.add('hidden');
+                state.selectedJobId = null;
                 return;
             }
             host.innerHTML = '';
@@ -883,7 +900,9 @@
                 const pct = total ? Math.round(100 * done / total) : 0;
                 const row = el('div', 'job-item');
 
-                const ownerBadge = state.currentUser.role === 'admin' ? `<span class="badge badge-mute small" style="margin-left:6px;">👤 ${j.owner || 'user1'}</span>` : '';
+                const ownerBadge = state.currentUser && state.currentUser.role === 'admin'
+                    ? `<span class="badge badge-mute small" style="margin-left:6px;">👤 ${j.owner || 'user1'}</span>`
+                    : '';
 
                 let actionButtons = '';
                 if (j.status === 'running' || j.status === 'queued') {
@@ -925,7 +944,16 @@
                 });
                 host.appendChild(row);
             });
-            if (state.selectedJobId) loadJobDetail(state.selectedJobId);
+
+            if (state.selectedJobId) {
+                const stillExists = jobs.some(j => j.job_id === state.selectedJobId);
+                if (stillExists) {
+                    loadJobDetail(state.selectedJobId);
+                } else {
+                    state.selectedJobId = null;
+                    $('jobDetailCard').classList.add('hidden');
+                }
+            }
         } catch (e) {
             console.warn('loadJobs failed', e);
         }
@@ -973,7 +1001,7 @@
             host.innerHTML = `
                 <div class="job-summary-grid">
                     <div class="summary-box"><div class="lbl">Status</div><div class="val">${j.status}</div></div>
-                    <div class="summary-box"><div class="lbl">Owner</div><div class="val" style="font-size:13px;">${j.owner || 'user1'}</div></div>
+                    <div class="summary-box"><div class="lbl">Owner</div><div class="val" style="font-size:13px;">👤 ${j.owner || 'user1'}</div></div>
                     <div class="summary-box"><div class="lbl">Docs</div><div class="val">${sucs.length + fails.length} / ${(j.targets || []).length || 0}</div></div>
                     <div class="summary-box"><div class="lbl">Success</div><div class="val" style="color:#6ee7b7">${sucs.length}</div></div>
                     <div class="summary-box"><div class="lbl">Failed</div><div class="val" style="color:#fca5a5">${fails.length}</div></div>
@@ -1014,6 +1042,8 @@
             `;
         } catch (e) {
             console.warn('job detail failed', e);
+            $('jobDetailCard').classList.add('hidden');
+            state.selectedJobId = null;
         }
     }
 
@@ -1289,6 +1319,17 @@
     loadPipelineStatus();
     loadJobs();
     setInterval(checkHealth, 15000);
+
+    // Live background updater: refreshes job status & logs automatically
+    setInterval(async () => {
+        const activeTab = document.querySelector('.tab-btn.active');
+        if (activeTab && activeTab.dataset.tab === 'chatbot') {
+            await loadJobs();
+        } else if (activeTab && activeTab.dataset.tab === 'admin' && state.currentUser && state.currentUser.role === 'admin') {
+            await loadAdminOverview();
+            await loadAdminAudit();
+        }
+    }, 3000);
 
     setTimeout(() => {
         if (!state.sessionId) newSession();
