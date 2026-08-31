@@ -2,7 +2,8 @@
   "extraPaths": [
     ".",
     "src",
-    "schema_chatbot_v2"
+    "schema_chatbot_v2",
+    "backend"
   ],
   "exclude": [
     "**/_pyrefly_virtual_/**",

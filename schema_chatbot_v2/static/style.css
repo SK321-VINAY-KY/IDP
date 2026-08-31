@@ -960,3 +960,133 @@ h2 { font-size: 16px; }
     border-color: var(--accent);
 }
 
+/* ========================= Query Bot (JSON Q&A) ========================= */
+
+.query-bot-container {
+    margin-top: 10px;
+    background: rgba(15, 23, 42, 0.45);
+    border: 1px solid rgba(56, 189, 248, 0.25);
+    border-radius: 8px;
+    padding: 12px 14px;
+}
+
+.query-bot-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.query-bot-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #38bdf8;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.query-bot-messages {
+    max-height: 180px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 8px;
+    padding-right: 4px;
+}
+
+.query-bot-msg {
+    padding: 7px 10px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    line-height: 1.4;
+    word-break: break-word;
+}
+
+.query-bot-msg.user {
+    background: rgba(59, 130, 246, 0.2);
+    border: 1px solid rgba(59, 130, 246, 0.4);
+    color: #93c5fd;
+    align-self: flex-end;
+    max-width: 85%;
+}
+
+.query-bot-msg.bot {
+    background: rgba(15, 23, 42, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #e2e8f0;
+    align-self: flex-start;
+    max-width: 95%;
+}
+
+.query-bot-msg.loading {
+    color: #94a3b8;
+    font-style: italic;
+}
+
+.query-bot-input-row {
+    display: flex;
+    gap: 8px;
+}
+
+.query-bot-input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 7px 10px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    font-family: inherit;
+}
+
+.query-bot-input:focus {
+    outline: none;
+    border-color: #38bdf8;
+}
+
+.query-bot-send-btn {
+    background: #0284c7;
+    color: #fff;
+    border: none;
+    padding: 7px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.query-bot-send-btn:hover {
+    background: #0369a1;
+}
+
+.query-bot-send-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.query-bot-suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.query-bot-chip {
+    background: rgba(56, 189, 248, 0.1);
+    border: 1px solid rgba(56, 189, 248, 0.2);
+    color: #7dd3fc;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.query-bot-chip:hover {
+    background: rgba(56, 189, 248, 0.25);
+    color: #bae6fd;
+}
+

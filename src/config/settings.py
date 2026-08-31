@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     sarvam_model_name: str = "sarvam-105b"
     sarvam_api_key: str = ""
     extraction_model_name: str = "qwen2.5:7b"
+    summary_model_name: str = "qwen2.5:7b"
     max_extraction_retries: int = 2
 
     # --- PostgreSQL Storage ---

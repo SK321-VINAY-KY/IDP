@@ -19,10 +19,16 @@ class Scratchpad:
         Stores every hit in _candidates, and sets the first-seen in _hits.
         """
         updated = []
+        negative_patterns = {"not found", "not mentioned", "n/a", "none", "not available", "null", "nil"}
         for m in matches:
             field = m.get("field", "")
             value = m.get("value", "")
             if field not in self._all_fields or value in ("", None):
+                continue
+
+            # Skip negative answers like "Not found on this page"
+            val_clean = str(value).strip().lower()
+            if any(neg in val_clean for neg in negative_patterns) and len(val_clean) < 40:
                 continue
 
             candidate = {"value": value, "page": page_number}

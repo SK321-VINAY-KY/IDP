@@ -6,7 +6,7 @@ Purpose: Interface for Layer 3's text-extraction LLM client. Distinct from
 Owner: engineer-b@idp-pilot
 Created: 2026-08-20 | Deps: pydantic
 """
-from typing import Protocol, List, Dict, runtime_checkable
+from typing import Protocol, List, Dict, Any, runtime_checkable
 from pydantic import BaseModel
 
 
@@ -19,4 +19,13 @@ class ExtractionLLMClient(Protocol):
         ...
 
     def navigate(self, page_summaries: List[str], schema_fields: List[str]) -> Dict[str, List[int]]:
+        ...
+
+    def check_page_for_fields(
+        self,
+        page_md: str,
+        schema_fields: List[Dict[str, str]],
+        page_number: int = 0,
+        total_pages: int = 0,
+    ) -> List[Dict[str, Any]]:
         ...

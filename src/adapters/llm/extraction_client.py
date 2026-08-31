@@ -7,7 +7,7 @@ Owner: engineer-b@idp-pilot
 Created: 2026-08-20 | Deps: instructor, openai
 """
 import json
-from typing import List, Dict
+from typing import List, Dict, Any
 from pydantic import BaseModel
 
 from src.config.settings import settings
@@ -70,7 +70,8 @@ class OllamaExtractionClient:
             max_tokens=params["max_tokens"],
             extra_body={"options": {"num_ctx": 4096}},
         )
-        return resp.choices[0].message.content.strip()
+        content = resp.choices[0].message.content or ""
+        return content.strip()
 
     def navigate(self, page_summaries: List[str], schema_fields: List[str]) -> Dict[str, List[int]]:
         prompt = render_prompt("navigation", page_summaries="\n".join(page_summaries), schema_fields=schema_fields)
@@ -83,9 +84,40 @@ class OllamaExtractionClient:
             max_tokens=params["max_tokens"],
             extra_body={"options": {"num_ctx": 8192}},
         )
-        raw = resp.choices[0].message.content
+        raw = resp.choices[0].message.content or ""
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
             logger.warning("navigate.parse_failed", raw=raw[:200])
             return {f: [] for f in schema_fields}
+
+    def check_page_for_fields(
+        self,
+        page_md: str,
+        schema_fields: List[Dict[str, str]],
+        page_number: int = 0,
+        total_pages: int = 0,
+    ) -> List[Dict[str, Any]]:
+        prompt = render_prompt(
+            "page_field_check",
+            page_md=page_md,
+            schema_fields=schema_fields,
+            page_number=page_number,
+            total_pages=total_pages,
+        )
+        params = prompt_params("page_field_check")
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            response_model=None,
+            temperature=params["temperature"],
+            max_tokens=params["max_tokens"],
+            extra_body={"options": {"num_ctx": 8192}},
+        )
+        raw = resp.choices[0].message.content or ""
+        try:
+            parsed = json.loads(raw)
+            return parsed.get("matches", [])
+        except json.JSONDecodeError:
+            logger.warning("ollama.check_page_for_fields.parse_failed", raw=raw[:200])
+            return []
