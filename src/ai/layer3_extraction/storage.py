@@ -392,7 +392,7 @@ def get_job_pdf(job_id: str) -> Optional[tuple[bytes, str]]:
         try:
             rec = session.query(JobPdfRecord).filter_by(job_id=job_id).first()
             if rec:
-                return (bytes(rec.pdf_data), rec.filename)
+                return (rec.pdf_data, rec.filename)
             return None
         finally:
             session.close()
