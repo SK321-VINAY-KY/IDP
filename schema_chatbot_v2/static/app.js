@@ -46,6 +46,32 @@
         return body;
     }
 
+    // ======================= Theme Toggle =======================
+    const THEME_KEY = 'idp_console_theme';
+
+    function initTheme() {
+        const saved = localStorage.getItem(THEME_KEY) || 'dark';
+        applyTheme(saved);
+
+        const btn = $('themeToggleBtn');
+        if (btn) {
+            btn.addEventListener('click', () => {
+                const current = document.documentElement.getAttribute('data-theme') || 'dark';
+                const next = current === 'dark' ? 'light' : 'dark';
+                applyTheme(next);
+            });
+        }
+    }
+
+    function applyTheme(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem(THEME_KEY, theme);
+        const icon = $('themeIcon');
+        const label = $('themeLabel');
+        if (icon) icon.textContent = theme === 'dark' ? '☀️' : '🌙';
+        if (label) label.textContent = theme === 'dark' ? 'Light Mode' : 'Dark Mode';
+    }
+
     // ======================= Tabs =======================
 
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -53,8 +79,9 @@
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
             btn.classList.add('active');
-            $('tab-' + btn.dataset.tab).classList.add('active');
-            if (btn.dataset.tab === 'pipeline') {
+            const targetPanel = $('tab-' + btn.dataset.tab);
+            if (targetPanel) targetPanel.classList.add('active');
+            if (btn.dataset.tab === 'chatbot') {
                 loadSchemas();
                 loadPipelineStatus();
                 loadJobs();
@@ -531,16 +558,17 @@
         }
         sel.value = schemaId;
         updateRunBtn();
-        // Programmatically click the pipeline tab
-        document.querySelector('.tab-btn[data-tab="pipeline"]').click();
-        // Give it 100ms to render then launch
+        const pipeSection = $('pipelineSection');
+        if (pipeSection) {
+            pipeSection.scrollIntoView({ behavior: 'smooth' });
+        }
         setTimeout(() => {
             if (!$('runPipelineBtn').disabled) {
                 $('runPipelineBtn').click();
             } else {
                 alert('Still waiting on document/schema data. Press the button again in a moment.');
             }
-        }, 150);
+        }, 300);
     }
 
     $('quickRunPipelineBtn').addEventListener('click', quickRunPipeline);
@@ -1027,8 +1055,12 @@
 
     // ======================= Init =======================
 
+    initTheme();
     checkHealth();
     loadDocuments();
+    loadSchemas();
+    loadPipelineStatus();
+    loadJobs();
     setInterval(checkHealth, 15000);
 
     setTimeout(() => {
