@@ -24,6 +24,7 @@ SCHEMA_REGISTRY = ROOT / "schema_registry"
 for d in (DATASET_DIR, OUTPUT_DIR, SCHEMA_REGISTRY):
     d.mkdir(parents=True, exist_ok=True)
 
+sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT))
 
 from src.adapters.llm.base import LLMClient

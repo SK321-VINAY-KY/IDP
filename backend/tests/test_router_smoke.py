@@ -77,11 +77,13 @@ def test_dead_zone_resolves_to_handwritten():
 
 
 def test_escalation_ladder_terminates():
-    # digital -> scanned -> handwritten -> None (terminal, no infinite loop)
+    # digital -> scanned -> handwritten -> vlm_transcribe -> None (terminal, no infinite loop)
     assert next_escalation_route("digital", "broken_parse") == "scanned"
     assert next_escalation_route("scanned", "low_confidence") == "handwritten"
-    assert next_escalation_route("handwritten", "still_low") is None
-    print("PASS: escalation ladder terminates at 'handwritten', no infinite bounce")
+    assert next_escalation_route("handwritten", "still_low") == "vlm_transcribe"
+    assert next_escalation_route("vlm_transcribe", "still_low") is None
+    print("PASS: escalation ladder terminates at 'vlm_transcribe' -> None, no infinite bounce")
+
 
 
 def test_indic_script_detected():

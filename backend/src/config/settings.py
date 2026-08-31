@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     skip_image_coverage_threshold: float = 0.02
     handwriting_pct_scanned_ceiling: float = 0.10
     handwriting_pct_handwritten_floor: float = 0.30
+    vlm_direct_extraction_confidence_threshold: float = 0.85
 
     # -------------------------------------------------------------------------
     # Escalation ladder (Layer 2)
