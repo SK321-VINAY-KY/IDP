@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>IDP — Extraction Pipeline Console</title>
-    <link rel="stylesheet" href="style.css?v=5">
+    <link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
     <header class="app-header">
@@ -13,18 +13,18 @@
             <span class="subtitle">Schema Discovery &middot; Document Extraction Pipeline</span>
         </div>
         <div class="header-right">
-            <!-- User Switcher & Profile -->
-            <div class="user-profile" id="userProfile">
-                <span class="user-avatar" id="userAvatar">👤</span>
-                <div class="user-info-text">
-                    <span class="user-name" id="userName">user1</span>
-                    <span class="badge user-role-badge badge-mute" id="userRoleBadge">Normal User</span>
+            <!-- Unified Role & User Switcher -->
+            <div class="user-switcher-card">
+                <span class="user-switcher-icon" id="userAvatar">👤</span>
+                <div class="user-switcher-content">
+                    <span class="user-switcher-label">Account &amp; Role</span>
+                    <select id="userSwitchSelect" class="user-switch-select" title="Switch User Role">
+                        <option value="user1">👤 user1 &middot; Operations (Normal)</option>
+                        <option value="user2">👤 user2 &middot; Auditing (Normal)</option>
+                        <option value="admin">👑 admin &middot; Administrator (Full Access)</option>
+                    </select>
                 </div>
-                <select id="userSwitchSelect" class="user-switch-select" title="Switch User Role">
-                    <option value="user1">👤 user1 (Normal User)</option>
-                    <option value="user2">👤 user2 (Normal User)</option>
-                    <option value="admin">👑 admin (Administrator)</option>
-                </select>
+                <span class="badge user-role-pill badge-mute" id="userRoleBadge">Normal User</span>
             </div>
 
             <!-- Theme Toggle -->
@@ -360,6 +360,6 @@
         </section>
     </main>
 
-    <script src="app.js?v=6"></script>
+    <script src="app.js?v=8"></script>
 </body>
 </html>

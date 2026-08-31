@@ -107,7 +107,6 @@
         const u = state.currentUser;
         if (!u) return;
         const avatar = $('userAvatar');
-        const name = $('userName');
         const role = $('userRoleBadge');
         const adminTabBtn = $('adminTabBtn');
         const jobListHeading = $('jobListHeading');
@@ -116,18 +115,19 @@
         if (userSelect && userSelect.value !== u.username) {
             userSelect.value = u.username;
         }
-        if (name) name.textContent = u.username;
         if (avatar) avatar.textContent = u.role === 'admin' ? '👑' : '👤';
         if (role) {
             role.textContent = u.role === 'admin' ? 'Administrator' : 'Normal User';
-            role.className = 'badge user-role-badge ' + (u.role === 'admin' ? 'badge-primary' : 'badge-mute');
+            role.className = 'badge user-role-pill ' + (u.role === 'admin' ? 'badge-primary' : 'badge-mute');
         }
 
         if (adminTabBtn) {
             if (u.role === 'admin') {
                 adminTabBtn.classList.remove('hidden');
+                adminTabBtn.style.display = 'inline-flex';
             } else {
                 adminTabBtn.classList.add('hidden');
+                adminTabBtn.style.display = 'none';
                 const activeTab = document.querySelector('.tab-btn.active');
                 if (activeTab && activeTab.dataset.tab === 'admin') {
                     document.querySelector('.tab-btn[data-tab="chatbot"]').click();
@@ -136,7 +136,7 @@
         }
 
         if (jobListHeading) {
-            jobListHeading.textContent = u.role === 'admin' ? 'All Pipeline Jobs' : 'My Pipeline Jobs';
+            jobListHeading.textContent = u.role === 'admin' ? 'All Pipeline Jobs (Admin View)' : 'My Pipeline Jobs';
         }
     }
 
