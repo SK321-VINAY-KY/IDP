@@ -8,7 +8,7 @@ Owner: api@idp-pilot
 Created: 2026-08-26
 """
 import re
-from typing import List
+from typing import Any, List
 
 from pydantic import BaseModel, Field, create_model, field_validator
 
@@ -55,9 +55,7 @@ def build_dynamic_schema(fields: List[SchemaFieldIn]) -> type[BaseModel]:
         )
     }
 
-    model: type[BaseModel] = create_model(
-        "UserExtractionSchema",
-        __validators__=validators,
-        **field_defs,  # type: ignore[call-overload]
-    )
+    # Pass field definitions dynamically to create_model
+    kwargs: dict[str, Any] = dict(field_defs)
+    model = create_model("UserExtractionSchema", __validators__=validators, **kwargs)  # type: ignore
     return model
