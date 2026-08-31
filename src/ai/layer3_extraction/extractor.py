@@ -1,16 +1,16 @@
 """
 File: extractor.py
-Purpose: Layer 3 extraction — page-by-page field scanning.
+Purpose: Layer 3 extraction — multi-page field scanning with LLM scratchpad resolution.
 
   Flow:
-    1. Cache target schema fields (name + description) once for the run.
-    2. For each page, ask the LLM which schema fields appear on it.
-       Only fields still missing are sent — already-found fields are skipped.
-    3. Accumulate hits in the scratchpad (first-seen wins).
-    4. After all pages, hydrate and return the Pydantic model.
+    1. Cache target schema fields (name + description) once for the entire run.
+    2. Scan EVERY document page against ALL target schema fields (no early stop).
+    3. Accumulate all page hits and candidate values into the Scratchpad.
+    4. Feed the full Scratchpad evidence to the LLM to extract and resolve
+       final structured values according to the target schema.
 
 Owner: engineer-b@idp-pilot
-Created: 2026-08-27
+Created: 2026-08-27 | Updated: 2026-08-31
 """
 from typing import Any, Dict, List, Union
 
@@ -30,8 +30,9 @@ def extract_by_page_scan(
 ) -> BaseModel:
     """
     Scan every page against the cached target schema fields.
-    First-seen value wins per field.
-    Return a hydrated Pydantic model.
+    Collects findings for ALL fields page-by-page into the Scratchpad,
+    then provides the Scratchpad evidence to the LLM to produce the final
+    hydrated Pydantic model.
 
     Args:
         pages_md:  Either list[dict] with "markdown"/"page_number" keys,
@@ -49,7 +50,7 @@ def extract_by_page_scan(
 
     total_pages = len(pages)
 
-    # --- 1. Cache schema fields once ---
+    # --- 1. Cache target schema fields once ---
     schema_fields: List[Dict[str, str]] = [
         {"name": k, "description": v.description or k}
         for k, v in schema.model_fields.items()
@@ -63,7 +64,7 @@ def extract_by_page_scan(
         schema_fields=field_names,
     )
 
-    # --- 2. Scan every page ---
+    # --- 2. Scan every page against ALL fields ---
     for page_data in pages:
         page_md     = page_data["markdown"]
         page_number = page_data["page_number"]
@@ -72,15 +73,10 @@ def extract_by_page_scan(
             logger.debug("layer3.page_scan.skip_empty", page_number=page_number)
             continue
 
-        # Only ask about fields still missing
-        fields_to_check = [f for f in schema_fields if f["name"] in scratchpad.missing_fields]
-        if not fields_to_check:
-            logger.info("layer3.page_scan.all_found", stopped_at_page=page_number)
-            break
-
+        # Check ALL schema fields on every page
         matches = llm.check_page_for_fields(
             page_md,
-            fields_to_check,
+            schema_fields,
             page_number=page_number,
             total_pages=total_pages,
         )
@@ -92,27 +88,37 @@ def extract_by_page_scan(
             total_pages=total_pages,
             fields_found=len(matches),
             fields_updated=updated,
-            fields_remaining=scratchpad.missing_fields,
             scratchpad=scratchpad.snapshot(),
         )
 
-    # --- 3. Final coverage report ---
+    # --- 3. Coverage summary ---
     missing = scratchpad.missing_fields
     if missing:
         logger.warning("layer3.page_scan.fields_not_found", missing_fields=missing)
     else:
-        logger.info("layer3.page_scan.complete", provenance=scratchpad.provenance())
+        logger.info("layer3.page_scan.all_found_in_scan", provenance=scratchpad.provenance())
 
-    # --- 4. Hydrate Pydantic schema ---
+    # --- 4. Give Scratchpad evidence to LLM for final extraction ---
+    evidence_text = scratchpad.format_evidence_for_llm()
+    logger.info("layer3.llm_final_extraction.start", evidence_lines=len(evidence_text.splitlines()))
+
     try:
-        default_instance = schema()
-    except Exception:
-        default_instance = None
+        result = llm.extract(evidence_text, schema)
+    except Exception as exc:
+        logger.warning(
+            "layer3.llm_final_extraction.fallback_to_scratchpad",
+            error=str(exc),
+        )
+        # Fallback to direct scratchpad values if LLM call fails
+        try:
+            default_instance = schema()
+        except Exception:
+            default_instance = None
 
-    default_values: Dict[str, Any] = (
-        default_instance.model_dump() if default_instance is not None else {}
-    )
-    result = schema.model_validate({**default_values, **scratchpad.to_values_dict()})
+        default_values: Dict[str, Any] = (
+            default_instance.model_dump() if default_instance is not None else {}
+        )
+        result = schema.model_validate({**default_values, **scratchpad.to_values_dict()})
 
     logger.info(
         "layer3.page_scan.result",
@@ -120,3 +126,4 @@ def extract_by_page_scan(
         provenance=scratchpad.provenance(),
     )
     return result
+

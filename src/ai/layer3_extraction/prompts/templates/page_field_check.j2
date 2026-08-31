@@ -1,4 +1,4 @@
-﻿You are extracting structured data from page {{ page_number }} of {{ total_pages }} in a document.
+You are extracting structured data from page {{ page_number }} of {{ total_pages }} in a document.
 
 Target schema fields:
 {% for field in schema_fields %}
@@ -10,8 +10,8 @@ Page content:
 
 Instructions:
 - Go through EVERY schema field listed above one by one and check if this page contains it.
-- Do NOT stop after finding a few fields.
-- Only include a field if its value is on THIS page.
+- Only include a field in "matches" if an actual value is present on THIS page.
+- Do NOT include fields that are not found. Do NOT return "Not found", "N/A", "null", or placeholders.
 - Extract exact values as written.
 
 Respond with ONLY this JSON format:
@@ -21,4 +21,4 @@ Respond with ONLY this JSON format:
   ]
 }
 
-If no fields found: {"matches": []}
+If no fields found on this page: {"matches": []}

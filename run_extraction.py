@@ -1,4 +1,4 @@
-﻿"""
+"""
 run_extraction.py — generic dev/test runner for Layer 3.
 
 Usage:
@@ -28,14 +28,31 @@ from src.ai.layer3_extraction.storage import init_db, save_extraction_run
 from src.config.settings import settings
 
 SCHEMAS_DIR = Path("tests/schemas")
+REGISTRY_DIR = Path("schema_registry")
 
 def load_schema(schema_name: str):
     schema_path = SCHEMAS_DIR / f"{schema_name}.json"
     if not schema_path.exists():
-        raise FileNotFoundError(f"Schema file not found: {schema_path}")
+        schema_path = REGISTRY_DIR / f"{schema_name}.json"
+    if not schema_path.exists():
+        raise FileNotFoundError(f"Schema file not found: {schema_name}.json in {SCHEMAS_DIR} or {REGISTRY_DIR}")
     with open(schema_path, encoding="utf-8") as f:
         raw = json.load(f)
-    fields = [SchemaFieldIn(**item) for item in raw]
+    if isinstance(raw, dict) and "schema" in raw:
+        raw_fields = raw["schema"].get("fields", [])
+    elif isinstance(raw, list):
+        raw_fields = raw
+    else:
+        raise ValueError(f"Unsupported schema structure in {schema_path}")
+    fields = []
+    for item in raw_fields:
+        if isinstance(item, dict):
+            fields.append(SchemaFieldIn(
+                name=item["name"],
+                description=item.get("description", "")
+            ))
+        else:
+            fields.append(SchemaFieldIn(name=str(item)))
     return build_dynamic_schema(fields)
 
 
@@ -79,6 +96,21 @@ def main():
     )
     print(f"\nSaved to database, row id={result_id}, took {elapsed}s")
     print(result.model_dump_json(indent=2))
+
+    # Also persist to dataset_output/<doc>.extracted.json
+    output_dir = Path("dataset_output")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_out = output_dir / f"{args.doc}.extracted.json"
+    json_out.write_text(
+        json.dumps({
+            "fixture_doc": args.doc,
+            "schema_used": args.schema,
+            "processing_time_seconds": elapsed,
+            "extracted_data": result.model_dump(),
+        }, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(f"Saved JSON output to: {json_out}")
 
 
 if __name__ == "__main__":

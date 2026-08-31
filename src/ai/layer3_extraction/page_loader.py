@@ -16,7 +16,8 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 FIXTURES_DIR = Path(__file__).parent.parent.parent.parent / "tests" / "fixtures"
-PAGE_MARKER = re.compile(r"<!--\s*Page\s+(\d+)\s*\|[^>]*-->")
+PAGE_MARKER = re.compile(r"<!--\s*Page\s+(\d+)\s*\|[^>]*-->", re.IGNORECASE)
+PAGE_CLOSING_MARKER = re.compile(r"<!--\s*/PAGE(?:\s+\d+)?\s*-->", re.IGNORECASE)
 
 
 def load_pages_with_confidence(page_outputs: List[PageOutput]) -> List[Dict]:
@@ -49,8 +50,10 @@ def load_pages_from_fixture(doc_id: str) -> List[Dict]:
     for i, match in enumerate(matches):
         start = match.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+        raw_slice = content[start:end].strip()
+        cleaned_markdown = PAGE_CLOSING_MARKER.split(raw_slice)[0].strip()
         pages.append({
-            "markdown":    content[start:end].strip(),
+            "markdown":    cleaned_markdown,
             "page_number": int(match.group(1)),
         })
     return pages
