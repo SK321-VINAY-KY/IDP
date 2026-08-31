@@ -5,10 +5,12 @@ from typing import List
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
+from app.core.auth import get_current_user
 from app.core.conversation_manager import MAX_DOCUMENT_SAMPLES, MIN_DOCUMENT_SAMPLES, ConversationManager, TurnResult
 from app.llm.factory import get_llm_adapter
 from app.models.api_models import ChatRequest, ChatResponse, UpdateSchemaRequest
 from app.storage.session_store import get_session_store
+from app.storage.user_store import User
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -31,9 +33,17 @@ def _to_response(result: TurnResult) -> ChatResponse:
 
 
 @router.post("/chat", response_model=ChatResponse, response_model_by_alias=True)
-def chat(req: ChatRequest, manager: ConversationManager = Depends(get_conversation_manager)) -> ChatResponse:
+def chat(
+    req: ChatRequest,
+    manager: ConversationManager = Depends(get_conversation_manager),
+    user: User = Depends(get_current_user),
+) -> ChatResponse:
     if not req.session_id:
         result = manager.start_session()
+        session = manager.store.get(result.session_id)
+        if session:
+            session.owner = user.username
+            manager.store.save(session)
         return _to_response(result)
 
     if not req.message:
@@ -54,6 +64,7 @@ async def infer_schema(
         description="Optional - feed samples into an existing session (e.g. one already mid-chat) instead of starting a new one",
     ),
     manager: ConversationManager = Depends(get_conversation_manager),
+    user: User = Depends(get_current_user),
 ) -> ChatResponse:
     if not (MIN_DOCUMENT_SAMPLES <= len(files) <= MAX_DOCUMENT_SAMPLES):
         raise HTTPException(
@@ -69,6 +80,11 @@ async def infer_schema(
 
     try:
         result = manager.start_from_documents(samples, session_id=session_id)
+        if session_id is None:
+            session = manager.store.get(result.session_id)
+            if session:
+                session.owner = user.username
+                manager.store.save(session)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except KeyError:
@@ -77,7 +93,11 @@ async def infer_schema(
 
 
 @router.get("/session/{session_id}", response_model=ChatResponse, response_model_by_alias=True)
-def get_session(session_id: str, manager: ConversationManager = Depends(get_conversation_manager)) -> ChatResponse:
+def get_session(
+    session_id: str,
+    manager: ConversationManager = Depends(get_conversation_manager),
+    user: User = Depends(get_current_user),
+) -> ChatResponse:
     session = manager.store.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
@@ -92,9 +112,17 @@ def get_session(session_id: str, manager: ConversationManager = Depends(get_conv
 
 
 @router.post("/session/{session_id}/reset", response_model=ChatResponse, response_model_by_alias=True)
-def reset_session(session_id: str, manager: ConversationManager = Depends(get_conversation_manager)) -> ChatResponse:
+def reset_session(
+    session_id: str,
+    manager: ConversationManager = Depends(get_conversation_manager),
+    user: User = Depends(get_current_user),
+) -> ChatResponse:
     manager.store.delete(session_id)
     result = manager.start_session()
+    session = manager.store.get(result.session_id)
+    if session:
+        session.owner = user.username
+        manager.store.save(session)
     return _to_response(result)
 
 
@@ -103,6 +131,7 @@ def update_schema(
     session_id: str,
     req: UpdateSchemaRequest,
     manager: ConversationManager = Depends(get_conversation_manager),
+    user: User = Depends(get_current_user),
 ) -> ChatResponse:
     try:
         result = manager.update_schema_manually(session_id, req.document_type, req.fields)

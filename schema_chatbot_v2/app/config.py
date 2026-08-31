@@ -43,6 +43,11 @@ class Settings:
     # --- Storage ---
     session_store: str = os.getenv("SESSION_STORE", "memory")  # memory | dynamodb (future)
 
+    # --- Auth ---
+    jwt_secret: str = os.getenv("JWT_SECRET", "idp-schema-pipeline-dev-secret-key-change-me")
+    jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
+    jwt_expire_minutes: int = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))  # 24 hours default
+
     # --- App ---
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 

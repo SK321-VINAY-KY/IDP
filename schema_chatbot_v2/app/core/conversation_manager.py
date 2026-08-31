@@ -80,6 +80,7 @@ class ConversationManager:
             "turn_count_at_confirm": session.turn_count,
             "schema": session.schema_state.to_json_schema(),
             "sample_documents": getattr(session, "sample_documents", None) or [],
+            "owner": session.owner,
         }
         path = SCHEMA_REGISTRY_DIR / f"{session.schema_id}.json"
         path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
@@ -251,6 +252,15 @@ class ConversationManager:
                 persist_note = (
                     f"\n\n(Warning: could not write to schema_registry: {exc})"
                 )
+            try:
+                from app.core.activity_log import log_activity
+                log_activity(
+                    session.owner or "unknown",
+                    "schema_confirmed",
+                    {"schema_id": session.schema_id, "document_type": session.schema_state.document_type},
+                )
+            except Exception:
+                pass
             message = (extraction.reply or "Schema created successfully.") + persist_note
             return self._as_result(session, message)
 

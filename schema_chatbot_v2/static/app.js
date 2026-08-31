@@ -2,18 +2,26 @@
     'use strict';
 
     const API_BASE = window.location.origin;
+    const TOKEN_KEY = 'idp_auth_token';
+    const ROLE_KEY = 'idp_auth_role';
 
     let state = {
+        token: localStorage.getItem(TOKEN_KEY) || null,
+        role: localStorage.getItem(ROLE_KEY) || null,
+        username: null,
         sessionId: null,
         docs: [],
+        userDocs: [],
         schemas: [],
         currentSchema: null,
         currentErrors: [],
         currentState: 'idle',
         completed: false,
         jobs: [],
+        userJobs: [],
         selectedJobId: null,
         pipelineAvailable: false,
+        lastConfirmedSchemaId: null,
     };
 
     const $ = (id) => document.getElementById(id);
@@ -30,13 +38,39 @@
         return (bytes / 1024 / 1024).toFixed(2) + ' MB';
     }
 
+    function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
     async function api(path, opts = {}) {
         const url = path.startsWith('http') ? path : API_BASE + path;
+        const headers = opts.headers ? { ...opts.headers } : {};
+
+        if (opts.json) {
+            headers['Content-Type'] = 'application/json';
+        }
+        if (state.token) {
+            headers['Authorization'] = 'Bearer ' + state.token;
+        }
+
         const resp = await fetch(url, {
-            headers: opts.json ? { 'Content-Type': 'application/json' } : undefined,
             ...opts,
+            headers,
             body: opts.json ? JSON.stringify(opts.json) : opts.body,
         });
+
+        if (resp.status === 401) {
+            // Token expired or invalid
+            logout();
+            throw new Error('Session expired or unauthorized. Please log in again.');
+        }
+
         const ct = resp.headers.get('content-type') || '';
         const body = ct.includes('application/json') ? await resp.json() : await resp.text();
         if (!resp.ok) {
@@ -44,6 +78,123 @@
             throw new Error(msg);
         }
         return body;
+    }
+
+    // ======================= Auth & Role Management =======================
+
+    function showLoginModal() {
+        const overlay = $('loginOverlay');
+        if (overlay) overlay.classList.remove('hidden');
+        const userHeader = $('userHeaderSection');
+        if (userHeader) userHeader.classList.add('hidden');
+    }
+
+    function hideLoginModal() {
+        const overlay = $('loginOverlay');
+        if (overlay) overlay.classList.add('hidden');
+    }
+
+    function logout() {
+        state.token = null;
+        state.role = null;
+        state.username = null;
+        state.sessionId = null;
+        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(ROLE_KEY);
+        showLoginModal();
+    }
+
+    async function handleLoginSubmit(e) {
+        e.preventDefault();
+        const username = $('loginUsername').value.trim();
+        const password = $('loginPassword').value;
+        const errorBox = $('loginError');
+        const submitBtn = $('loginSubmitBtn');
+
+        if (!username || !password) return;
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Signing in...';
+        hideStatus('loginError');
+
+        try {
+            const fd = new URLSearchParams();
+            fd.append('username', username);
+            fd.append('password', password);
+
+            const resp = await fetch(API_BASE + '/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: fd.toString(),
+            });
+
+            const data = await resp.json();
+            if (!resp.ok) {
+                throw new Error(data.detail || 'Login failed');
+            }
+
+            state.token = data.access_token;
+            state.role = data.role;
+            localStorage.setItem(TOKEN_KEY, state.token);
+            localStorage.setItem(ROLE_KEY, state.role);
+
+            hideLoginModal();
+            await initAuthenticatedSession();
+        } catch (err) {
+            showStatus('loginError', err.message, 'error');
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Sign In';
+        }
+    }
+
+    async function initAuthenticatedSession() {
+        try {
+            const me = await api('/auth/me');
+            state.username = me.username;
+            state.role = me.role;
+
+            const userHeader = $('userHeaderSection');
+            if (userHeader) userHeader.classList.remove('hidden');
+            const userBadge = $('userBadge');
+            if (userBadge) {
+                userBadge.textContent = `${state.username} (${state.role})`;
+                userBadge.className = 'badge ' + (state.role === 'admin' ? 'badge-primary' : 'badge-info');
+            }
+
+            applyRoleVisibility();
+
+            if (state.role === 'admin') {
+                loadDocuments();
+                loadSchemas();
+                loadPipelineStatus();
+                loadJobs();
+            } else {
+                loadUserDocuments();
+                loadUserJobs();
+            }
+
+            if (!state.sessionId) {
+                newSession();
+            }
+        } catch (err) {
+            console.warn('initAuthenticatedSession failed', err);
+            showLoginModal();
+        }
+    }
+
+    function applyRoleVisibility() {
+        const isAdmin = state.role === 'admin';
+
+        document.querySelectorAll('.admin-only').forEach(el => {
+            if (isAdmin) el.classList.remove('hidden');
+            else el.classList.add('hidden');
+        });
+
+        document.querySelectorAll('.user-only').forEach(el => {
+            if (!isAdmin) el.classList.remove('hidden');
+            else el.classList.add('hidden');
+        });
     }
 
     // ======================= Theme Toggle =======================
@@ -81,14 +232,25 @@
             btn.classList.add('active');
             const targetPanel = $('tab-' + btn.dataset.tab);
             if (targetPanel) targetPanel.classList.add('active');
+
             if (btn.dataset.tab === 'chatbot') {
-                loadSchemas();
-                loadPipelineStatus();
-                loadJobs();
-                if (state.docs.length === 0) loadDocuments();
-                else renderDocChecklist();
+                if (state.role === 'admin') {
+                    loadSchemas();
+                    loadPipelineStatus();
+                    loadJobs();
+                    if (state.docs.length === 0) loadDocuments();
+                    else renderDocChecklist();
+                } else {
+                    loadUserJobs();
+                }
             } else if (btn.dataset.tab === 'documents') {
                 loadDocuments();
+            } else if (btn.dataset.tab === 'user-documents') {
+                loadUserDocuments();
+            } else if (btn.dataset.tab === 'logs') {
+                loadUserActivityLogs();
+            } else if (btn.dataset.tab === 'users') {
+                loadUsersList();
             }
         });
     });
@@ -108,35 +270,38 @@
         }
     }
 
-    // ======================= Documents Tab =======================
+    // ======================= Admin Documents Tab =======================
 
     async function loadDocuments() {
+        if (state.role !== 'admin') return;
         try {
             const data = await api('/documents');
             state.docs = data.documents || [];
             const outs = data.outputs || [];
-            $('docCount').textContent = state.docs.length;
-            $('outCount').textContent = outs.length;
+            if ($('docCount')) $('docCount').textContent = state.docs.length;
+            if ($('outCount')) $('outCount').textContent = outs.length;
             renderDocList(state.docs, outs);
             renderDocChecklist();
         } catch (e) {
-            $('docList').innerHTML = `<p class="muted">Failed to load: ${e.message}</p>`;
+            if ($('docList')) $('docList').innerHTML = `<p class="muted">Failed to load: ${e.message}</p>`;
         }
     }
 
     function renderDocList(docs, outs) {
+        const docList = $('docList');
+        if (!docList) return;
         if (!docs.length) {
-            $('docList').innerHTML = '<p class="muted">No documents yet. Upload PDFs above.</p>';
+            docList.innerHTML = '<p class="muted">No documents yet. Upload PDFs above.</p>';
         } else {
-            $('docList').innerHTML = '';
+            docList.innerHTML = '';
             docs.forEach(d => {
                 const row = el('div', 'doc-item');
                 const info = el('div', 'doc-item-info');
                 info.innerHTML = `
-                    <span class="doc-icon"></span>
+                    <span class="doc-icon">📄</span>
                     <div>
-                        <div class="doc-name">${d.name}</div>
-                        <div class="doc-meta">${fmtSize(d.size)}  ${new Date(d.modified).toLocaleString()}</div>
+                        <div class="doc-name">${escapeHtml(d.name)}</div>
+                        <div class="doc-meta">${fmtSize(d.size)} • ${new Date(d.modified).toLocaleString()}</div>
                     </div>
                 `;
                 const badge = d.has_output
@@ -146,85 +311,170 @@
                 actions.innerHTML = badge;
                 row.appendChild(info);
                 row.appendChild(actions);
-                $('docList').appendChild(row);
+                docList.appendChild(row);
             });
         }
 
+        const outList = $('outList');
+        if (!outList) return;
         if (!outs.length) {
-            $('outList').innerHTML = '<p class="muted">No processed outputs yet. Run the pipeline.</p>';
+            outList.innerHTML = '<p class="muted">No processed outputs yet. Run the pipeline.</p>';
         } else {
-            $('outList').innerHTML = '';
+            outList.innerHTML = '';
             outs.forEach(o => {
                 const row = el('div', 'doc-item');
                 const info = el('div', 'doc-item-info');
-                const schema = o.schema_ref ? `  schema: <code>${o.schema_ref.schema_id || '--'}</code>` : '';
+                const schema = o.schema_ref ? ` • schema: <code>${escapeHtml(o.schema_ref.schema_id || '--')}</code>` : '';
                 info.innerHTML = `
-                    <span class="doc-icon"></span>
+                    <span class="doc-icon">📝</span>
                     <div>
-                        <div class="doc-name">${o.name}</div>
-                        <div class="doc-meta">${fmtSize(o.size)}  ${new Date(o.modified).toLocaleString()}${schema}</div>
+                        <div class="doc-name">${escapeHtml(o.name)}</div>
+                        <div class="doc-meta">${fmtSize(o.size)} • ${new Date(o.modified).toLocaleString()}${schema}</div>
                     </div>
                 `;
                 row.appendChild(info);
-                $('outList').appendChild(row);
+                outList.appendChild(row);
             });
         }
     }
 
-    // Upload zone
-    (function setupUpload() {
+    // ======================= User Documents Tab =======================
+
+    async function loadUserDocuments() {
+        try {
+            const data = await api('/me/documents');
+            state.userDocs = data.documents || [];
+            if ($('userDocCount')) $('userDocCount').textContent = state.userDocs.length;
+            renderUserDocList(state.userDocs);
+        } catch (e) {
+            if ($('userDocList')) $('userDocList').innerHTML = `<p class="muted">Failed to load: ${e.message}</p>`;
+        }
+    }
+
+    function renderUserDocList(docs) {
+        const host = $('userDocList');
+        if (!host) return;
+        if (!docs.length) {
+            host.innerHTML = '<p class="muted">No private documents yet. Upload PDFs above.</p>';
+        } else {
+            host.innerHTML = '';
+            docs.forEach(d => {
+                const row = el('div', 'doc-item');
+                const info = el('div', 'doc-item-info');
+                info.innerHTML = `
+                    <span class="doc-icon">📄</span>
+                    <div>
+                        <div class="doc-name">${escapeHtml(d.name)}</div>
+                        <div class="doc-meta">${fmtSize(d.size)} • ${new Date(d.modified).toLocaleString()}</div>
+                    </div>
+                `;
+                row.appendChild(info);
+                host.appendChild(row);
+            });
+        }
+    }
+
+    // ======================= Upload Handlers =======================
+
+    (function setupUploads() {
+        // Admin upload
         const zone = $('uploadZone');
         const input = $('fileInput');
         const browse = $('browseBtn');
 
-        function handleFiles(files) {
-            const pdfs = Array.from(files).filter(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
-            if (!pdfs.length) return;
-            uploadFiles(pdfs);
+        if (zone && input && browse) {
+            function handleFiles(files) {
+                const pdfs = Array.from(files).filter(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+                if (!pdfs.length) return;
+                uploadAdminFiles(pdfs);
+            }
+
+            zone.addEventListener('click', (e) => {
+                if (e.target.tagName !== 'A') { input.click(); e.preventDefault(); }
+            });
+            browse.addEventListener('click', (e) => { input.click(); e.preventDefault(); });
+            input.addEventListener('change', (e) => handleFiles(e.target.files));
+            zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('dragover'); });
+            zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+            zone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                zone.classList.remove('dragover');
+                handleFiles(e.dataTransfer.files);
+            });
+
+            async function uploadAdminFiles(files) {
+                const fd = new FormData();
+                files.forEach(f => fd.append('files', f, f.name));
+                showStatus('uploadStatus', `Uploading ${files.length} file(s)...`);
+                try {
+                    const res = await api('/documents/upload', { method: 'POST', body: fd });
+                    showStatus('uploadStatus', `Saved ${res.count} file(s): ${res.saved.join(', ')}`, 'success');
+                    loadDocuments();
+                } catch (e) {
+                    showStatus('uploadStatus', 'Upload failed: ' + e.message, 'error');
+                }
+                setTimeout(() => hideStatus('uploadStatus'), 4000);
+            }
         }
 
-        zone.addEventListener('click', (e) => {
-            if (e.target.tagName !== 'A') { input.click(); e.preventDefault(); }
-        });
-        browse.addEventListener('click', (e) => { input.click(); e.preventDefault(); });
-        input.addEventListener('change', (e) => handleFiles(e.target.files));
-        zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('dragover'); });
-        zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
-        zone.addEventListener('drop', (e) => {
-            e.preventDefault();
-            zone.classList.remove('dragover');
-            handleFiles(e.dataTransfer.files);
-        });
+        // User private upload
+        const uZone = $('userUploadZone');
+        const uInput = $('userFileInput');
+        const uBrowse = $('userBrowseBtn');
 
-        async function uploadFiles(files) {
-            const fd = new FormData();
-            files.forEach(f => fd.append('files', f, f.name));
-            showStatus('uploadStatus', `Uploading ${files.length} file(s)...`);
-            try {
-                const res = await api('/documents/upload', { method: 'POST', body: fd });
-                showStatus('uploadStatus', `Saved ${res.count} file(s): ${res.saved.join(', ')}`, 'success');
-                loadDocuments();
-            } catch (e) {
-                showStatus('uploadStatus', 'Upload failed: ' + e.message, 'error');
+        if (uZone && uInput && uBrowse) {
+            function handleUserFiles(files) {
+                const pdfs = Array.from(files).filter(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+                if (!pdfs.length) return;
+                uploadUserFiles(pdfs);
             }
-            setTimeout(() => hideStatus('uploadStatus'), 4000);
+
+            uZone.addEventListener('click', (e) => {
+                if (e.target.tagName !== 'A') { uInput.click(); e.preventDefault(); }
+            });
+            uBrowse.addEventListener('click', (e) => { uInput.click(); e.preventDefault(); });
+            uInput.addEventListener('change', (e) => handleUserFiles(e.target.files));
+            uZone.addEventListener('dragover', (e) => { e.preventDefault(); uZone.classList.add('dragover'); });
+            uZone.addEventListener('dragleave', () => uZone.classList.remove('dragover'));
+            uZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uZone.classList.remove('dragover');
+                handleUserFiles(e.dataTransfer.files);
+            });
+
+            async function uploadUserFiles(files) {
+                const fd = new FormData();
+                files.forEach(f => fd.append('files', f, f.name));
+                showStatus('userUploadStatus', `Uploading ${files.length} private file(s)...`);
+                try {
+                    const res = await api('/me/documents', { method: 'POST', body: fd });
+                    showStatus('userUploadStatus', `Saved ${res.count} file(s): ${res.saved.join(', ')}`, 'success');
+                    loadUserDocuments();
+                } catch (e) {
+                    showStatus('userUploadStatus', 'Upload failed: ' + e.message, 'error');
+                }
+                setTimeout(() => hideStatus('userUploadStatus'), 4000);
+            }
         }
     })();
 
-    $('refreshDocsBtn').addEventListener('click', loadDocuments);
+    if ($('refreshDocsBtn')) $('refreshDocsBtn').addEventListener('click', loadDocuments);
+    if ($('refreshUserDocsBtn')) $('refreshUserDocsBtn').addEventListener('click', loadUserDocuments);
 
     function showStatus(id, html, kind) {
         const s = $(id);
+        if (!s) return;
         s.className = 'status-box' + (kind ? ' ' + kind : '');
         s.innerHTML = html;
         s.classList.remove('hidden');
     }
-    function hideStatus(id) { $(id).classList.add('hidden'); }
+    function hideStatus(id) { const s = $(id); if (s) s.classList.add('hidden'); }
 
     // ======================= Chatbot Tab =======================
 
     function addChatMsg(who, text) {
         const log = $('chatLog');
+        if (!log) return;
         const wrap = el('div', 'chat-msg ' + who);
         const b = el('div', 'msg-bubble');
         b.textContent = text;
@@ -235,24 +485,15 @@
 
     function setStateBadge(s, s2) {
         const b = $('stateBadge');
+        if (!b) return;
         const map = {
             START: 'badge-info', REVIEW: 'badge-warn', COMPLETED: 'badge-success',
         };
         b.className = 'badge ' + (map[s] || 'badge-mute');
-        b.textContent = s.toLowerCase() + (s2 ? '  ' + s2 : '');
+        b.textContent = s.toLowerCase() + (s2 ? ' • ' + s2 : '');
     }
 
     let schemaSyncTimer = null;
-
-    function escapeHtml(str) {
-        if (str === null || str === undefined) return '';
-        return String(str)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-    }
 
     function collectSchemaFromInputs() {
         if (!state.currentSchema) {
@@ -302,8 +543,8 @@
         const schema = state.currentSchema;
         const errs = $('schemaErrors');
         if (!schema) {
-            errs.classList.add('hidden');
-            $('confirmBtn').disabled = true;
+            if (errs) errs.classList.add('hidden');
+            if ($('confirmBtn')) $('confirmBtn').disabled = true;
             return;
         }
 
@@ -320,14 +561,16 @@
 
         state.currentErrors = errors;
         if (errors.length) {
-            errs.innerHTML = '<strong>⚠️ Schema issues:</strong><ul>' + errors.map(e => '<li>' + escapeHtml(e) + '</li>').join('') + '</ul>';
-            errs.classList.remove('hidden');
+            if (errs) {
+                errs.innerHTML = '<strong>⚠️ Schema issues:</strong><ul>' + errors.map(e => '<li>' + escapeHtml(e) + '</li>').join('') + '</ul>';
+                errs.classList.remove('hidden');
+            }
         } else {
-            errs.classList.add('hidden');
+            if (errs) errs.classList.add('hidden');
         }
 
         const canConfirm = (state.currentState === 'REVIEW' || state.currentState === 'START') && !errors.length && (schema.fields || []).length > 0 && !!schema.document_type;
-        $('confirmBtn').disabled = state.completed || !canConfirm;
+        if ($('confirmBtn')) $('confirmBtn').disabled = state.completed || !canConfirm;
     }
 
     async function syncSchemaToServer() {
@@ -387,32 +630,28 @@
         const errs = $('schemaErrors');
         const addBtn = $('addSchemaFieldBtn');
 
+        if (!panel) return;
+
         if (!schema) {
             panel.innerHTML = '<p class="muted">No schema yet. Start a session, upload samples, or click "+ Add Field".</p>';
-            errs.classList.add('hidden');
-            $('copySchemaBtn').disabled = true;
-            $('printSchemaBtn').disabled = true;
-            $('confirmBtn').disabled = true;
+            if (errs) errs.classList.add('hidden');
+            if ($('copySchemaBtn')) $('copySchemaBtn').disabled = true;
+            if ($('printSchemaBtn')) $('printSchemaBtn').disabled = true;
+            if ($('confirmBtn')) $('confirmBtn').disabled = true;
             if (addBtn) addBtn.disabled = !state.sessionId;
             return;
         }
 
-        $('copySchemaBtn').disabled = false;
-        $('printSchemaBtn').disabled = false;
+        if ($('copySchemaBtn')) $('copySchemaBtn').disabled = false;
+        if ($('printSchemaBtn')) $('printSchemaBtn').disabled = false;
         if (addBtn) addBtn.disabled = state.completed;
 
         const docType = schema.document_type || '';
         const fields = schema.fields || [];
 
         const typeOptions = [
-            'string',
-            'number',
-            'integer',
-            'boolean',
-            'date',
-            'array[string]',
-            'array[object]',
-            'object'
+            'string', 'number', 'integer', 'boolean', 'date',
+            'array[string]', 'array[object]', 'object'
         ];
 
         let html = `
@@ -502,84 +741,50 @@
         if (data.message) addChatMsg('bot', data.message);
         setStateBadge(data.state, data.completed ? 'confirmed' : '');
         renderSchemaPanel();
-        $('chatInput').disabled = false;
-        $('sendBtn').disabled = false;
+        if ($('chatInput')) $('chatInput').disabled = false;
+        if ($('sendBtn')) $('sendBtn').disabled = false;
         if (data.completed) {
-            showStatus('confirmStatus', ` Schema confirmed! schema_id = <code>${data.schema_id}</code>. Saved to schema_registry/.`, 'success');
-            // Show the "run pipeline now" shortcut box
-            $('postConfirmBox').classList.remove('hidden');
-            $('quickRunPipelineBtn').disabled = false;
-            // Refresh schemas + pipeline status in background so dropdown is ready
-            setTimeout(() => {
-                loadSchemas();
-                loadPipelineStatus();
-                if (state.docs.length === 0) loadDocuments().then(renderDocChecklist);
-                else renderDocChecklist();
-            }, 300);
+            showStatus('confirmStatus', `🎉 Schema confirmed! schema_id = <code>${escapeHtml(data.schema_id)}</code>. Saved to schema_registry/.`, 'success');
+            if ($('postConfirmBox')) {
+                $('postConfirmBox').classList.remove('hidden');
+                $('quickRunPipelineBtn').disabled = false;
+            }
+            if (state.role === 'admin') {
+                setTimeout(() => {
+                    loadSchemas();
+                    loadPipelineStatus();
+                }, 300);
+            }
         } else {
-            $('postConfirmBox').classList.add('hidden');
+            if ($('postConfirmBox')) $('postConfirmBox').classList.add('hidden');
         }
     }
 
     async function newSession() {
         try {
             state.lastConfirmedSchemaId = null;
-            $('postConfirmBox').classList.add('hidden');
+            if ($('postConfirmBox')) $('postConfirmBox').classList.add('hidden');
             hideStatus('confirmStatus');
             const data = await api('/chat', { method: 'POST', json: { session_id: null, message: null } });
             state.sessionId = data.session_id;
-            $('chatLog').innerHTML = '';
+            if ($('chatLog')) $('chatLog').innerHTML = '';
             handleChatResponse(data);
-            $('chatInput').focus();
+            if ($('chatInput')) $('chatInput').focus();
         } catch (e) {
             addChatMsg('bot', 'Failed to start session: ' + e.message);
         }
     }
 
-    $('newSessionBtn').addEventListener('click', newSession);
-
-    async function quickRunPipeline() {
-        const schemaId = state.lastConfirmedSchemaId;
-        if (!schemaId) {
-            alert('No confirmed schema yet. Confirm a schema in the chat first.');
-            return;
-        }
-        // Pre-select the schema, check all docs, switch tab, then fire
-        if (!state.docs.length) {
-            await loadDocuments();
-        }
-        await loadSchemas();
-        await loadPipelineStatus();
-        document.querySelectorAll('.doc-check').forEach(c => c.checked = true);
-        const sel = $('schemaSelect');
-        if (![...sel.options].map(o => o.value).includes(schemaId)) {
-            alert(`Schema ${schemaId} not yet loaded in the dropdown. Try again in a second.`);
-            return;
-        }
-        sel.value = schemaId;
-        updateRunBtn();
-        const pipeSection = $('pipelineSection');
-        if (pipeSection) {
-            pipeSection.scrollIntoView({ behavior: 'smooth' });
-        }
-        setTimeout(() => {
-            if (!$('runPipelineBtn').disabled) {
-                $('runPipelineBtn').click();
-            } else {
-                alert('Still waiting on document/schema data. Press the button again in a moment.');
-            }
-        }, 300);
-    }
-
-    $('quickRunPipelineBtn').addEventListener('click', quickRunPipeline);
+    if ($('newSessionBtn')) $('newSessionBtn').addEventListener('click', newSession);
 
     async function sendChat() {
-        const msg = $('chatInput').value.trim();
+        const input = $('chatInput');
+        const msg = input ? input.value.trim() : '';
         if (!msg || !state.sessionId) return;
-        $('chatInput').value = '';
+        input.value = '';
         addChatMsg('user', msg);
-        $('chatInput').disabled = true;
-        $('sendBtn').disabled = true;
+        input.disabled = true;
+        if ($('sendBtn')) $('sendBtn').disabled = true;
         try {
             const data = await api('/chat', {
                 method: 'POST',
@@ -588,90 +793,99 @@
             handleChatResponse(data);
         } catch (e) {
             addChatMsg('bot', 'Error: ' + e.message);
-            $('chatInput').disabled = false;
-            $('sendBtn').disabled = false;
+            if (input) input.disabled = false;
+            if ($('sendBtn')) $('sendBtn').disabled = false;
         }
     }
 
-    $('sendBtn').addEventListener('click', sendChat);
-    $('chatInput').addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') sendChat();
-    });
-
-    $('printSchemaBtn').addEventListener('click', async () => {
-        if (!state.sessionId) return;
-        try {
-            const data = await api('/session/' + state.sessionId);
-            state.currentSchema = data.schema;
-            state.currentState = data.state;
-            state.completed = data.completed;
-            renderSchemaPanel();
-        } catch (e) {
-            addChatMsg('bot', 'Error re-print schema: ' + e.message);
-        }
-    });
-
-    $('copySchemaBtn').addEventListener('click', async () => {
-        if (!state.currentSchema) return;
-        try {
-            await navigator.clipboard.writeText(JSON.stringify(state.currentSchema, null, 2));
-            const old = $('copySchemaBtn').textContent;
-            $('copySchemaBtn').textContent = ' Copied!';
-            setTimeout(() => { $('copySchemaBtn').textContent = old; }, 1500);
-        } catch (e) {
-            addChatMsg('bot', 'Copy failed: ' + e.message);
-        }
-    });
-
-    $('confirmBtn').addEventListener('click', async () => {
-        if (!state.sessionId || state.completed) return;
-        $('chatInput').value = '/confirm';
-        sendChat();
-    });
-
-    const addSchemaFieldHeaderBtn = $('addSchemaFieldBtn');
-    if (addSchemaFieldHeaderBtn) {
-        addSchemaFieldHeaderBtn.addEventListener('click', addNewSchemaField);
+    if ($('sendBtn')) $('sendBtn').addEventListener('click', sendChat);
+    if ($('chatInput')) {
+        $('chatInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') sendChat();
+        });
     }
 
-    $('schemaPanel').addEventListener('input', (e) => {
-        if (e.target.matches('#editDocType, .field-name-input, .field-desc-input')) {
-            scheduleSchemaSync();
-        }
-    });
-
-    $('schemaPanel').addEventListener('change', (e) => {
-        if (e.target.matches('.field-type-select')) {
-            scheduleSchemaSync();
-        }
-    });
-
-    $('schemaPanel').addEventListener('click', (e) => {
-        const toggleBtn = e.target.closest('.req-toggle');
-        if (toggleBtn) {
-            const isReq = toggleBtn.classList.contains('is-req');
-            toggleBtn.classList.toggle('is-req', !isReq);
-            toggleBtn.classList.toggle('is-opt', isReq);
-            toggleBtn.textContent = !isReq ? 'YES' : 'NO';
-            scheduleSchemaSync();
-            return;
-        }
-
-        const delBtn = e.target.closest('.btn-del-field');
-        if (delBtn) {
-            const idx = parseInt(delBtn.getAttribute('data-idx'), 10);
-            if (!isNaN(idx) && state.currentSchema && state.currentSchema.fields) {
-                state.currentSchema.fields.splice(idx, 1);
+    if ($('printSchemaBtn')) {
+        $('printSchemaBtn').addEventListener('click', async () => {
+            if (!state.sessionId) return;
+            try {
+                const data = await api('/session/' + state.sessionId);
+                state.currentSchema = data.schema;
+                state.currentState = data.state;
+                state.completed = data.completed;
                 renderSchemaPanel();
+            } catch (e) {
+                addChatMsg('bot', 'Error re-print schema: ' + e.message);
+            }
+        });
+    }
+
+    if ($('copySchemaBtn')) {
+        $('copySchemaBtn').addEventListener('click', async () => {
+            if (!state.currentSchema) return;
+            try {
+                await navigator.clipboard.writeText(JSON.stringify(state.currentSchema, null, 2));
+                const old = $('copySchemaBtn').textContent;
+                $('copySchemaBtn').textContent = '✓ Copied!';
+                setTimeout(() => { $('copySchemaBtn').textContent = old; }, 1500);
+            } catch (e) {
+                addChatMsg('bot', 'Copy failed: ' + e.message);
+            }
+        });
+    }
+
+    if ($('confirmBtn')) {
+        $('confirmBtn').addEventListener('click', async () => {
+            if (!state.sessionId || state.completed) return;
+            if ($('chatInput')) $('chatInput').value = '/confirm';
+            sendChat();
+        });
+    }
+
+    if ($('addSchemaFieldBtn')) {
+        $('addSchemaFieldBtn').addEventListener('click', addNewSchemaField);
+    }
+
+    if ($('schemaPanel')) {
+        $('schemaPanel').addEventListener('input', (e) => {
+            if (e.target.matches('#editDocType, .field-name-input, .field-desc-input')) {
                 scheduleSchemaSync();
             }
-            return;
-        }
+        });
 
-        if (e.target.matches('#addFieldInlineBtn')) {
-            addNewSchemaField();
-        }
-    });
+        $('schemaPanel').addEventListener('change', (e) => {
+            if (e.target.matches('.field-type-select')) {
+                scheduleSchemaSync();
+            }
+        });
+
+        $('schemaPanel').addEventListener('click', (e) => {
+            const toggleBtn = e.target.closest('.req-toggle');
+            if (toggleBtn) {
+                const isReq = toggleBtn.classList.contains('is-req');
+                toggleBtn.classList.toggle('is-req', !isReq);
+                toggleBtn.classList.toggle('is-opt', isReq);
+                toggleBtn.textContent = !isReq ? 'YES' : 'NO';
+                scheduleSchemaSync();
+                return;
+            }
+
+            const delBtn = e.target.closest('.btn-del-field');
+            if (delBtn) {
+                const idx = parseInt(delBtn.getAttribute('data-idx'), 10);
+                if (!isNaN(idx) && state.currentSchema && state.currentSchema.fields) {
+                    state.currentSchema.fields.splice(idx, 1);
+                    renderSchemaPanel();
+                    scheduleSchemaSync();
+                }
+                return;
+            }
+
+            if (e.target.matches('#addFieldInlineBtn')) {
+                addNewSchemaField();
+            }
+        });
+    }
 
     // Sample inference upload
     (function setupInferUpload() {
@@ -680,6 +894,8 @@
         const sel = $('inferSelected');
         const run = $('inferBtn');
         let files = [];
+
+        if (!input || !browse || !run) return;
 
         browse.addEventListener('click', () => input.click());
         input.addEventListener('change', (e) => {
@@ -701,7 +917,7 @@
             try {
                 const data = await api('/schema/infer', { method: 'POST', body: fd, timeout: 0 });
                 const secs = (Date.now() - t0) / 1000;
-                if (!$('chatLog').children.length) {
+                if ($('chatLog') && !$('chatLog').children.length) {
                     $('chatLog').innerHTML = '';
                 }
                 addChatMsg('bot', `[Inference returned in ${secs.toFixed(1)}s]`);
@@ -716,26 +932,27 @@
         });
     })();
 
-    // ======================= Pipeline Tab =======================
+    // ======================= Admin Pipeline Section =======================
 
     function renderDocChecklist() {
         const host = $('docChecklist');
         const allBtn = $('selAllBtn');
         const noneBtn = $('selNoneBtn');
+        if (!host) return;
         if (!state.docs.length) {
             host.innerHTML = '<p class="muted small">Load documents from the Documents tab first.</p>';
-            allBtn.disabled = true;
-            noneBtn.disabled = true;
+            if (allBtn) allBtn.disabled = true;
+            if (noneBtn) noneBtn.disabled = true;
             return;
         }
-        allBtn.disabled = false;
-        noneBtn.disabled = false;
+        if (allBtn) allBtn.disabled = false;
+        if (noneBtn) noneBtn.disabled = false;
         host.innerHTML = '';
         state.docs.forEach(d => {
             const row = el('label', 'check-item');
             row.innerHTML = `
-                <input type="checkbox" class="doc-check" value="${d.name}" checked>
-                <span class="cname">${d.name}</span>
+                <input type="checkbox" class="doc-check" value="${escapeHtml(d.name)}" checked>
+                <span class="cname">${escapeHtml(d.name)}</span>
                 <span class="cmeta">${fmtSize(d.size)}</span>
                 <span class="cmeta">${d.has_output ? 're-run' : 'pending'}</span>
             `;
@@ -744,35 +961,43 @@
         updateRunBtn();
     }
 
-    $('selAllBtn').addEventListener('click', () => {
-        document.querySelectorAll('.doc-check').forEach(c => c.checked = true);
-        updateRunBtn();
-    });
-    $('selNoneBtn').addEventListener('click', () => {
-        document.querySelectorAll('.doc-check').forEach(c => c.checked = false);
-        updateRunBtn();
-    });
-
-    function updateRunBtn() {
-        const anyChecked = document.querySelectorAll('.doc-check:checked').length > 0;
-        const sel = $('schemaSelect');
-        $('runPipelineBtn').disabled = !(anyChecked && state.pipelineAvailable && !!sel.value);
+    if ($('selAllBtn')) {
+        $('selAllBtn').addEventListener('click', () => {
+            document.querySelectorAll('.doc-check').forEach(c => c.checked = true);
+            updateRunBtn();
+        });
+    }
+    if ($('selNoneBtn')) {
+        $('selNoneBtn').addEventListener('click', () => {
+            document.querySelectorAll('.doc-check').forEach(c => c.checked = false);
+            updateRunBtn();
+        });
     }
 
-    $('docChecklist').addEventListener('change', updateRunBtn);
+    function updateRunBtn() {
+        const runBtn = $('runPipelineBtn');
+        if (!runBtn) return;
+        const anyChecked = document.querySelectorAll('.doc-check:checked').length > 0;
+        const sel = $('schemaSelect');
+        runBtn.disabled = !(anyChecked && state.pipelineAvailable && sel && !!sel.value);
+    }
+
+    if ($('docChecklist')) $('docChecklist').addEventListener('change', updateRunBtn);
 
     async function loadSchemas() {
+        if (state.role !== 'admin') return;
         try {
             const data = await api('/schemas');
             state.schemas = data.schemas || [];
             const sel = $('schemaSelect');
+            if (!sel) return;
             if (!state.schemas.length) {
                 sel.innerHTML = '<option value="">-- no confirmed schemas --</option>';
                 sel.disabled = true;
             } else {
                 sel.innerHTML = '<option value="">-- select a schema --</option>' +
-                    state.schemas.map(s => `<option value="${s.schema_id}">
-                        ${s.document_type || 'untitled'}  ${s.field_count} fields  ${s.schema_id.slice(0, 12)}
+                    state.schemas.map(s => `<option value="${escapeHtml(s.schema_id)}">
+                        ${escapeHtml(s.document_type || 'untitled')} • ${s.field_count} fields • ${escapeHtml(s.schema_id.slice(0, 12))}
                     </option>`).join('');
                 sel.disabled = false;
             }
@@ -784,27 +1009,28 @@
         }
     }
 
-    $('refreshSchemasBtn').addEventListener('click', loadSchemas);
+    if ($('refreshSchemasBtn')) $('refreshSchemasBtn').addEventListener('click', loadSchemas);
 
     async function loadPipelineStatus() {
+        if (state.role !== 'admin') return;
         try {
             const data = await api('/pipeline/status');
             state.pipelineAvailable = !!data.available;
             const badge = $('pipelineAvail');
-            if (data.available) {
-                badge.textContent = ' available  ' + (data.routing_mode || '');
-                badge.className = 'badge badge-success';
-            } else {
-                badge.textContent = ' unavailable';
-                badge.className = 'badge badge-danger';
+            if (badge) {
+                if (data.available) {
+                    badge.textContent = '✓ available • ' + (data.routing_mode || '');
+                    badge.className = 'badge badge-success';
+                } else {
+                    badge.textContent = '✕ unavailable';
+                    badge.className = 'badge badge-danger';
+                }
             }
             updateRunBtn();
         } catch (e) {
             console.warn('pipeline status failed', e);
         }
     }
-
-    $('refreshJobsBtn').addEventListener('click', () => { loadJobs(); });
 
     function jobStatusBadgeClass(s) {
         return {
@@ -851,11 +1077,13 @@
     }
 
     async function loadJobs() {
+        if (state.role !== 'admin') return;
         try {
             const data = await api('/pipeline/status');
             const jobs = Object.values(data.jobs || {});
             state.jobs = jobs;
             const host = $('jobList');
+            if (!host) return;
             if (!jobs.length) {
                 host.innerHTML = '<p class="muted">No jobs yet.</p>';
                 return;
@@ -871,26 +1099,25 @@
                 let actionButtons = '';
                 if (j.status === 'running' || j.status === 'queued') {
                     actionButtons = `
-                        <button class="btn btn-ghost btn-sm" title="Pause job" data-action="pause" data-job="${j.job_id}">⏸</button>
-                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${j.job_id}">✕</button>
+                        <button class="btn btn-ghost btn-sm" title="Pause job" data-action="pause" data-job="${escapeHtml(j.job_id)}">⏸</button>
+                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}">✕</button>
                     `;
                 } else if (j.status === 'paused') {
                     actionButtons = `
-                        <button class="btn btn-ghost btn-sm" title="Resume job" style="color:#6ee7b7" data-action="resume" data-job="${j.job_id}">▶</button>
-                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${j.job_id}">✕</button>
+                        <button class="btn btn-ghost btn-sm" title="Resume job" style="color:#6ee7b7" data-action="resume" data-job="${escapeHtml(j.job_id)}">▶</button>
+                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}">✕</button>
                     `;
                 }
 
                 row.innerHTML = `
                     <div class="job-item-left">
-                        <div class="job-id">${j.job_id}</div>
-                        <div class="job-meta">${j.created_at}  schema: ${j.schema_id || '--'}  ${done}/${total} docs</div>
+                        <div class="job-id">${escapeHtml(j.job_id)}</div>
+                        <div class="job-meta">${escapeHtml(j.created_at || '')} • schema: ${escapeHtml(j.schema_id || '--')} • ${done}/${total} docs</div>
                     </div>
                     <div class="job-item-right">
                         <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
-                        <span class="badge ${jobStatusBadgeClass(j.status)}">${j.status}</span>
+                        <span class="badge ${jobStatusBadgeClass(j.status)}">${escapeHtml(j.status)}</span>
                         <div class="job-item-actions">${actionButtons}</div>
-                        <span class="muted small">--&gt;</span>
                     </div>
                 `;
                 row.addEventListener('click', (e) => {
@@ -915,39 +1142,45 @@
     }
 
     async function loadJobDetail(jobId) {
-        if (!jobId || jobId === 'undefined') return;
+        if (!jobId || jobId === 'undefined' || state.role !== 'admin') return;
         state.selectedJobId = jobId;
         try {
             const j = await api('/pipeline/jobs/' + jobId);
-            $('jobDetailCard').classList.remove('hidden');
-            $('detailJobId').textContent = jobId;
+            const card = $('jobDetailCard');
+            if (card) card.classList.remove('hidden');
+            if ($('detailJobId')) $('detailJobId').textContent = jobId;
             const st = $('detailStatus');
-            st.textContent = j.status;
-            st.className = 'badge ' + jobStatusBadgeClass(j.status);
+            if (st) {
+                st.textContent = j.status;
+                st.className = 'badge ' + jobStatusBadgeClass(j.status);
+            }
 
             const pauseBtn = $('jobPauseBtn');
             const resumeBtn = $('jobResumeBtn');
             const killBtn = $('jobKillBtn');
 
-            if (j.status === 'running' || j.status === 'queued') {
-                pauseBtn.classList.remove('hidden');
-                resumeBtn.classList.add('hidden');
-                killBtn.classList.remove('hidden');
-            } else if (j.status === 'paused') {
-                pauseBtn.classList.add('hidden');
-                resumeBtn.classList.remove('hidden');
-                killBtn.classList.remove('hidden');
-            } else {
-                pauseBtn.classList.add('hidden');
-                resumeBtn.classList.add('hidden');
-                killBtn.classList.add('hidden');
+            if (pauseBtn && resumeBtn && killBtn) {
+                if (j.status === 'running' || j.status === 'queued') {
+                    pauseBtn.classList.remove('hidden');
+                    resumeBtn.classList.add('hidden');
+                    killBtn.classList.remove('hidden');
+                } else if (j.status === 'paused') {
+                    pauseBtn.classList.add('hidden');
+                    resumeBtn.classList.remove('hidden');
+                    killBtn.classList.remove('hidden');
+                } else {
+                    pauseBtn.classList.add('hidden');
+                    resumeBtn.classList.add('hidden');
+                    killBtn.classList.add('hidden');
+                }
+
+                pauseBtn.onclick = (e) => pauseJob(jobId, e);
+                resumeBtn.onclick = (e) => resumeJob(jobId, e);
+                killBtn.onclick = (e) => killJob(jobId, e);
             }
 
-            pauseBtn.onclick = (e) => pauseJob(jobId, e);
-            resumeBtn.onclick = (e) => resumeJob(jobId, e);
-            killBtn.onclick = (e) => killJob(jobId, e);
-
             const host = $('jobDetail');
+            if (!host) return;
 
             const wall = j.wall_time_s ? `${j.wall_time_s.toFixed(1)}s` : '--';
             const sucs = j.successes || [];
@@ -955,7 +1188,7 @@
 
             host.innerHTML = `
                 <div class="job-summary-grid">
-                    <div class="summary-box"><div class="lbl">Status</div><div class="val">${j.status}</div></div>
+                    <div class="summary-box"><div class="lbl">Status</div><div class="val">${escapeHtml(j.status)}</div></div>
                     <div class="summary-box"><div class="lbl">Docs</div><div class="val">${sucs.length + fails.length} / ${(j.targets || []).length || 0}</div></div>
                     <div class="summary-box"><div class="lbl">Success</div><div class="val" style="color:#6ee7b7">${sucs.length}</div></div>
                     <div class="summary-box"><div class="lbl">Failed</div><div class="val" style="color:#fca5a5">${fails.length}</div></div>
@@ -963,26 +1196,26 @@
                 </div>
                 ${sucs.length ? `
                 <div class="job-section">
-                    <h3> Successful (${sucs.length})</h3>
+                    <h3>✓ Successful (${sucs.length})</h3>
                     ${sucs.map(s => `
                         <div class="result-row ok">
                             <div>
-                                <span class="result-name">${s.pdf}</span>
-                                <div class="result-meta">pages: ${s.pages}  chars: ${s.chars}  avg conf: ${(s.avg_conf || 0).toFixed(3)}  ${s.elapsed_s}s</div>
+                                <span class="result-name">${escapeHtml(s.pdf)}</span>
+                                <div class="result-meta">pages: ${s.pages} • chars: ${s.chars} • avg conf: ${(s.avg_conf || 0).toFixed(3)} • ${s.elapsed_s}s</div>
                             </div>
-                            <div class="result-meta">--&gt; <code>${s.md}</code></div>
+                            <div class="result-meta">→ <code>${escapeHtml(s.md)}</code></div>
                         </div>
                     `).join('')}
                 </div>
                 ` : ''}
                 ${fails.length ? `
                 <div class="job-section">
-                    <h3> Failed (${fails.length})</h3>
+                    <h3>✕ Failed (${fails.length})</h3>
                     ${fails.map(f => `
                         <div class="result-row fail">
                             <div>
-                                <span class="result-name">${f.pdf}</span>
-                                <div class="result-error">${f.error_type}: ${f.error}</div>
+                                <span class="result-name">${escapeHtml(f.pdf)}</span>
+                                <div class="result-error">${escapeHtml(f.error_type)}: ${escapeHtml(f.error)}</div>
                             </div>
                             <div class="result-meta">${f.elapsed_s}s</div>
                         </div>
@@ -991,7 +1224,7 @@
                 ` : ''}
                 <div class="job-section">
                     <h3>Full JSON</h3>
-                    <pre>${JSON.stringify(j, null, 2)}</pre>
+                    <pre>${escapeHtml(JSON.stringify(j, null, 2))}</pre>
                 </div>
             `;
         } catch (e) {
@@ -999,73 +1232,361 @@
         }
     }
 
-    $('runPipelineBtn').addEventListener('click', async () => {
-        const schema_id = $('schemaSelect').value;
-        if (!schema_id) return;
-        const selected = Array.from(document.querySelectorAll('.doc-check:checked')).map(c => c.value);
-        if (!selected.length) return;
+    if ($('refreshJobsBtn')) $('refreshJobsBtn').addEventListener('click', () => { loadJobs(); });
 
-        const btn = $('runPipelineBtn');
-        btn.disabled = true;
-        const oldText = btn.textContent;
-        btn.textContent = 'Starting...';
+    if ($('runPipelineBtn')) {
+        $('runPipelineBtn').addEventListener('click', async () => {
+            const schema_id = $('schemaSelect').value;
+            if (!schema_id) return;
+            const selected = Array.from(document.querySelectorAll('.doc-check:checked')).map(c => c.value);
+            if (!selected.length) return;
+
+            const btn = $('runPipelineBtn');
+            btn.disabled = true;
+            const oldText = btn.textContent;
+            btn.textContent = 'Starting...';
+            try {
+                const fd = new FormData();
+                fd.append('schema_id', schema_id);
+                fd.append('documents', JSON.stringify(selected));
+                const res = await api('/pipeline/run', { method: 'POST', body: fd });
+                btn.textContent = 'Running (job ' + res.job_id + ')...';
+                state.selectedJobId = res.job_id;
+                loadJobs();
+
+                let polls = 0;
+                const interval = setInterval(async () => {
+                    polls++;
+                    try {
+                        const j = await api('/pipeline/jobs/' + res.job_id);
+                        loadJobs();
+                        if (j.status === 'completed' || j.status === 'killed' || polls > 300) {
+                            clearInterval(interval);
+                            btn.textContent = oldText;
+                            btn.disabled = false;
+                            updateRunBtn();
+                        }
+                    } catch (e) {
+                        clearInterval(interval);
+                        btn.textContent = oldText;
+                        btn.disabled = false;
+                    }
+                }, 2000);
+            } catch (e) {
+                btn.textContent = oldText;
+                btn.disabled = false;
+                alert('Pipeline start failed: ' + e.message);
+            }
+        });
+    }
+
+    // ======================= User Pipeline & Jobs =======================
+
+    async function runUserPipeline() {
+        const btn = $('userAutoRunPipelineBtn') || $('quickRunPipelineBtn');
+        if (btn) btn.disabled = true;
+        showStatus('userAutoRunStatus', 'Starting extraction pipeline for your workspace...', 'info');
+
         try {
-            const fd = new FormData();
-            fd.append('schema_id', schema_id);
-            fd.append('documents', JSON.stringify(selected));
-            const res = await api('/pipeline/run', { method: 'POST', body: fd });
-            btn.textContent = 'Running (job ' + res.job_id + ')...';
-            state.selectedJobId = res.job_id;
-            loadJobs();
-
-            let polls = 0;
-            let consecutiveErrors = 0;
-            const interval = setInterval(async () => {
-                polls++;
-                try {
-                    const j = await api('/pipeline/jobs/' + res.job_id);
-                    consecutiveErrors = 0;
-                    loadJobs();
-                    if (j.status === 'completed' || j.status === 'killed' || polls > 300) {
-                        clearInterval(interval);
-                        btn.textContent = oldText;
-                        btn.disabled = false;
-                        updateRunBtn();
-                    } else if (j.status === 'paused') {
-                        btn.textContent = 'Paused (job ' + res.job_id + ')...';
-                    } else if (j.status === 'running') {
-                        btn.textContent = 'Running (job ' + res.job_id + ')...';
-                    }
-                } catch (e) {
-                    consecutiveErrors++;
-                    if (consecutiveErrors > 10) {
-                        clearInterval(interval);
-                        btn.textContent = oldText;
-                        btn.disabled = false;
-                        updateRunBtn();
-                    }
-                }
-            }, 2000);
+            const res = await api('/me/pipeline/run', { method: 'POST' });
+            showStatus('userAutoRunStatus', `✓ Job ${res.job_id} queued for ${res.targets} document(s).`, 'success');
+            loadUserJobs();
         } catch (e) {
-            btn.textContent = oldText;
-            btn.disabled = false;
-            alert('Pipeline start failed: ' + e.message);
+            showStatus('userAutoRunStatus', 'Failed to run pipeline: ' + e.message, 'error');
+        } finally {
+            if (btn) btn.disabled = false;
         }
-    });
+    }
 
-    // ======================= Init =======================
+    if ($('userAutoRunPipelineBtn')) $('userAutoRunPipelineBtn').addEventListener('click', runUserPipeline);
+    if ($('quickRunPipelineBtn')) {
+        $('quickRunPipelineBtn').addEventListener('click', () => {
+            if (state.role === 'user') {
+                runUserPipeline();
+            } else {
+                // Admin quick run: scroll down and pre-select
+                const pipeSection = $('adminPipelineSection');
+                if (pipeSection) pipeSection.scrollIntoView({ behavior: 'smooth' });
+            }
+        });
+    }
+
+    async function loadUserJobs() {
+        if (state.role !== 'user') return;
+        try {
+            const data = await api('/me/pipeline/status');
+            const jobs = data.jobs || [];
+            state.userJobs = jobs;
+            const host = $('userJobList');
+            if (!host) return;
+
+            if (!jobs.length) {
+                host.innerHTML = '<p class="muted">No jobs yet. Click "Run Pipeline" above once you confirm a schema.</p>';
+                return;
+            }
+
+            host.innerHTML = '';
+            jobs.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+            jobs.forEach(j => {
+                const total = j.total || 0;
+                const done = (j.succeeded || 0) + (j.failed || 0);
+                const pct = total ? Math.round(100 * done / total) : 0;
+                const row = el('div', 'user-job-row');
+
+                let actionButtons = '';
+                if (j.status === 'running' || j.status === 'queued') {
+                    actionButtons = `
+                        <button class="btn btn-ghost btn-sm" title="Pause job" data-action="pause" data-job="${escapeHtml(j.job_id)}">⏸ Pause</button>
+                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}">✕ Kill</button>
+                    `;
+                } else if (j.status === 'paused') {
+                    actionButtons = `
+                        <button class="btn btn-ghost btn-sm" title="Resume job" style="color:#6ee7b7" data-action="resume" data-job="${escapeHtml(j.job_id)}">▶ Resume</button>
+                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}">✕ Kill</button>
+                    `;
+                }
+
+                const currentDoc = j.currently_processing ? ` • processing: <code>${escapeHtml(j.currently_processing)}</code>` : '';
+
+                row.innerHTML = `
+                    <div class="user-job-row-left">
+                        <div class="job-id">${escapeHtml(j.job_id)} <span class="badge ${jobStatusBadgeClass(j.status)}">${escapeHtml(j.status)}</span></div>
+                        <div class="job-meta">
+                            Success: <strong style="color:#6ee7b7">${j.succeeded}</strong> •
+                            Failed: <strong style="color:#fca5a5">${j.failed}</strong> •
+                            Remaining: ${j.remaining} / ${total}${currentDoc}
+                        </div>
+                    </div>
+                    <div class="user-job-row-right">
+                        <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
+                        <div class="job-item-actions">${actionButtons}</div>
+                    </div>
+                `;
+
+                row.addEventListener('click', async (e) => {
+                    const btn = e.target.closest('button[data-action]');
+                    if (!btn) return;
+                    e.stopPropagation();
+                    const act = btn.dataset.action;
+                    const jid = btn.dataset.job;
+                    try {
+                        if (act === 'pause') await api(`/me/pipeline/jobs/${jid}/pause`, { method: 'POST' });
+                        else if (act === 'resume') await api(`/me/pipeline/jobs/${jid}/resume`, { method: 'POST' });
+                        else if (act === 'kill') {
+                            if (!confirm(`Cancel job ${jid}?`)) return;
+                            await api(`/me/pipeline/jobs/${jid}/kill`, { method: 'POST' });
+                        }
+                        loadUserJobs();
+                    } catch (err) {
+                        alert(`Action ${act} failed: ${err.message}`);
+                    }
+                });
+
+                host.appendChild(row);
+            });
+        } catch (e) {
+            console.warn('loadUserJobs failed', e);
+        }
+    }
+
+    if ($('refreshUserJobsBtn')) $('refreshUserJobsBtn').addEventListener('click', loadUserJobs);
+
+    // ======================= Admin Logs Viewer =======================
+
+    async function loadUserActivityLogs() {
+        if (state.role !== 'admin') return;
+        const host = $('userLogsList');
+        if (!host) return;
+        const filterUser = $('logFilterUsername') ? $('logFilterUsername').value.trim() : '';
+
+        try {
+            const path = '/admin/logs/users' + (filterUser ? `?username=${encodeURIComponent(filterUser)}` : '');
+            const data = await api(path);
+            const logs = data.logs || [];
+
+            if (!logs.length) {
+                host.innerHTML = '<p class="muted">No user activity recorded yet.</p>';
+                return;
+            }
+
+            let html = `
+                <table class="log-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 22%;">Timestamp</th>
+                            <th style="width: 18%;">User</th>
+                            <th style="width: 22%;">Action</th>
+                            <th style="width: 38%;">Detail</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            logs.slice().reverse().forEach(l => {
+                html += `
+                    <tr>
+                        <td class="muted small">${escapeHtml(l.timestamp)}</td>
+                        <td><strong>${escapeHtml(l.username)}</strong></td>
+                        <td><span class="badge badge-info">${escapeHtml(l.action)}</span></td>
+                        <td><code style="font-size:11px;">${escapeHtml(JSON.stringify(l.detail))}</code></td>
+                    </tr>
+                `;
+            });
+
+            html += '</tbody></table>';
+            host.innerHTML = html;
+        } catch (e) {
+            host.innerHTML = `<p class="muted">Error loading user logs: ${e.message}</p>`;
+        }
+    }
+
+    async function loadSystemLogs() {
+        if (state.role !== 'admin') return;
+        const host = $('systemLogsList');
+        if (!host) return;
+
+        try {
+            const data = await api('/admin/logs/system?limit=300');
+            const lines = data.lines || [];
+            if (!lines.length) {
+                host.textContent = 'No system logs recorded yet.';
+            } else {
+                host.textContent = lines.join('\n');
+                host.scrollTop = host.scrollHeight;
+            }
+        } catch (e) {
+            host.textContent = 'Error loading system logs: ' + e.message;
+        }
+    }
+
+    if ($('logSubTabUsersBtn') && $('logSubTabSystemBtn')) {
+        $('logSubTabUsersBtn').addEventListener('click', () => {
+            $('logSubTabUsersBtn').className = 'btn btn-primary btn-sm';
+            $('logSubTabSystemBtn').className = 'btn btn-outline btn-sm';
+            $('userLogsPanel').classList.remove('hidden');
+            $('systemLogsPanel').classList.add('hidden');
+            loadUserActivityLogs();
+        });
+
+        $('logSubTabSystemBtn').addEventListener('click', () => {
+            $('logSubTabSystemBtn').className = 'btn btn-primary btn-sm';
+            $('logSubTabUsersBtn').className = 'btn btn-outline btn-sm';
+            $('systemLogsPanel').classList.remove('hidden');
+            $('userLogsPanel').classList.add('hidden');
+            loadSystemLogs();
+        });
+    }
+
+    if ($('applyLogFilterBtn')) $('applyLogFilterBtn').addEventListener('click', loadUserActivityLogs);
+    if ($('clearLogFilterBtn')) {
+        $('clearLogFilterBtn').addEventListener('click', () => {
+            if ($('logFilterUsername')) $('logFilterUsername').value = '';
+            loadUserActivityLogs();
+        });
+    }
+    if ($('refreshLogsBtn')) {
+        $('refreshLogsBtn').addEventListener('click', () => {
+            if ($('systemLogsPanel') && !$('systemLogsPanel').classList.contains('hidden')) {
+                loadSystemLogs();
+            } else {
+                loadUserActivityLogs();
+            }
+        });
+    }
+
+    // ======================= Admin User Management =======================
+
+    async function loadUsersList() {
+        if (state.role !== 'admin') return;
+        const host = $('usersListTable');
+        if (!host) return;
+
+        try {
+            const users = await api('/admin/users');
+            if (!users.length) {
+                host.innerHTML = '<p class="muted">No users found.</p>';
+                return;
+            }
+
+            let html = `
+                <table class="log-table">
+                    <thead>
+                        <tr>
+                            <th>User ID</th>
+                            <th>Username</th>
+                            <th>Role</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+            users.forEach(u => {
+                html += `
+                    <tr>
+                        <td class="muted small">${escapeHtml(u.user_id)}</td>
+                        <td><strong>${escapeHtml(u.username)}</strong></td>
+                        <td><span class="badge ${u.role === 'admin' ? 'badge-primary' : 'badge-info'}">${escapeHtml(u.role)}</span></td>
+                    </tr>
+                `;
+            });
+            html += '</tbody></table>';
+            host.innerHTML = html;
+        } catch (e) {
+            host.innerHTML = `<p class="muted">Error loading users: ${e.message}</p>`;
+        }
+    }
+
+    if ($('refreshUsersListBtn')) $('refreshUsersListBtn').addEventListener('click', loadUsersList);
+
+    if ($('createUserForm')) {
+        $('createUserForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = $('newUsername').value.trim();
+            const password = $('newPassword').value;
+            const role = $('newRole').value;
+            const btn = $('createUserBtn');
+
+            if (!username || !password) return;
+
+            btn.disabled = true;
+            showStatus('createUserStatus', 'Creating account...', 'info');
+
+            try {
+                const res = await api('/admin/users', {
+                    method: 'POST',
+                    json: { username, password, role },
+                });
+                showStatus('createUserStatus', `✓ User '${res.username}' created successfully with role '${res.role}'!`, 'success');
+                $('newUsername').value = '';
+                $('newPassword').value = '';
+                loadUsersList();
+            } catch (err) {
+                showStatus('createUserStatus', 'Failed to create user: ' + err.message, 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+    }
+
+    // ======================= Init & Bootstrap =======================
 
     initTheme();
     checkHealth();
-    loadDocuments();
-    loadSchemas();
-    loadPipelineStatus();
-    loadJobs();
-    setInterval(checkHealth, 15000);
-    setInterval(loadJobs, 4000);
 
-    setTimeout(() => {
-        if (!state.sessionId) newSession();
-    }, 400);
+    if ($('loginForm')) $('loginForm').addEventListener('submit', handleLoginSubmit);
+    if ($('logoutBtn')) $('logoutBtn').addEventListener('click', logout);
+
+    if (state.token) {
+        initAuthenticatedSession();
+    } else {
+        showLoginModal();
+    }
+
+    setInterval(checkHealth, 15000);
+    setInterval(() => {
+        if (state.token) {
+            if (state.role === 'admin') loadJobs();
+            else if (state.role === 'user') loadUserJobs();
+        }
+    }, 4000);
 
 })();

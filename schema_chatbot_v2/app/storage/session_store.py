@@ -22,6 +22,7 @@ class Session(BaseModel):
     turn_count: int = 0
     completed: bool = False
     schema_id: Optional[str] = None
+    owner: Optional[str] = None
 
 
 class SessionStore(ABC):

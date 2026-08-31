@@ -13,8 +13,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pymupdf
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from PIL import Image
+
+from app.core.auth import require_admin
+from app.storage.user_store import User
 
 ROOT = Path(__file__).resolve().parents[3]
 DATASET_DIR = ROOT / "dataset"
@@ -97,7 +100,7 @@ def _build_pages_for_pdf(pdf_path: Path) -> List[Dict[str, Any]]:
 
 
 @router.get("/documents")
-def list_documents() -> Dict[str, Any]:
+def list_documents(_: User = Depends(require_admin)) -> Dict[str, Any]:
     pdfs = sorted([p for p in DATASET_DIR.glob("*.pdf") if p.is_file()])
     outputs = sorted([p for p in OUTPUT_DIR.glob("*.md") if p.is_file()])
 
@@ -133,7 +136,10 @@ def list_documents() -> Dict[str, Any]:
 
 
 @router.post("/documents/upload")
-async def upload_documents(files: List[UploadFile] = File(...)) -> Dict[str, Any]:
+async def upload_documents(
+    files: List[UploadFile] = File(...),
+    _: User = Depends(require_admin),
+) -> Dict[str, Any]:
     saved: List[str] = []
     for f in files:
         if not (f.filename or "").lower().endswith(".pdf") and f.content_type != "application/pdf":
@@ -149,7 +155,7 @@ async def upload_documents(files: List[UploadFile] = File(...)) -> Dict[str, Any
 
 
 @router.get("/schemas")
-def list_schemas() -> Dict[str, Any]:
+def list_schemas(_: User = Depends(require_admin)) -> Dict[str, Any]:
     files = sorted(SCHEMA_REGISTRY.glob("schema_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     schemas: List[Dict[str, Any]] = []
     for f in files:
@@ -169,7 +175,7 @@ def list_schemas() -> Dict[str, Any]:
 
 
 @router.get("/schemas/{schema_id}")
-def get_schema(schema_id: str) -> Dict[str, Any]:
+def get_schema(schema_id: str, _: User = Depends(require_admin)) -> Dict[str, Any]:
     target = SCHEMA_REGISTRY / f"{schema_id}.json"
     if not target.exists():
         raise HTTPException(status_code=404, detail="schema not found")
@@ -180,7 +186,7 @@ def get_schema(schema_id: str) -> Dict[str, Any]:
 
 
 @router.get("/pipeline/status")
-def pipeline_status() -> Dict[str, Any]:
+def pipeline_status(_: User = Depends(require_admin)) -> Dict[str, Any]:
     routing_mode = getattr(a_settings, "routing_mode", None) if PIPELINE_AVAILABLE else None
     return {
         "available": PIPELINE_AVAILABLE,
@@ -201,14 +207,17 @@ def pipeline_status() -> Dict[str, Any]:
 
 
 @router.get("/pipeline/jobs/{job_id}")
-def get_pipeline_job(job_id: str) -> Dict[str, Any]:
+def get_pipeline_job(job_id: str, _: User = Depends(require_admin)) -> Dict[str, Any]:
     if job_id not in _pipeline_jobs:
         raise HTTPException(status_code=404, detail="job not found")
     return _pipeline_jobs[job_id]
 
 
+from app.core.activity_log import log_activity
+
+
 @router.post("/pipeline/jobs/{job_id}/pause")
-def pause_pipeline_job(job_id: str) -> Dict[str, Any]:
+def pause_pipeline_job(job_id: str, admin: User = Depends(require_admin)) -> Dict[str, Any]:
     if job_id not in _pipeline_jobs:
         raise HTTPException(status_code=404, detail="job not found")
     job = _pipeline_jobs[job_id]
@@ -222,11 +231,12 @@ def pause_pipeline_job(job_id: str) -> Dict[str, Any]:
         ctrl.pause_event.clear()
     job["status"] = "paused"
     logger.info("pipeline.job_paused", job_id=job_id)
+    log_activity(admin.username, "job_paused", {"job_id": job_id})
     return {"job_id": job_id, "status": "paused", "message": f"Job {job_id} paused."}
 
 
 @router.post("/pipeline/jobs/{job_id}/resume")
-def resume_pipeline_job(job_id: str) -> Dict[str, Any]:
+def resume_pipeline_job(job_id: str, admin: User = Depends(require_admin)) -> Dict[str, Any]:
     if job_id not in _pipeline_jobs:
         raise HTTPException(status_code=404, detail="job not found")
     job = _pipeline_jobs[job_id]
@@ -240,11 +250,12 @@ def resume_pipeline_job(job_id: str) -> Dict[str, Any]:
         ctrl.pause_event.set()
     job["status"] = "running"
     logger.info("pipeline.job_resumed", job_id=job_id)
+    log_activity(admin.username, "job_resumed", {"job_id": job_id})
     return {"job_id": job_id, "status": "running", "message": f"Job {job_id} resumed."}
 
 
 @router.post("/pipeline/jobs/{job_id}/kill")
-def kill_pipeline_job(job_id: str) -> Dict[str, Any]:
+def kill_pipeline_job(job_id: str, admin: User = Depends(require_admin)) -> Dict[str, Any]:
     if job_id not in _pipeline_jobs:
         raise HTTPException(status_code=404, detail="job not found")
     job = _pipeline_jobs[job_id]
@@ -261,6 +272,7 @@ def kill_pipeline_job(job_id: str) -> Dict[str, Any]:
     if not job.get("finished_at"):
         job["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     logger.info("pipeline.job_kill_requested", job_id=job_id)
+    log_activity(admin.username, "job_killed", {"job_id": job_id})
     return {"job_id": job_id, "status": "killed", "message": f"Job {job_id} killed."}
 
 
@@ -268,6 +280,7 @@ def kill_pipeline_job(job_id: str) -> Dict[str, Any]:
 async def run_pipeline(
     schema_id: str = Form(...),
     documents: Optional[str] = Form(default=None),
+    _: User = Depends(require_admin),
 ) -> Dict[str, Any]:
     if not PIPELINE_AVAILABLE:
         raise HTTPException(status_code=503, detail="Extraction pipeline unavailable (import failed)")
@@ -349,6 +362,7 @@ def _run_pipeline_job(
 
     t_start = time.monotonic()
     for pdf in targets:
+        job["current_document"] = pdf.name
         # Check before starting next PDF: pause wait loop and kill check
         while not ctrl.kill_event.is_set():
             if ctrl.pause_event.is_set():

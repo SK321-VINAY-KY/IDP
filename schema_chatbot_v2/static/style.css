@@ -947,3 +947,124 @@ h2 { font-size: 16px; }
     background: var(--accent);
     transition: width 0.3s;
 }
+
+/* ========================= Login Modal Overlay ========================= */
+
+.login-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(15, 23, 42, 0.85);
+    backdrop-filter: blur(6px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+}
+
+.login-card {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 32px 28px;
+    width: 100%;
+    max-width: 400px;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+    animation: fadeInModal 0.2s ease-out;
+}
+
+@keyframes fadeInModal {
+    from { opacity: 0; transform: translateY(-10px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.login-header {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.login-header h2 {
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+
+.user-header-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-left: 8px;
+    border-left: 1px solid var(--border);
+}
+
+.badge-primary {
+    background: var(--accent);
+    color: white;
+}
+
+/* ========================= Logs & Tables ========================= */
+
+.logs-container {
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+    max-height: 480px;
+    overflow-y: auto;
+    font-size: 12.5px;
+}
+
+.log-terminal {
+    background: #090d16;
+    color: #38bdf8;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.log-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.log-table th {
+    text-align: left;
+    padding: 8px 10px;
+    color: var(--fg-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+}
+
+.log-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-light);
+    vertical-align: top;
+}
+
+.user-job-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 14px;
+    background: var(--bg-3);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    margin-bottom: 8px;
+}
+
+.user-job-row-left {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.user-job-row-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}

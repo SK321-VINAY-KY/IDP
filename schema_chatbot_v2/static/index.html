@@ -4,9 +4,33 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>IDP — Extraction Pipeline Console</title>
-    <link rel="stylesheet" href="style.css?v=11">
+    <link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
+    <!-- =========================== LOGIN OVERLAY =========================== -->
+    <div id="loginOverlay" class="login-overlay hidden">
+        <div class="login-card">
+            <div class="login-header">
+                <h2>🔐 IDP Console Login</h2>
+                <p class="muted small">Sign in with your admin or user credentials.</p>
+            </div>
+            <form id="loginForm" class="login-form">
+                <div class="form-row">
+                    <label for="loginUsername">Username</label>
+                    <input type="text" id="loginUsername" placeholder="e.g. admin or username" required autocomplete="username">
+                </div>
+                <div class="form-row">
+                    <label for="loginPassword">Password</label>
+                    <input type="password" id="loginPassword" placeholder="••••••••" required autocomplete="current-password">
+                </div>
+                <div id="loginError" class="status-box error hidden"></div>
+                <button type="submit" id="loginSubmitBtn" class="btn btn-primary btn-full btn-lg mt-2">Sign In</button>
+                <p class="muted small mt-2" style="text-align: center;">Default Admin: <code>admin</code> / <code>changeme</code></p>
+            </form>
+        </div>
+    </div>
+
+    <!-- =========================== APP HEADER =========================== -->
     <header class="app-header">
         <div class="header-left">
             <h1>IDP Console</h1>
@@ -19,12 +43,20 @@
             </button>
             <span id="healthBadge" class="badge badge-info">connecting…</span>
             <span id="llmBadge" class="badge badge-mute">—</span>
+            <div id="userHeaderSection" class="user-header-section hidden">
+                <span id="userBadge" class="badge badge-primary">user</span>
+                <button id="logoutBtn" class="btn btn-ghost btn-sm" title="Log out">Logout</button>
+            </div>
         </div>
     </header>
 
-    <nav class="tabs">
-        <button class="tab-btn active" data-tab="chatbot">💬 Schema Discovery &amp; Pipeline</button>
-        <button class="tab-btn" data-tab="documents">📁 Documents Dataset</button>
+    <!-- =========================== NAVIGATION TABS =========================== -->
+    <nav class="tabs" id="mainTabs">
+        <button class="tab-btn active" data-tab="chatbot" id="tabBtnChatbot">💬 Schema Discovery &amp; Pipeline</button>
+        <button class="tab-btn admin-only" data-tab="documents" id="tabBtnDocuments">📁 Shared Dataset</button>
+        <button class="tab-btn user-only hidden" data-tab="user-documents" id="tabBtnUserDocuments">📁 My Documents</button>
+        <button class="tab-btn admin-only" data-tab="logs" id="tabBtnLogs">📜 Logs</button>
+        <button class="tab-btn admin-only" data-tab="users" id="tabBtnUsers">👥 User Management</button>
     </nav>
 
     <main class="content">
@@ -67,7 +99,7 @@
                         </div>
                         <div class="mt-1">
                             <button class="btn btn-primary btn-full" id="inferBtn" disabled>Run Inference → Chat</button>
-                            <p class="muted small mt-1">⚠  Sarvam Doc AI OCR + LLM proposal: expect <strong>60–180 s</strong> for 2 PDFs.</p>
+                            <p class="muted small mt-1">⚠ Sarvam Doc AI OCR + LLM proposal: expect <strong>60–180 s</strong> for 2 PDFs.</p>
                         </div>
                         <div id="inferStatus" class="status-box hidden"></div>
                     </div>
@@ -93,23 +125,22 @@
                         <div id="postConfirmBox" class="mt-1 hidden">
                             <div class="pipeline-actions">
                                 <button class="btn btn-success btn-lg btn-full" id="quickRunPipelineBtn" disabled>
-                                    ⚡ Run Extraction Pipeline on All Documents Now
+                                    ⚡ Run Extraction Pipeline Now
                                 </button>
                             </div>
                             <p class="muted small mt-1">
-                                Pre-selects the schema you just confirmed, checks every document, and launches
-                                the extraction pipeline below.
+                                Launches extraction for your confirmed schema.
                             </p>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- =========================== Continuation: Run Pipeline =========================== -->
-            <div id="pipelineSection" class="pipeline-section mt-3">
+            <!-- =========================== Admin Pipeline Section =========================== -->
+            <div id="adminPipelineSection" class="pipeline-section mt-3 admin-only">
                 <div class="card">
                     <div class="card-header">
-                        <h2>Run Extraction Pipeline</h2>
+                        <h2>Run Extraction Pipeline (Admin)</h2>
                         <span id="pipelineAvail" class="badge badge-mute">checking…</span>
                     </div>
 
@@ -138,19 +169,17 @@
 
                     <div class="pipeline-actions">
                         <button class="btn btn-primary btn-lg btn-full" id="runPipelineBtn" disabled>
-                            ⚙  Run Extraction Pipeline
+                            ⚙ Run Extraction Pipeline
                         </button>
                     </div>
                     <p class="muted small mt-1">
                         Runs <code>process_document()</code> for each selected PDF with <code>write_output=True</code>.
-                        <strong>Page Routing</strong> classifies each page (digital / scanned / handwritten / mixed),
-                        then <strong>Document Conversion</strong> executes the optimal engine(s) and writes structured markdown to <code>dataset_output/</code>.
                     </p>
                 </div>
 
                 <div class="card">
                     <div class="card-header">
-                        <h2>Job Output &amp; History</h2>
+                        <h2>Job Output &amp; History (All Users)</h2>
                         <button class="btn btn-ghost btn-sm" id="refreshJobsBtn">↻ Refresh</button>
                     </div>
                     <div id="jobList">
@@ -171,18 +200,46 @@
                     <div id="jobDetail"></div>
                 </div>
             </div>
+
+            <!-- =========================== User Pipeline Section =========================== -->
+            <div id="userPipelineSection" class="pipeline-section mt-3 user-only hidden">
+                <div class="card">
+                    <div class="card-header">
+                        <h2>Run My Extraction Pipeline</h2>
+                    </div>
+                    <p class="muted small">
+                        Automatically processes the documents you uploaded with your most recently confirmed schema. No parameters required!
+                    </p>
+                    <div class="pipeline-actions">
+                        <button class="btn btn-primary btn-lg btn-full" id="userAutoRunPipelineBtn">
+                            ⚡ Run Pipeline on My Documents
+                        </button>
+                    </div>
+                    <div id="userAutoRunStatus" class="status-box hidden"></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2>My Extraction Jobs</h2>
+                        <button class="btn btn-ghost btn-sm" id="refreshUserJobsBtn">↻ Refresh</button>
+                    </div>
+                    <div id="userJobList">
+                        <p class="muted">No jobs yet.</p>
+                    </div>
+                </div>
+            </div>
         </section>
 
-        <!-- =========================== TAB: Documents Dataset =========================== -->
-        <section id="tab-documents" class="tab-panel">
+        <!-- =========================== TAB: Shared Documents (Admin) =========================== -->
+        <section id="tab-documents" class="tab-panel admin-only">
             <div class="card">
-                <h2>Upload Documents</h2>
-                <p class="muted">Add PDFs to the dataset folder. They'll be used for schema inference (2–5 samples) and extraction pipeline batch processing.</p>
+                <h2>Upload Shared Documents</h2>
+                <p class="muted">Add PDFs to the dataset folder. Files go into shared <code>dataset/</code> pool.</p>
                 <div class="upload-zone" id="uploadZone">
                     <input type="file" id="fileInput" multiple accept="application/pdf,.pdf" hidden>
                     <div class="upload-inner">
                         <p class="upload-icon">📄</p>
-                        <p><strong>Drag & drop PDFs here</strong> or <a href="#" id="browseBtn">browse</a></p>
+                        <p><strong>Drag &amp; drop PDFs here</strong> or <a href="#" id="browseBtn">browse</a></p>
                         <p class="muted small">Multi-select supported. Files go into <code>dataset/</code>.</p>
                     </div>
                 </div>
@@ -208,8 +265,106 @@
                 </div>
             </div>
         </section>
+
+        <!-- =========================== TAB: My Documents (User Only) =========================== -->
+        <section id="tab-user-documents" class="tab-panel user-only hidden">
+            <div class="card">
+                <h2>Upload My Documents</h2>
+                <p class="muted">Add PDFs to your isolated workspace. These documents are private to your account.</p>
+                <div class="upload-zone" id="userUploadZone">
+                    <input type="file" id="userFileInput" multiple accept="application/pdf,.pdf" hidden>
+                    <div class="upload-inner">
+                        <p class="upload-icon">📄</p>
+                        <p><strong>Drag &amp; drop PDFs here</strong> or <a href="#" id="userBrowseBtn">browse</a></p>
+                        <p class="muted small">Multi-select supported. Files are saved in your private workspace.</p>
+                    </div>
+                </div>
+                <div id="userUploadStatus" class="status-box hidden"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2>My Documents (<span id="userDocCount">0</span>)</h2>
+                    <button class="btn btn-ghost" id="refreshUserDocsBtn">↻ Refresh</button>
+                </div>
+                <div id="userDocList" class="doc-list">
+                    <p class="muted">Loading…</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- =========================== TAB: Logs (Admin Only) =========================== -->
+        <section id="tab-logs" class="tab-panel admin-only">
+            <div class="card">
+                <div class="card-header">
+                    <h2>System &amp; User Activity Logs</h2>
+                    <div class="card-actions">
+                        <button class="btn btn-primary btn-sm" id="logSubTabUsersBtn">User Activity</button>
+                        <button class="btn btn-outline btn-sm" id="logSubTabSystemBtn">System Logs</button>
+                        <button class="btn btn-ghost btn-sm" id="refreshLogsBtn">↻ Refresh</button>
+                    </div>
+                </div>
+
+                <!-- User Activity Sub-Panel -->
+                <div id="userLogsPanel">
+                    <div class="form-row" style="display: flex; gap: 8px; align-items: center; max-width: 480px; margin-bottom: 12px;">
+                        <input type="text" id="logFilterUsername" placeholder="Filter by username (e.g. admin)..." style="flex: 1;">
+                        <button class="btn btn-primary btn-sm" id="applyLogFilterBtn">Filter</button>
+                        <button class="btn btn-ghost btn-sm" id="clearLogFilterBtn">Clear</button>
+                    </div>
+                    <div id="userLogsList" class="logs-container">
+                        <p class="muted">Loading user logs...</p>
+                    </div>
+                </div>
+
+                <!-- System Logs Sub-Panel -->
+                <div id="systemLogsPanel" class="hidden">
+                    <div id="systemLogsList" class="logs-container log-terminal">
+                        <p class="muted">Loading system logs...</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- =========================== TAB: User Management (Admin Only) =========================== -->
+        <section id="tab-users" class="tab-panel admin-only">
+            <div class="card">
+                <div class="card-header">
+                    <h2>Create User Account</h2>
+                </div>
+                <form id="createUserForm" style="max-width: 480px;">
+                    <div class="form-row">
+                        <label for="newUsername">Username</label>
+                        <input type="text" id="newUsername" placeholder="username" required>
+                    </div>
+                    <div class="form-row">
+                        <label for="newPassword">Password</label>
+                        <input type="password" id="newPassword" placeholder="password" required>
+                    </div>
+                    <div class="form-row">
+                        <label for="newRole">Role</label>
+                        <select id="newRole">
+                            <option value="user" selected>user</option>
+                            <option value="admin">admin</option>
+                        </select>
+                    </div>
+                    <button type="submit" id="createUserBtn" class="btn btn-primary">Create Account</button>
+                    <div id="createUserStatus" class="status-box hidden"></div>
+                </form>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2>System Users</h2>
+                    <button class="btn btn-ghost btn-sm" id="refreshUsersListBtn">↻ Refresh</button>
+                </div>
+                <div id="usersListTable">
+                    <p class="muted">Loading users...</p>
+                </div>
+            </div>
+        </section>
     </main>
 
-    <script src="app.js?v=11"></script>
+    <script src="app.js?v=12"></script>
 </body>
 </html>

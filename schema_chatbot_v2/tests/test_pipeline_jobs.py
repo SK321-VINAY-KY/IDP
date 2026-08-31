@@ -21,7 +21,14 @@ def client():
     return TestClient(app)
 
 
-def test_pause_and_resume_job(client):
+@pytest.fixture
+def auth_headers(client):
+    resp = client.post("/auth/login", data={"username": "admin", "password": "changeme"})
+    token = resp.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_pause_and_resume_job(client, auth_headers):
     job_id = "test_job_1"
     ctrl = JobControl()
     _job_controls[job_id] = ctrl
@@ -35,7 +42,7 @@ def test_pause_and_resume_job(client):
     }
 
     # 1. Pause the job
-    resp = client.post(f"/pipeline/jobs/{job_id}/pause")
+    resp = client.post(f"/pipeline/jobs/{job_id}/pause", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "paused"
@@ -43,11 +50,11 @@ def test_pause_and_resume_job(client):
     assert _pipeline_jobs[job_id]["status"] == "paused"
 
     # Pausing again should fail with 400
-    resp_again = client.post(f"/pipeline/jobs/{job_id}/pause")
+    resp_again = client.post(f"/pipeline/jobs/{job_id}/pause", headers=auth_headers)
     assert resp_again.status_code == 400
 
     # 2. Resume the job
-    resp = client.post(f"/pipeline/jobs/{job_id}/resume")
+    resp = client.post(f"/pipeline/jobs/{job_id}/resume", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "running"
@@ -55,11 +62,11 @@ def test_pause_and_resume_job(client):
     assert _pipeline_jobs[job_id]["status"] == "running"
 
     # Resuming again when running should fail with 400
-    resp_again = client.post(f"/pipeline/jobs/{job_id}/resume")
+    resp_again = client.post(f"/pipeline/jobs/{job_id}/resume", headers=auth_headers)
     assert resp_again.status_code == 400
 
 
-def test_kill_running_job(client):
+def test_kill_running_job(client, auth_headers):
     job_id = "test_job_2"
     ctrl = JobControl()
     _job_controls[job_id] = ctrl
@@ -73,7 +80,7 @@ def test_kill_running_job(client):
     }
 
     # Kill the job
-    resp = client.post(f"/pipeline/jobs/{job_id}/kill")
+    resp = client.post(f"/pipeline/jobs/{job_id}/kill", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "killed"
@@ -83,11 +90,11 @@ def test_kill_running_job(client):
     assert _pipeline_jobs[job_id].get("finished_at") is not None
 
     # Killing again should fail with 400
-    resp_again = client.post(f"/pipeline/jobs/{job_id}/kill")
+    resp_again = client.post(f"/pipeline/jobs/{job_id}/kill", headers=auth_headers)
     assert resp_again.status_code == 400
 
 
-def test_kill_paused_job(client):
+def test_kill_paused_job(client, auth_headers):
     job_id = "test_job_3"
     ctrl = JobControl()
     ctrl.pause_event.clear()  # paused
@@ -102,25 +109,25 @@ def test_kill_paused_job(client):
     }
 
     # Kill the paused job
-    resp = client.post(f"/pipeline/jobs/{job_id}/kill")
+    resp = client.post(f"/pipeline/jobs/{job_id}/kill", headers=auth_headers)
     assert resp.status_code == 200
     assert resp.json()["status"] == "killed"
     assert ctrl.kill_event.is_set()
     assert ctrl.pause_event.is_set()  # Must be set to awaken paused thread
 
 
-def test_nonexistent_job_returns_404(client):
-    resp = client.post("/pipeline/jobs/nonexistent_job/pause")
+def test_nonexistent_job_returns_404(client, auth_headers):
+    resp = client.post("/pipeline/jobs/nonexistent_job/pause", headers=auth_headers)
     assert resp.status_code == 404
 
-    resp = client.post("/pipeline/jobs/nonexistent_job/resume")
+    resp = client.post("/pipeline/jobs/nonexistent_job/resume", headers=auth_headers)
     assert resp.status_code == 404
 
-    resp = client.post("/pipeline/jobs/nonexistent_job/kill")
+    resp = client.post("/pipeline/jobs/nonexistent_job/kill", headers=auth_headers)
     assert resp.status_code == 404
 
 
-def test_kill_completed_job_returns_400(client):
+def test_kill_completed_job_returns_400(client, auth_headers):
     job_id = "test_job_4"
     _pipeline_jobs[job_id] = {
         "job_id": job_id,
@@ -131,12 +138,12 @@ def test_kill_completed_job_returns_400(client):
         "failures": [],
     }
 
-    resp = client.post(f"/pipeline/jobs/{job_id}/kill")
+    resp = client.post(f"/pipeline/jobs/{job_id}/kill", headers=auth_headers)
     assert resp.status_code == 400
     assert "Cannot kill job with status 'completed'" in resp.json()["detail"]
 
 
-def test_pipeline_status_reflects_states(client):
+def test_pipeline_status_reflects_states(client, auth_headers):
     _pipeline_jobs["job_a"] = {
         "job_id": "job_a",
         "status": "paused",
@@ -154,7 +161,7 @@ def test_pipeline_status_reflects_states(client):
         "failures": [],
     }
 
-    resp = client.get("/pipeline/status")
+    resp = client.get("/pipeline/status", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert data["jobs"]["job_a"]["status"] == "paused"
