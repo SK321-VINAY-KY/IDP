@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>IDP — Extraction Pipeline Console</title>
-    <link rel="stylesheet" href="style.css?v=8">
+    <link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
     <header class="app-header">
@@ -13,27 +13,10 @@
             <span class="subtitle">Schema Discovery &middot; Document Extraction Pipeline</span>
         </div>
         <div class="header-right">
-            <!-- Unified Role & User Switcher -->
-            <div class="user-switcher-card">
-                <span class="user-switcher-icon" id="userAvatar">👤</span>
-                <div class="user-switcher-content">
-                    <span class="user-switcher-label">Account &amp; Role</span>
-                    <select id="userSwitchSelect" class="user-switch-select" title="Switch User Role">
-                        <option value="user1">👤 user1 &middot; Operations (Normal)</option>
-                        <option value="user2">👤 user2 &middot; Auditing (Normal)</option>
-                        <option value="admin">👑 admin &middot; Administrator (Full Access)</option>
-                    </select>
-                </div>
-                <span class="badge user-role-pill badge-mute" id="userRoleBadge">Normal User</span>
-            </div>
-
-            <!-- Theme Toggle -->
             <button id="themeToggleBtn" class="theme-toggle-btn" type="button" title="Toggle Light/Dark Theme">
                 <span class="theme-toggle-icon" id="themeIcon">☀️</span>
                 <span id="themeLabel">Light Mode</span>
             </button>
-
-            <!-- Health & LLM Badges -->
             <span id="healthBadge" class="badge badge-info">connecting…</span>
             <span id="llmBadge" class="badge badge-mute">—</span>
         </div>
@@ -42,7 +25,6 @@
     <nav class="tabs">
         <button class="tab-btn active" data-tab="chatbot">💬 Schema Discovery &amp; Pipeline</button>
         <button class="tab-btn" data-tab="documents">📁 Documents Dataset</button>
-        <button class="tab-btn hidden" data-tab="admin" id="adminTabBtn">📊 Admin Audit &amp; Logs</button>
     </nav>
 
     <main class="content">
@@ -168,18 +150,8 @@
 
                 <div class="card">
                     <div class="card-header">
-                        <h2 id="jobListHeading">My Pipeline Jobs</h2>
-                        <div class="card-actions">
-                            <span id="userJobsBadge" class="badge badge-info">0 Total</span>
-                            <button class="btn btn-ghost btn-sm" id="refreshJobsBtn">↻ Refresh</button>
-                        </div>
-                    </div>
-                    <!-- User Job Summary KPI Bar -->
-                    <div id="myJobSummaryBar" class="my-job-summary-bar">
-                        <div class="mini-kpi"><span class="lbl">Finished:</span> <strong id="kpiCompleted">0</strong></div>
-                        <div class="mini-kpi"><span class="lbl">Remaining:</span> <strong id="kpiRemaining">0</strong></div>
-                        <div class="mini-kpi"><span class="lbl">Running:</span> <strong id="kpiRunning">0</strong></div>
-                        <div class="mini-kpi"><span class="lbl">Errors:</span> <strong id="kpiErrors">0</strong></div>
+                        <h2>Job Output &amp; History</h2>
+                        <button class="btn btn-ghost btn-sm" id="refreshJobsBtn">↻ Refresh</button>
                     </div>
                     <div id="jobList">
                         <p class="muted">No jobs yet.</p>
@@ -236,130 +208,8 @@
                 </div>
             </div>
         </section>
-
-        <!-- =========================== TAB: Admin Audit & Logs =========================== -->
-        <section id="tab-admin" class="tab-panel">
-            <!-- Admin KPI Overview -->
-            <div class="card">
-                <div class="card-header">
-                    <h2>👑 System &amp; User Activity Overview</h2>
-                    <button class="btn btn-ghost btn-sm" id="refreshAdminBtn">↻ Refresh Overview</button>
-                </div>
-                <div class="admin-kpi-grid">
-                    <div class="kpi-card">
-                        <div class="kpi-title">Registered Users</div>
-                        <div class="kpi-val" id="adminKpiUsers">—</div>
-                        <div class="kpi-sub">Total active accounts</div>
-                    </div>
-                    <div class="kpi-card">
-                        <div class="kpi-title">Documents Uploaded</div>
-                        <div class="kpi-val" id="adminKpiDocs">—</div>
-                        <div class="kpi-sub">Across all users</div>
-                    </div>
-                    <div class="kpi-card">
-                        <div class="kpi-title">Schemas Created</div>
-                        <div class="kpi-val" id="adminKpiSchemas">—</div>
-                        <div class="kpi-sub">Confirmed &amp; registered</div>
-                    </div>
-                    <div class="kpi-card">
-                        <div class="kpi-title">Pipeline Success Rate</div>
-                        <div class="kpi-val text-success" id="adminKpiSuccessRate">—%</div>
-                        <div class="kpi-sub" id="adminKpiJobs">— jobs executed</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Per-User Summary Table -->
-            <div class="card">
-                <div class="card-header">
-                    <h2>👥 User Activity &amp; Resource Usage</h2>
-                </div>
-                <p class="muted small">Summary of what each user has performed in the system, documents uploaded, schemas created, and last active timestamps.</p>
-                <div class="table-wrap">
-                    <table class="admin-table" id="adminUsersTable">
-                        <thead>
-                            <tr>
-                                <th>User</th>
-                                <th>Role</th>
-                                <th>Docs Uploaded</th>
-                                <th>Schemas Created</th>
-                                <th>Pipeline Jobs</th>
-                                <th>Last Active (IST)</th>
-                                <th>Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr><td colspan="7" class="text-center muted">Loading user statistics...</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- User Detail Inspector Card (Dynamically displayed when clicked) -->
-            <div id="adminUserDetailCard" class="card hidden">
-                <div class="card-header">
-                    <h2>🔍 User Deep Dive: <span id="adminDetailUsername">—</span></h2>
-                    <button class="btn btn-ghost btn-sm" id="closeAdminUserDetailBtn">✕ Close</button>
-                </div>
-                <div id="adminUserDetailContent"></div>
-            </div>
-
-            <!-- Live Audit Activity Feed -->
-            <div class="card">
-                <div class="card-header">
-                    <h2>📋 Real-Time User Audit Trail</h2>
-                    <div class="card-actions">
-                        <select id="auditFilterUser" class="form-select-sm">
-                            <option value="">All Users</option>
-                        </select>
-                        <select id="auditFilterAction" class="form-select-sm">
-                            <option value="">All Actions</option>
-                            <option value="LOGIN">LOGIN</option>
-                            <option value="DOCUMENT_UPLOAD">DOCUMENT_UPLOAD</option>
-                            <option value="SCHEMA_INFER">SCHEMA_INFER</option>
-                            <option value="SCHEMA_EDIT">SCHEMA_EDIT</option>
-                            <option value="SCHEMA_CONFIRM">SCHEMA_CONFIRM</option>
-                            <option value="JOB_START">JOB_START</option>
-                            <option value="JOB_COMPLETE">JOB_COMPLETE</option>
-                            <option value="JOB_PAUSE">JOB_PAUSE</option>
-                            <option value="JOB_KILL">JOB_KILL</option>
-                        </select>
-                        <button class="btn btn-ghost btn-sm" id="refreshAuditBtn">↻ Refresh Feed</button>
-                    </div>
-                </div>
-                <div class="table-wrap">
-                    <table class="admin-table" id="adminAuditTable">
-                        <thead>
-                            <tr>
-                                <th style="width: 17%;">Time (IST)</th>
-                                <th style="width: 14%;">User</th>
-                                <th style="width: 18%;">Action</th>
-                                <th style="width: 41%;">Activity Details</th>
-                                <th style="width: 10%; text-align: center;">Status</th>
-                            </tr>
-                        </thead>
-                        <tbody id="adminAuditList">
-                            <tr><td colspan="5" class="text-center muted">Loading audit events...</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- Live System Logs Viewer -->
-            <div class="card">
-                <div class="card-header">
-                    <h2>🖥️ Live System Logs</h2>
-                    <div class="card-actions">
-                        <button class="btn btn-ghost btn-sm" id="refreshSystemLogsBtn">↻ Refresh Logs</button>
-                    </div>
-                </div>
-                <div class="system-logs-box">
-                    <pre id="systemLogsContent">Loading system logs...</pre>
-                </div>
-            </div>
-        </section>
     </main>
 
-    <script src="app.js?v=8"></script>
+    <script src="app.js?v=10"></script>
 </body>
 </html>

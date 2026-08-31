@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pymupdf
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -31,10 +31,6 @@ from src.ai.schemas.page import PageClassification, PageOutput, VLMAnalysis
 from src.ai.layer1_routing.pipeline import process_document
 from src.config.settings import settings as a_settings
 from src.utils.logger import get_logger
-
-from app.core.auth import get_current_user
-from app.models.auth_models import User, UserRole
-from app.storage.audit_log import get_audit_logger
 
 logger = get_logger(__name__)
 PIPELINE_AVAILABLE = True
@@ -101,7 +97,7 @@ def _build_pages_for_pdf(pdf_path: Path) -> List[Dict[str, Any]]:
 
 
 @router.get("/documents")
-def list_documents(current_user: User = Depends(get_current_user)) -> Dict[str, Any]:
+def list_documents() -> Dict[str, Any]:
     pdfs = sorted([p for p in DATASET_DIR.glob("*.pdf") if p.is_file()])
     outputs = sorted([p for p in OUTPUT_DIR.glob("*.md") if p.is_file()])
 
@@ -137,10 +133,7 @@ def list_documents(current_user: User = Depends(get_current_user)) -> Dict[str, 
 
 
 @router.post("/documents/upload")
-async def upload_documents(
-    files: List[UploadFile] = File(...),
-    current_user: User = Depends(get_current_user),
-) -> Dict[str, Any]:
+async def upload_documents(files: List[UploadFile] = File(...)) -> Dict[str, Any]:
     saved: List[str] = []
     for f in files:
         if not (f.filename or "").lower().endswith(".pdf") and f.content_type != "application/pdf":
@@ -149,16 +142,7 @@ async def upload_documents(
         target = DATASET_DIR / Path(f.filename or f"doc_{uuid.uuid4().hex[:8]}.pdf").name
         target.write_bytes(content)
         saved.append(target.name)
-
-    audit = get_audit_logger()
-    audit.log_activity(
-        username=current_user.username,
-        role=current_user.role.value,
-        action="DOCUMENT_UPLOAD",
-        details={"count": len(saved), "files": saved},
-    )
-
-    return {"saved": saved, "count": len(saved), "uploaded_by": current_user.username}
+    return {"saved": saved, "count": len(saved)}
 
 
 # ========================= Schemas =========================
@@ -178,7 +162,6 @@ def list_schemas() -> Dict[str, Any]:
                 "confirmed_at": data.get("confirmed_at"),
                 "field_count": len((data.get("schema") or {}).get("fields", [])),
                 "sample_documents": data.get("sample_documents", []),
-                "created_by": data.get("created_by", "user1"),
             })
         except Exception as exc:
             logger.warning("schema.parse_failed", file=f.name, error=str(exc))
@@ -197,93 +180,38 @@ def get_schema(schema_id: str) -> Dict[str, Any]:
 
 
 @router.get("/pipeline/status")
-def pipeline_status(current_user: User = Depends(get_current_user)) -> Dict[str, Any]:
+def pipeline_status() -> Dict[str, Any]:
     routing_mode = getattr(a_settings, "routing_mode", None) if PIPELINE_AVAILABLE else None
-
-    # Role-based filtering: Normal users see their own jobs; Admin sees all
-    is_admin = current_user.role == UserRole.ADMIN
-
-    filtered_jobs = {}
-    for k, v in _pipeline_jobs.items():
-        job_owner = v.get("owner", "user1")
-        if is_admin or job_owner.lower() == current_user.username.lower():
-            filtered_jobs[k] = {
+    return {
+        "available": PIPELINE_AVAILABLE,
+        "routing_mode": routing_mode,
+        "jobs": {
+            k: {
                 "job_id": k,
                 "schema_id": v.get("schema_id"),
                 "schema_file": v.get("schema_file"),
                 "status": v["status"],
-                "owner": job_owner,
-                "owner_role": v.get("owner_role", "normal"),
                 "created_at": v["created_at"],
                 "total": len(v.get("targets", [])),
                 "completed": len(v.get("successes", [])) + len(v.get("failures", [])),
-                "successes_count": len(v.get("successes", [])),
-                "failures_count": len(v.get("failures", [])),
             }
-
-    # Summary metrics for current user
-    user_jobs = list(filtered_jobs.values())
-    total_jobs = len(user_jobs)
-    completed_jobs = sum(1 for j in user_jobs if j["status"] == "completed")
-    running_jobs = sum(1 for j in user_jobs if j["status"] == "running")
-    paused_jobs = sum(1 for j in user_jobs if j["status"] == "paused")
-    remaining_jobs = sum(1 for j in user_jobs if j["status"] in ("running", "queued", "paused"))
-    error_jobs = sum(1 for j in user_jobs if j["failures_count"] > 0 or j["status"] == "failed")
-
-    return {
-        "available": PIPELINE_AVAILABLE,
-        "routing_mode": routing_mode,
-        "current_user": {
-            "username": current_user.username,
-            "role": current_user.role.value,
-            "full_name": current_user.full_name,
+            for k, v in _pipeline_jobs.items()
         },
-        "my_summary": {
-            "total": total_jobs,
-            "completed": completed_jobs,
-            "running": running_jobs,
-            "paused": paused_jobs,
-            "remaining": remaining_jobs,
-            "errors": error_jobs,
-        },
-        "jobs": filtered_jobs,
     }
 
 
 @router.get("/pipeline/jobs/{job_id}")
-def get_pipeline_job(
-    job_id: str,
-    current_user: User = Depends(get_current_user),
-) -> Dict[str, Any]:
+def get_pipeline_job(job_id: str) -> Dict[str, Any]:
     if job_id not in _pipeline_jobs:
         raise HTTPException(status_code=404, detail="job not found")
-    job = _pipeline_jobs[job_id]
-
-    # Non-admins can only see their own jobs
-    if current_user.role != UserRole.ADMIN and job.get("owner") and job.get("owner").lower() != current_user.username.lower():
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: You do not have permission to view other users' jobs",
-        )
-
-    return job
+    return _pipeline_jobs[job_id]
 
 
 @router.post("/pipeline/jobs/{job_id}/pause")
-def pause_pipeline_job(
-    job_id: str,
-    current_user: User = Depends(get_current_user),
-) -> Dict[str, Any]:
+def pause_pipeline_job(job_id: str) -> Dict[str, Any]:
     if job_id not in _pipeline_jobs:
         raise HTTPException(status_code=404, detail="job not found")
     job = _pipeline_jobs[job_id]
-
-    if current_user.role != UserRole.ADMIN and job.get("owner") and job.get("owner").lower() != current_user.username.lower():
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: You cannot pause another user's job",
-        )
-
     if job["status"] not in ("running", "queued"):
         raise HTTPException(
             status_code=400,
@@ -293,34 +221,15 @@ def pause_pipeline_job(
     if ctrl:
         ctrl.pause_event.clear()
     job["status"] = "paused"
-    logger.info("pipeline.job_paused", job_id=job_id, user=current_user.username)
-
-    audit = get_audit_logger()
-    audit.log_activity(
-        username=current_user.username,
-        role=current_user.role.value,
-        action="JOB_PAUSE",
-        details={"job_id": job_id},
-    )
-
+    logger.info("pipeline.job_paused", job_id=job_id)
     return {"job_id": job_id, "status": "paused", "message": f"Job {job_id} paused."}
 
 
 @router.post("/pipeline/jobs/{job_id}/resume")
-def resume_pipeline_job(
-    job_id: str,
-    current_user: User = Depends(get_current_user),
-) -> Dict[str, Any]:
+def resume_pipeline_job(job_id: str) -> Dict[str, Any]:
     if job_id not in _pipeline_jobs:
         raise HTTPException(status_code=404, detail="job not found")
     job = _pipeline_jobs[job_id]
-
-    if current_user.role != UserRole.ADMIN and job.get("owner") and job.get("owner").lower() != current_user.username.lower():
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: You cannot resume another user's job",
-        )
-
     if job["status"] != "paused":
         raise HTTPException(
             status_code=400,
@@ -330,34 +239,15 @@ def resume_pipeline_job(
     if ctrl:
         ctrl.pause_event.set()
     job["status"] = "running"
-    logger.info("pipeline.job_resumed", job_id=job_id, user=current_user.username)
-
-    audit = get_audit_logger()
-    audit.log_activity(
-        username=current_user.username,
-        role=current_user.role.value,
-        action="JOB_RESUME",
-        details={"job_id": job_id},
-    )
-
+    logger.info("pipeline.job_resumed", job_id=job_id)
     return {"job_id": job_id, "status": "running", "message": f"Job {job_id} resumed."}
 
 
 @router.post("/pipeline/jobs/{job_id}/kill")
-def kill_pipeline_job(
-    job_id: str,
-    current_user: User = Depends(get_current_user),
-) -> Dict[str, Any]:
+def kill_pipeline_job(job_id: str) -> Dict[str, Any]:
     if job_id not in _pipeline_jobs:
         raise HTTPException(status_code=404, detail="job not found")
     job = _pipeline_jobs[job_id]
-
-    if current_user.role != UserRole.ADMIN and job.get("owner") and job.get("owner").lower() != current_user.username.lower():
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: You cannot kill another user's job",
-        )
-
     if job["status"] in ("completed", "killed"):
         raise HTTPException(
             status_code=400,
@@ -370,16 +260,7 @@ def kill_pipeline_job(
     job["status"] = "killed"
     if not job.get("finished_at"):
         job["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
-    logger.info("pipeline.job_kill_requested", job_id=job_id, user=current_user.username)
-
-    audit = get_audit_logger()
-    audit.log_activity(
-        username=current_user.username,
-        role=current_user.role.value,
-        action="JOB_KILL",
-        details={"job_id": job_id},
-    )
-
+    logger.info("pipeline.job_kill_requested", job_id=job_id)
     return {"job_id": job_id, "status": "killed", "message": f"Job {job_id} killed."}
 
 
@@ -387,7 +268,6 @@ def kill_pipeline_job(
 async def run_pipeline(
     schema_id: str = Form(...),
     documents: Optional[str] = Form(default=None),
-    current_user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     if not PIPELINE_AVAILABLE:
         raise HTTPException(status_code=503, detail="Extraction pipeline unavailable (import failed)")
@@ -422,8 +302,6 @@ async def run_pipeline(
     job_id = f"job_{uuid.uuid4().hex[:12]}"
     _pipeline_jobs[job_id] = {
         "job_id": job_id,
-        "owner": current_user.username,
-        "owner_role": current_user.role.value,
         "status": "queued",
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "schema_id": schema_id,
@@ -437,19 +315,6 @@ async def run_pipeline(
     }
     _job_controls[job_id] = JobControl()
 
-    audit = get_audit_logger()
-    audit.log_activity(
-        username=current_user.username,
-        role=current_user.role.value,
-        action="JOB_START",
-        details={
-            "job_id": job_id,
-            "schema_id": schema_id,
-            "targets_count": len(targets),
-            "targets": [p.name for p in targets],
-        },
-    )
-
     thread = threading.Thread(
         target=_run_pipeline_job,
         args=(job_id, targets, schema_path, schema_record),
@@ -457,12 +322,7 @@ async def run_pipeline(
     )
     thread.start()
 
-    return {
-        "job_id": job_id,
-        "status": "queued",
-        "targets": len(targets),
-        "owner": current_user.username,
-    }
+    return {"job_id": job_id, "status": "queued", "targets": len(targets)}
 
 
 def _run_pipeline_job(
@@ -576,19 +436,3 @@ def _run_pipeline_job(
         job["status"] = "completed"
     job["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     job["wall_time_s"] = round(time.monotonic() - t_start, 2)
-
-    audit = get_audit_logger()
-    audit.log_activity(
-        username=job.get("owner", "user1"),
-        role=job.get("owner_role", "normal"),
-        action="JOB_COMPLETE",
-        details={
-            "job_id": job_id,
-            "status": job["status"],
-            "success_count": len(job.get("successes", [])),
-            "failure_count": len(job.get("failures", [])),
-            "total_docs": len(targets),
-            "wall_time_s": job["wall_time_s"],
-        },
-        status="success" if not job.get("failures") else "warning",
-    )
