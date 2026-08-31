@@ -23,10 +23,10 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.core.schema_state import SchemaState, normalize_type
-from app.core.state_machine import ConversationState, InvalidTransition, transition
+from app.core.state_machine import ConversationState, transition
 from app.core.validator import validate_schema
 from app.llm.base import ExtractionResult, LLMAdapter, SchemaProposal
 from app.llm.prompts import (
@@ -186,6 +186,47 @@ class ConversationManager:
         notes = session.schema_state.apply_operations(extraction.operations) if extraction.operations else []
 
         return self._finish_review_turn(session, extraction, notes)
+
+    def update_schema_manually(self, session_id: str, document_type: Optional[str], fields: List[Dict[str, Any]]) -> TurnResult:
+        session = self.store.get(session_id)
+        if session is None:
+            raise KeyError(f"unknown session_id {session_id!r}")
+        if session.completed:
+            raise ValueError("session is already completed")
+
+        session.turn_count += 1
+        new_state = SchemaState()
+        if document_type:
+            new_state.set_document_type(document_type)
+
+        for f in fields:
+            name = f.get("name")
+            if not name or not str(name).strip():
+                continue
+            raw_type = str(f.get("type", "string")).strip()
+            item_type = f.get("item_type")
+            if "[" in raw_type and "]" in raw_type:
+                item_type = raw_type[raw_type.find("[") + 1 : raw_type.find("]")].strip()
+                raw_type = "array"
+
+            norm_type, _ = normalize_type(raw_type)
+            new_state.add_field(
+                name,
+                type=norm_type or "string",
+                required=bool(f.get("required", False)),
+                description=f.get("description"),
+                item_type=item_type,
+                pattern=f.get("pattern"),
+                currency=f.get("currency"),
+            )
+
+        session.schema_state = new_state
+        if session.state == ConversationState.START:
+            session.state = ConversationState.REVIEW
+
+        self.store.save(session)
+        errors = validate_schema(session.schema_state)
+        return self._as_result(session, "Schema updated directly from UI editor.", errors=errors)
 
     # ---- the one review turn ----
 

@@ -22,3 +22,8 @@ class ChatResponse(BaseModel):
     completed: bool
     schema_id: Optional[str] = None
     errors: Optional[List[str]] = None
+
+
+class UpdateSchemaRequest(BaseModel):
+    document_type: Optional[str] = None
+    fields: List[Dict[str, Any]] = Field(default_factory=list)

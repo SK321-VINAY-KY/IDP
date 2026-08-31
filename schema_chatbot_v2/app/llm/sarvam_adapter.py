@@ -174,12 +174,12 @@ class SarvamAdapter(LLMAdapter):
             logger.exception("Sarvam Document AI digitise failed")
             return SchemaProposal(extraction_failed=True, failure_reason="document OCR failed")
 
-        # Cap each sample to ~12,000 characters to safely fit within Sarvam context window
-        capped_texts = [t[:12000] if len(t) > 12000 else t for t in texts]
+        # Cap each sample to ~3,500 characters to ensure fast, high-quality inference without timeouts
+        capped_texts = [t[:3500] if len(t) > 3500 else t for t in texts]
         user_prompt = build_document_inference_prompt(capped_texts)
         sys_prompt = (
             DOCUMENT_INFERENCE_SYSTEM_PROMPT
-            + "\n\nCRITICAL: Keep reasoning extremely brief. Output ONLY the valid JSON object with keys 'document_type' and 'fields'. Do not wrap in commentary."
+            + "\n\nCRITICAL: Keep reasoning brief. Output ONLY the valid JSON object with keys 'document_type' and 'fields'. Do not wrap in commentary."
         )
         try:
             raw = self._chat(
@@ -187,7 +187,7 @@ class SarvamAdapter(LLMAdapter):
                 user=user_prompt,
                 temperature=0.1,
                 reasoning_effort="low",
-                max_tokens=16384,
+                max_tokens=8192,
             )
             parsed = self._parse_json(raw)
         except Exception:
@@ -377,7 +377,10 @@ class SarvamAdapter(LLMAdapter):
         if not choices:
             raise ValueError(f"Sarvam API returned no choices: {data}")
         msg = choices[0].get("message", {})
-        content = msg.get("content")
-        if not content and msg.get("reasoning_content"):
-            content = msg.get("reasoning_content")
-        return content or ""
+        content = msg.get("content") or ""
+        reasoning = msg.get("reasoning_content") or ""
+        if not content:
+            return reasoning
+        if "{" in reasoning and "{" not in content:
+            return reasoning
+        return content

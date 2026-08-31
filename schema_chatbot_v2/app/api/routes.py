@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.core.conversation_manager import MAX_DOCUMENT_SAMPLES, MIN_DOCUMENT_SAMPLES, ConversationManager, TurnResult
 from app.llm.factory import get_llm_adapter
-from app.models.api_models import ChatRequest, ChatResponse
+from app.models.api_models import ChatRequest, ChatResponse, UpdateSchemaRequest
 from app.storage.session_store import get_session_store
 
 logger = logging.getLogger(__name__)
@@ -99,4 +99,19 @@ def get_session(session_id: str, manager: ConversationManager = Depends(get_conv
 def reset_session(session_id: str, manager: ConversationManager = Depends(get_conversation_manager)) -> ChatResponse:
     manager.store.delete(session_id)
     result = manager.start_session()
+    return _to_response(result)
+
+
+@router.post("/session/{session_id}/schema", response_model=ChatResponse, response_model_by_alias=True)
+def update_schema(
+    session_id: str,
+    req: UpdateSchemaRequest,
+    manager: ConversationManager = Depends(get_conversation_manager),
+) -> ChatResponse:
+    try:
+        result = manager.update_schema_manually(session_id, req.document_type, req.fields)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="session not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return _to_response(result)

@@ -22,12 +22,12 @@ DPI        = 100   # lower = smaller image = fewer vision tokens = faster on CPU
 TESTS = [
     {
         "label": "CamScanner handwritten (OR/LPP notes)",
-        "pdf":   r"C:\Users\Dell\Desktop\IDP\engineer_a\tests\fixtures\camscanner_handwritten.pdf",
+        "pdf":   os.path.join(os.path.dirname(__file__), "tests", "fixtures", "camscanner_handwritten.pdf"),
         "page":  0,
     },
     {
         "label": "SDG Goals (clean digital PDF)",
-        "pdf":   r"C:\Users\Dell\Desktop\IDP\engineer_a\tests\fixtures\sdg_goals.pdf",
+        "pdf":   os.path.join(os.path.dirname(__file__), "tests", "fixtures", "sdg_goals.pdf"),
         "page":  0,
     },
 ]
