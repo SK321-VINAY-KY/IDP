@@ -55,4 +55,9 @@ def build_dynamic_schema(fields: List[SchemaFieldIn]) -> type[BaseModel]:
         )
     }
 
-    return create_model("UserExtractionSchema", __validators__=validators, **field_defs)
+    model: type[BaseModel] = create_model(
+        "UserExtractionSchema",
+        __validators__=validators,
+        **field_defs,  # type: ignore[call-overload]
+    )
+    return model
