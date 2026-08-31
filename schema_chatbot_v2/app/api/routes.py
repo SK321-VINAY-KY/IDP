@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
 import logging
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
+from app.core.auth import get_current_user
 from app.core.conversation_manager import MAX_DOCUMENT_SAMPLES, MIN_DOCUMENT_SAMPLES, ConversationManager, TurnResult
 from app.llm.factory import get_llm_adapter
 from app.models.api_models import ChatRequest, ChatResponse, UpdateSchemaRequest
+from app.models.auth_models import User
+from app.storage.audit_log import get_audit_logger
 from app.storage.session_store import get_session_store
 
 logger = logging.getLogger(__name__)
@@ -31,7 +35,11 @@ def _to_response(result: TurnResult) -> ChatResponse:
 
 
 @router.post("/chat", response_model=ChatResponse, response_model_by_alias=True)
-def chat(req: ChatRequest, manager: ConversationManager = Depends(get_conversation_manager)) -> ChatResponse:
+def chat(
+    req: ChatRequest,
+    manager: ConversationManager = Depends(get_conversation_manager),
+    current_user: User = Depends(get_current_user),
+) -> ChatResponse:
     if not req.session_id:
         result = manager.start_session()
         return _to_response(result)
@@ -43,6 +51,31 @@ def chat(req: ChatRequest, manager: ConversationManager = Depends(get_conversati
         result = manager.handle_message(req.session_id, req.message)
     except KeyError:
         raise HTTPException(status_code=404, detail="session not found")
+
+    if result.completed and result.schema_id:
+        audit = get_audit_logger()
+        audit.log_activity(
+            username=current_user.username,
+            role=current_user.role.value,
+            action="SCHEMA_CONFIRM",
+            details={
+                "schema_id": result.schema_id,
+                "document_type": (result.schema or {}).get("document_type"),
+                "fields_count": len((result.schema or {}).get("fields", [])),
+            },
+        )
+        # Update schema json file to record creator
+        try:
+            from app.core.conversation_manager import SCHEMA_REGISTRY_DIR
+            schema_file = SCHEMA_REGISTRY_DIR / f"{result.schema_id}.json"
+            if schema_file.exists():
+                data = json.loads(schema_file.read_text(encoding="utf-8"))
+                data["created_by"] = current_user.username
+                data["created_by_role"] = current_user.role.value
+                schema_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
     return _to_response(result)
 
 
@@ -54,6 +87,7 @@ async def infer_schema(
         description="Optional - feed samples into an existing session (e.g. one already mid-chat) instead of starting a new one",
     ),
     manager: ConversationManager = Depends(get_conversation_manager),
+    current_user: User = Depends(get_current_user),
 ) -> ChatResponse:
     if not (MIN_DOCUMENT_SAMPLES <= len(files) <= MAX_DOCUMENT_SAMPLES):
         raise HTTPException(
@@ -73,6 +107,19 @@ async def infer_schema(
         raise HTTPException(status_code=400, detail=str(e))
     except KeyError:
         raise HTTPException(status_code=404, detail="session not found")
+
+    audit = get_audit_logger()
+    audit.log_activity(
+        username=current_user.username,
+        role=current_user.role.value,
+        action="SCHEMA_INFER",
+        details={
+            "samples_count": len(files),
+            "document_type": (result.schema or {}).get("document_type"),
+            "fields_inferred": len((result.schema or {}).get("fields", [])),
+        },
+    )
+
     return _to_response(result)
 
 
@@ -103,6 +150,7 @@ def update_schema(
     session_id: str,
     req: UpdateSchemaRequest,
     manager: ConversationManager = Depends(get_conversation_manager),
+    current_user: User = Depends(get_current_user),
 ) -> ChatResponse:
     try:
         result = manager.update_schema_manually(session_id, req.document_type, req.fields)
@@ -110,4 +158,16 @@ def update_schema(
         raise HTTPException(status_code=404, detail="session not found")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    audit = get_audit_logger()
+    audit.log_activity(
+        username=current_user.username,
+        role=current_user.role.value,
+        action="SCHEMA_EDIT",
+        details={
+            "document_type": req.document_type,
+            "fields_count": len(req.fields),
+        },
+    )
+
     return _to_response(result)

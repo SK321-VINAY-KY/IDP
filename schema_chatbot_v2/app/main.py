@@ -8,6 +8,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.routes import router
 from app.api.pipeline_routes import router as pipeline_router
+from app.api.auth_routes import router as auth_router
+from app.api.admin_routes import router as admin_router
 from app.config import settings
 
 logging.basicConfig(level=settings.log_level)
@@ -39,6 +41,8 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(NoCacheMiddleware)
 
+app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(router)
 app.include_router(pipeline_router)
 
