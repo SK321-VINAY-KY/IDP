@@ -1,0 +1,62 @@
+[
+  {
+    "name": "patient_name",
+    "description": "Full name of the patient"
+  },
+  {
+    "name": "patient_id",
+    "description": "Patient ID, MRN, Hospital ID, or HS No"
+  },
+  {
+    "name": "hospital_name",
+    "description": "Name of the hospital or medical centre"
+  },
+  {
+    "name": "admission_date",
+    "description": "Date of admission (DOA)"
+  },
+  {
+    "name": "discharge_date",
+    "description": "Date of discharge (DOD)"
+  },
+  {
+    "name": "diagnosis",
+    "description": "Primary diagnosis, medical conditions, or reason for admission"
+  },
+  {
+    "name": "doctor_name",
+    "description": "Name of the primary attending consultant or doctor"
+  },
+  {
+    "name": "procedures",
+    "description": "Medical procedures, surgeries, or interventions performed"
+  },
+  {
+    "name": "medications",
+    "description": "List of prescribed medications, dosages, or discharge drugs"
+  },
+  {
+    "name": "total_bill_amount",
+    "description": "Total hospital inpatient final bill amount in rupees (not small retail pharmacy bills)"
+  },
+  {
+    "name": "amount_paid",
+    "description": "Amount paid or deposited by patient towards hospital bill in rupees"
+  },
+  {
+    "name": "insurance_company",
+    "description": "Name of the health insurance company or TPA (e.g. ICICI Lombard, Star Health). Do NOT extract pharmacy names or codes."
+  },
+  {
+    "name": "policy_number",
+    "description": "Health insurance policy number. Do NOT extract pharmacy or drug license numbers."
+  },
+  {
+    "name": "claim_number",
+    "description": "Insurance claim number, CCN, or cashless authorization letter (AL) number"
+  },
+  {
+    "name": "claim_amount",
+    "description": "Insurance authorized, approved, or claimed settlement amount in rupees"
+  }
+]

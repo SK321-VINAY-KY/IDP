@@ -1,0 +1,19 @@
+{
+    "python.defaultInterpreterPath": "C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/src",
+        "${workspaceFolder}/schema_chatbot_v2",
+        "${workspaceFolder}/backend"
+    ],
+    "python.autoComplete.extraPaths": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/src",
+        "${workspaceFolder}/schema_chatbot_v2",
+        "${workspaceFolder}/backend"
+    ],
+    "python.analysis.ignore": [
+        "*_pyrefly_virtual_*",
+        "**/_pyrefly_virtual_/**"
+    ]
+}

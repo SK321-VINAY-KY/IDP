@@ -84,12 +84,30 @@ def _rollup_confidence(result: Any) -> tuple[list[str], list[float]]:
     word_confidences: list[float] = []
 
     for page_result in result or []:
-        texts = page_result.get("rec_texts") or []
-        scores = page_result.get("rec_scores") or []
-        for text, conf in zip(texts, scores):
-            if text and text.strip():
-                lines.append(text)
-                word_confidences.append(float(conf))
+        if page_result is None:
+            continue
+
+        # PaddleOCR v3 dict format: {"rec_texts": [...], "rec_scores": [...]}
+        if isinstance(page_result, dict):
+            texts = page_result.get("rec_texts") or []
+            scores = page_result.get("rec_scores") or []
+            for text, conf in zip(texts, scores):
+                if text and text.strip():
+                    lines.append(text)
+                    word_confidences.append(float(conf))
+
+        # PaddleOCR v2 list format: [[bbox, (text, conf)], ...]
+        elif isinstance(page_result, list):
+            for item in page_result:
+                if item is None:
+                    continue
+                try:
+                    text, conf = item[1]
+                    if text and text.strip():
+                        lines.append(text)
+                        word_confidences.append(float(conf))
+                except (IndexError, TypeError, ValueError):
+                    continue
 
     return lines, word_confidences
 

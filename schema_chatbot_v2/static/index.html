@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>IDP — Extraction Pipeline Console</title>
-    <link rel="stylesheet" href="style.css?v=12">
+    <link rel="stylesheet" href="style.css?v=13">
 </head>
 <body>
     <!-- =========================== LOGIN OVERLAY =========================== -->
@@ -169,11 +169,11 @@
 
                     <div class="pipeline-actions">
                         <button class="btn btn-primary btn-lg btn-full" id="runPipelineBtn" disabled>
-                            ⚙ Run Extraction Pipeline
+                            ⚡ Run Extraction Pipeline
                         </button>
                     </div>
                     <p class="muted small mt-1">
-                        Runs <code>process_document()</code> for each selected PDF with <code>write_output=True</code>.
+                        Processes each selected document through <strong>Layer 1 (Routing)</strong>, <strong>Layer 2 (Conversion &amp; OCR)</strong>, and continues directly into <strong>Layer 3 (Contextual Field Extraction via Sarvam 105B)</strong> using the selected schema. Results are saved in <code>dataset_output/</code> and recorded in PostgreSQL.
                     </p>
                 </div>
 
@@ -365,6 +365,6 @@
         </section>
     </main>
 
-    <script src="app.js?v=12"></script>
+    <script src="app.js?v=13"></script>
 </body>
 </html>

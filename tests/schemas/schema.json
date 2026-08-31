@@ -1,0 +1,22 @@
+[
+  {
+    "name": "document_title",
+    "description": "The main title of this document. The first prominent heading on the very first page, before any goal or target content begins."
+  },
+  {
+    "name": "source_url",
+    "description": "A URL (http:// or https://) mentioned near the top of the document as the source the content was extracted from."
+  },
+  {
+    "name": "first_goal",
+    "description": "The title of Goal 1 only. Appears on the first page in the format Goal 1. <title>. Extract only the title text after Goal 1., not the number."
+  },
+  {
+    "name": "no_of_targets",
+    "description": "The total number of targets mentioned in the document, e.g. 169. Usually stated near the top as 169 Targets or similar."
+  },
+  {
+    "name": "total_goals_mentioned",
+    "description": "The total number of SDGs stated explicitly in the document's introduction on page 1, e.g. 'the 17 Sustainable Development Goals'. Extract only the number as stated — do not count goals yourself."
+  }
+]

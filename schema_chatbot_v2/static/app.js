@@ -1195,15 +1195,28 @@
                     <div class="summary-box"><div class="lbl">Wall time</div><div class="val">${wall}</div></div>
                 </div>
                 ${sucs.length ? `
-                <div class="job-section">
                     <h3>✓ Successful (${sucs.length})</h3>
-                    ${sucs.map(s => `
-                        <div class="result-row ok">
-                            <div>
-                                <span class="result-name">${escapeHtml(s.pdf)}</span>
-                                <div class="result-meta">pages: ${s.pages} • chars: ${s.chars} • avg conf: ${(s.avg_conf || 0).toFixed(3)} • ${s.elapsed_s}s</div>
+                    ${sucs.map((s, idx) => `
+                        <div class="result-row ok" style="flex-direction: column; align-items: stretch; gap: 8px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div>
+                                    <span class="result-name">${escapeHtml(s.pdf)}</span>
+                                    <div class="result-meta">pages: ${s.pages} • conf: ${(s.avg_conf || 0).toFixed(3)} • Layer 1+2: ${s.elapsed_s}s ${s.extract_elapsed_s ? `• Layer 3 (Sarvam 105B): ${s.extract_elapsed_s}s` : ''}</div>
+                                </div>
+                                <div style="display: flex; gap: 6px; align-items: center;">
+                                    ${s.db_run_id ? `<span class="badge badge-success">PostgreSQL: Run #${s.db_run_id}</span>` : ''}
+                                    <span class="result-meta"><code>${escapeHtml(s.md)}</code></span>
+                                </div>
                             </div>
-                            <div class="result-meta">→ <code>${escapeHtml(s.md)}</code></div>
+                            ${s.extracted_data ? `
+                            <div style="background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 10px 14px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                    <strong style="color: #38bdf8; font-size: 12.5px;">⚡ Layer 3 Extracted JSON (${escapeHtml(s.extracted_json)})</strong>
+                                    <button class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(JSON.stringify(${escapeHtml(JSON.stringify(s.extracted_data))}, null, 2)); this.textContent='✓ Copied!'; setTimeout(()=>this.textContent='Copy JSON', 1500)">Copy JSON</button>
+                                </div>
+                                <pre style="margin: 0; font-size: 12px; color: #a5f3fc; max-height: 160px; overflow: auto; background: transparent; border: none; padding: 0;">${escapeHtml(JSON.stringify(s.extracted_data, null, 2))}</pre>
+                            </div>
+                            ` : ''}
                         </div>
                     `).join('')}
                 </div>
@@ -1222,11 +1235,46 @@
                     `).join('')}
                 </div>
                 ` : ''}
+
+                <!-- Unified Query Bot on Full JSON -->
                 <div class="job-section">
-                    <h3>Full JSON</h3>
+                    <div class="query-bot-container" id="unifiedQueryBot">
+                        <div class="query-bot-header">
+                            <div class="query-bot-title">💬 Query Bot (Ask anything about the Full Extracted JSON)</div>
+                            <span class="muted small">Grounded on the entire JSON below</span>
+                        </div>
+                        <div class="query-bot-messages" id="unified_qb_msgs">
+                            <div class="query-bot-msg bot">
+                                Hi! Ask me anything about this full extraction result (e.g. <em>"What is the patient address and bill amount?"</em> or <em>"Did insurance cover the full claim?"</em>).
+                            </div>
+                        </div>
+                        <div class="query-bot-input-row">
+                            <input type="text" class="query-bot-input" id="unified_qb_input" placeholder="Ask a question about the full JSON..." onkeydown="if(event.key==='Enter') window.__askUnifiedQueryBot()">
+                            <button class="query-bot-send-btn" id="unified_qb_btn" onclick="window.__askUnifiedQueryBot()">Ask Bot</button>
+                        </div>
+                        <div class="query-bot-suggestions">
+                            <span class="query-bot-chip" onclick="window.__fillUnifiedQueryBot('What is the patient name and ID?')">Patient name &amp; ID</span>
+                            <span class="query-bot-chip" onclick="window.__fillUnifiedQueryBot('What is the hospital name and doctor name?')">Hospital &amp; doctor</span>
+                            <span class="query-bot-chip" onclick="window.__fillUnifiedQueryBot('What was the total bill amount and amount paid?')">Total bill &amp; paid</span>
+                            <span class="query-bot-chip" onclick="window.__fillUnifiedQueryBot('What is the insurance policy number, claim number and claim amount?')">Insurance &amp; claim</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="job-section">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+                        <h3 style="margin:0;">Full JSON</h3>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <button class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(JSON.stringify(window.__currentJobDetail, null, 2)); this.textContent='✓ Copied!'; setTimeout(()=>this.textContent='📋 Copy JSON', 1500)">📋 Copy JSON</button>
+                            <button class="btn btn-sm btn-outline" onclick="downloadJobJson()">📥 Download JSON</button>
+                            <button class="btn btn-sm btn-primary" onclick="downloadJobPdf('${j.job_id}')">📄 Download PDF</button>
+                        </div>
+                    </div>
                     <pre>${escapeHtml(JSON.stringify(j, null, 2))}</pre>
                 </div>
+
             `;
+            window.__currentJobDetail = j;
         } catch (e) {
             console.warn('job detail failed', e);
         }
@@ -1567,6 +1615,98 @@
         });
     }
 
+    // ======================= Unified Query Bot Client =======================
+    window.__fillUnifiedQueryBot = function(text) {
+        const input = document.getElementById('unified_qb_input');
+        if (input) {
+            input.value = text;
+            input.focus();
+        }
+    };
+
+    window.__askUnifiedQueryBot = async function() {
+        const input = document.getElementById('unified_qb_input');
+        const btn = document.getElementById('unified_qb_btn');
+        const msgs = document.getElementById('unified_qb_msgs');
+        if (!input || !btn || !msgs) return;
+
+        const question = input.value.trim();
+        if (!question) return;
+
+        // Use the FULL JSON (window.__currentJobDetail)
+        const fullJson = window.__currentJobDetail;
+        if (!fullJson) {
+            alert('No full JSON available. Please select a job first.');
+            return;
+        }
+
+        // Add user message to UI
+        const userMsgDiv = document.createElement('div');
+        userMsgDiv.className = 'query-bot-msg user';
+        userMsgDiv.textContent = question;
+        msgs.appendChild(userMsgDiv);
+
+        // Add thinking indicator
+        const botMsgDiv = document.createElement('div');
+        botMsgDiv.className = 'query-bot-msg bot loading';
+        botMsgDiv.textContent = 'Thinking (evaluating full JSON)...';
+        msgs.appendChild(botMsgDiv);
+        msgs.scrollTop = msgs.scrollHeight;
+
+        input.value = '';
+        input.disabled = true;
+        btn.disabled = true;
+
+        try {
+            const res = await api('/api/query-bot/ask', {
+                method: 'POST',
+                json: {
+                    extracted_data: fullJson,
+                    question: question,
+                    doc_id: fullJson.job_id || 'Full Pipeline Output',
+                }
+            });
+            botMsgDiv.className = 'query-bot-msg bot';
+            botMsgDiv.textContent = res.answer || 'No answer returned.';
+        } catch (err) {
+            botMsgDiv.className = 'query-bot-msg bot';
+            botMsgDiv.style.color = '#fca5a5';
+            botMsgDiv.textContent = 'Error: ' + err.message;
+        } finally {
+            input.disabled = false;
+            btn.disabled = false;
+            input.focus();
+            msgs.scrollTop = msgs.scrollHeight;
+        }
+    };
+
+    // ======================= Job Downloads =======================
+    window.downloadJobJson = function() {
+        if (!window.__currentJobDetail) return;
+        const jsonStr = JSON.stringify(window.__currentJobDetail, null, 2);
+        const blob = new Blob([jsonStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${window.__currentJobDetail.job_id || 'pipeline_job'}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    window.downloadJobPdf = function(jobId) {
+        if (!jobId && window.__currentJobDetail) jobId = window.__currentJobDetail.job_id;
+        if (!jobId) return;
+        const downloadUrl = `/pipeline/jobs/${jobId}/pdf`;
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = `${jobId}_report.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    };
+
     // ======================= Init & Bootstrap =======================
 
     initTheme();
@@ -1590,3 +1730,5 @@
     }, 4000);
 
 })();
+
+

@@ -33,13 +33,15 @@ def _to_response(result: TurnResult) -> ChatResponse:
 
 
 @router.post("/chat", response_model=ChatResponse, response_model_by_alias=True)
-def chat(
+async def chat(
     req: ChatRequest,
     manager: ConversationManager = Depends(get_conversation_manager),
     user: User = Depends(get_current_user),
 ) -> ChatResponse:
+    from starlette.concurrency import run_in_threadpool
+
     if not req.session_id:
-        result = manager.start_session()
+        result = await run_in_threadpool(manager.start_session)
         session = manager.store.get(result.session_id)
         if session:
             session.owner = user.username
@@ -50,7 +52,7 @@ def chat(
         raise HTTPException(status_code=400, detail="message is required when session_id is provided")
 
     try:
-        result = manager.handle_message(req.session_id, req.message)
+        result = await run_in_threadpool(manager.handle_message, req.session_id, req.message)
     except KeyError:
         raise HTTPException(status_code=404, detail="session not found")
     return _to_response(result)
@@ -76,10 +78,20 @@ async def infer_schema(
     for f in files:
         if not (f.filename or "").lower().endswith(".pdf") and f.content_type != "application/pdf":
             raise HTTPException(status_code=400, detail=f"'{f.filename}' doesn't look like a PDF")
-        samples.append(await f.read())
+        content = await f.read()
+        samples.append(content)
+
+        # Store input sample document in PostgreSQL
+        try:
+            from src.ai.layer3_extraction.storage import save_document
+            save_document(filename=f.filename or f"sample_{len(samples)}.pdf", file_bytes=content, content_type=f.content_type or "application/pdf")
+        except Exception:
+            pass
+
+    from starlette.concurrency import run_in_threadpool
 
     try:
-        result = manager.start_from_documents(samples, session_id=session_id)
+        result = await run_in_threadpool(manager.start_from_documents, samples, session_id=session_id)
         if session_id is None:
             session = manager.store.get(result.session_id)
             if session:

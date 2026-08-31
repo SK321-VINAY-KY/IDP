@@ -1,0 +1,19 @@
+# CODEOWNERS — ShellKode Code Development Framework
+# Every PR must be approved by at least one owner listed here.
+# Syntax: <path pattern>  <@github-handle> ...
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Global owners — all files
+*                           @SK321-VINAY-KY @Vinay-K-Y
+
+# Backend pipeline (Layer 1 + Layer 2)
+/backend/src/ai/            @SK321-VINAY-KY @Vinay-K-Y
+/backend/src/adapters/      @SK321-VINAY-KY @Vinay-K-Y
+/backend/src/config/        @SK321-VINAY-KY @Vinay-K-Y
+
+# Tests
+/backend/tests/             @SK321-VINAY-KY @Vinay-K-Y
+
+# Scaffold & CI config
+/.github/                   @SK321-VINAY-KY @Vinay-K-Y
+/.pre-commit-config.yaml    @SK321-VINAY-KY @Vinay-K-Y

@@ -30,7 +30,6 @@ tests/fixtures/*.md
 # OS
 .DS_Store
 Thumbs.db
-
 # Output & scratch
 logs/
 scratch/

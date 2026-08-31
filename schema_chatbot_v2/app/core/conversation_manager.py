@@ -84,6 +84,20 @@ class ConversationManager:
         }
         path = SCHEMA_REGISTRY_DIR / f"{session.schema_id}.json"
         path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
+        # Persist to PostgreSQL schemas table
+        try:
+            from src.ai.layer3_extraction.storage import save_schema_record
+            save_schema_record(
+                schema_id=session.schema_id,
+                document_type=session.schema_state.document_type or "document",
+                schema_json=record,
+                session_id=session.session_id,
+                sample_documents=getattr(session, "sample_documents", None) or [],
+            )
+        except Exception:
+            pass
+
         return path
 
     # ---- public API ----

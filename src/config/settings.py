@@ -5,11 +5,19 @@ Owner: engineer-a@idp-pilot
 Created: 2026-08-19 | Updated: 2026-08-20 (Stage 1 capability-based routing thresholds)
 Deps: pydantic-settings
 """
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_ROOT_DIR = Path(__file__).resolve().parents[2]
+_ROOT_ENV = _ROOT_DIR / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="IDP_", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=[_ROOT_ENV, ".env"],
+        env_prefix="IDP_",
+        extra="ignore",
+    )
 
     # --- LLM / VLM (provider selection) ---
     # Set `llm_provider` to the concrete provider you want to use.
@@ -29,6 +37,18 @@ class Settings(BaseSettings):
     # `qwen2-vl:2b`; for Gemini use your chosen model like `models/gemini-1.5-mini`.
     # Use a Google Gemini model name by default when `llm_provider` is "gemini".
     vlm_model_name: str = "qwen2.5vl:7b"
+
+    # --- Layer 3 — Extraction LLM (Sarvam / Ollama) ---
+    extraction_backend: str = "sarvam"
+    sarvam_base_url: str = "https://api.sarvam.ai/v1"
+    sarvam_model_name: str = "sarvam-105b"
+    sarvam_api_key: str = ""
+    extraction_model_name: str = "qwen2.5:7b"
+    summary_model_name: str = "qwen2.5:7b"
+    max_extraction_retries: int = 2
+
+    # --- PostgreSQL Storage ---
+    database_url: str = "postgresql://postgres:password@localhost:5432/idp"
 
     # --- PaddleOCR engine settings ---
     # Handwriting mode: lower detection threshold so thinner/more irregular
