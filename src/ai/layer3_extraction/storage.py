@@ -27,9 +27,9 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    JSON,
     create_engine,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from src.config.settings import settings
@@ -42,7 +42,22 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+def _create_db_engine():
+    db_url = getattr(settings, "database_url", "sqlite:///./idp_storage.db")
+    try:
+        if db_url.startswith("postgresql"):
+            eng = create_engine(db_url, pool_pre_ping=True)
+            # Ping test connection
+            with eng.connect() as conn:
+                pass
+            return eng
+        return create_engine(db_url)
+    except Exception as exc:
+        logger.warning("storage.engine_init_fallback", error=str(exc))
+        return create_engine("sqlite:///./idp_storage.db")
+
+
+engine = _create_db_engine()
 SessionLocal = sessionmaker(bind=engine)
 
 
@@ -79,8 +94,8 @@ class SchemaRecord(Base):
     schema_id: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
     document_type: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
     field_count: Mapped[int] = mapped_column(Integer, default=0)
-    schema_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    sample_documents: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    schema_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    sample_documents: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     session_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -98,8 +113,8 @@ class MarkdownRecord(Base):
     markdown_content: Mapped[str] = mapped_column(Text, nullable=False)
     page_count: Mapped[int] = mapped_column(Integer, default=1)
     schema_id: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
-    schema_ref_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    pages_json: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    schema_ref_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    pages_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
@@ -113,8 +128,8 @@ class ExtractionRun(Base):
     doc_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     page_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     schema_name: Mapped[str] = mapped_column(String, nullable=False)
-    result_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    page_details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    result_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    page_details: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     llm_provider: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     model_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     processing_time_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -135,8 +150,15 @@ class JobPdfRecord(Base):
 
 
 def init_db():
-    """Create all 5 tables in PostgreSQL if they do not exist."""
-    Base.metadata.create_all(engine)
+    """Create all 5 tables in PostgreSQL / SQLite if they do not exist."""
+    global engine, SessionLocal
+    try:
+        Base.metadata.create_all(engine)
+    except Exception as exc:
+        logger.warning("storage.init_db_fallback", error=str(exc))
+        engine = create_engine("sqlite:///./idp_storage.db")
+        SessionLocal = sessionmaker(bind=engine)
+        Base.metadata.create_all(engine)
 
 
 # ==============================================================================

@@ -35,6 +35,9 @@ logs/
 scratch/
 dataset_output/
 schema_registry/
+dataset/_users/
+*.db
+*.sqlite3
 DEMO_GUIDE.md
 
 
