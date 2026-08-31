@@ -12,7 +12,6 @@ Updated: 2026-08-20 — TrOCR removed, PaddleOCR handwritten route, vlm_transcri
 """
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np

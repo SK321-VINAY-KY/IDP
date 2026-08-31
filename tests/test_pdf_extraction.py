@@ -7,7 +7,6 @@ Purpose: End-to-end extraction test using the SDG 17 Goals PDF.
 """
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pymupdf  # PyMuPDF

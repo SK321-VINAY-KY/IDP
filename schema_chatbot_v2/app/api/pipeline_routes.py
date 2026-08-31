@@ -26,7 +26,6 @@ for d in (DATASET_DIR, OUTPUT_DIR, SCHEMA_REGISTRY):
     d.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "backend"))
 
 from src.adapters.llm.base import LLMClient
 from src.ai.schemas.page import PageClassification, PageOutput, VLMAnalysis
