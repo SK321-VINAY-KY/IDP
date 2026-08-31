@@ -3,8 +3,8 @@ File: test_capability_router.py
 Purpose: Tests for capability_types.py + capability_router.py — the
          detector, the matcher, and the bridge back to pipeline route
          strings. Also asserts skip/Indic pre-checks stay in agreement
-         with router.py's originals (duplicated logic, see pipeline.py
-         comments on _precheck_skip_or_indic).
+         with router.py's originals (duplicated logic, see
+         capability_router.py comments on precheck_skip_or_indic).
 Owner: engineer-a@idp-pilot
 Created: 2026-08-20 | Deps: pytest
 """
@@ -23,9 +23,9 @@ from src.ai.layer1_routing.capability_router import (
     decision_to_pipeline_route,
     detect_required_capabilities,
     detect_required_capabilities_with_classification,
+    precheck_skip_or_indic,
 )
 from src.ai.layer1_routing.router import route_from_profile
-from src.ai.layer1_routing.pipeline import _precheck_skip_or_indic
 
 
 def make_profile(**overrides) -> PageProfile:
@@ -205,12 +205,13 @@ def test_bridge_maps_vlm_transcribe_unchanged():
 
 def test_precheck_agrees_with_router_on_skip():
     """
-    _precheck_skip_or_indic() in pipeline.py is a miniature duplicate of
-    router.route_from_profile(). This test asserts both agree on skip pages.
-    If you change the skip threshold in router.py, update pipeline.py too.
+    precheck_skip_or_indic() in capability_router.py is a miniature
+    duplicate of router.route_from_profile()'s skip/Indic branch. This
+    test asserts both agree on skip pages. If you change the skip
+    threshold in router.py, update capability_router.py too.
     """
     p = make_profile(char_count=5, image_coverage=0.0)
-    assert _precheck_skip_or_indic(p) == "skip"
+    assert precheck_skip_or_indic(p) == "skip"
     assert route_from_profile(p) == "skip"
     print("PASS: capability-mode skip pre-check agrees with router.route_from_profile()")
 
@@ -220,7 +221,7 @@ def test_precheck_agrees_with_router_on_indic():
     Same agreement test for Indic script placeholder routing.
     """
     p = make_profile(primary_script="devanagari", char_count=100)
-    assert _precheck_skip_or_indic(p) == "scanned"
+    assert precheck_skip_or_indic(p) == "scanned"
     assert route_from_profile(p) == "scanned"
     print("PASS: capability-mode Indic pre-check agrees with router.route_from_profile()")
 

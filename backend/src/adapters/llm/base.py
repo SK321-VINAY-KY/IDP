@@ -7,7 +7,7 @@ Created: 2026-08-19 | Deps: pydantic
 """
 from abc import ABC, abstractmethod
 
-from src.ai.schemas.page import PageClassification
+from src.ai.schemas.page import PageClassification, VLMAnalysis
 
 
 class LLMClient(ABC):
@@ -18,6 +18,17 @@ class LLMClient(ABC):
     def classify_page(self, image_bytes: bytes, page_profile_hint: dict) -> PageClassification:
         """Vision classification for ambiguous pages: route, handwriting_pct, noise_level."""
         raise NotImplementedError
+
+    def analyze_page(self, image_bytes: bytes, page_profile_hint: dict) -> VLMAnalysis:
+        """Backward-compatible analysis for clients that only classify pages."""
+        classification = self.classify_page(image_bytes, page_profile_hint)
+        capabilities = {"handwriting"} if classification.handwriting_pct > 0.10 else {"ocr"}
+        return VLMAnalysis(
+            confidence=classification.confidence,
+            detected_capabilities=capabilities,
+            required_capabilities=capabilities,
+            reason="legacy classification client; direct extraction unavailable",
+        )
 
     @abstractmethod
     def transcribe_handwriting(self, image_bytes: bytes) -> tuple[str, float]:

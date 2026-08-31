@@ -70,5 +70,3 @@ pip install -r requirements.txt --break-system-packages
 # Ollama must be running locally with the VLM model pulled:
 #   ollama pull qwen2-vl:2b
 ```
-# IDP
-Intelligent Document Processing

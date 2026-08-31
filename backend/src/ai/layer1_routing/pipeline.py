@@ -20,19 +20,12 @@ import time
 from typing import Any
 
 from src.adapters.llm.base import LLMClient
-from src.ai.layer1_routing.capability_router import (
-    CapabilityRouter,
-    decision_to_pipeline_route,
-    detect_required_capabilities,
-    detect_required_capabilities_with_classification,
-)
 from src.ai.layer1_routing.inspect import inspect_page
 from src.ai.layer1_routing.router import (
     build_engine_plan,
-    capabilities_from_classification,
     capabilities_from_profile,
+    capabilities_from_vlm_analysis,
     next_escalation_route,
-    resolve_route_with_classification,
     route_from_profile,
 )
 from src.ai.layer2_conversion.digital import convert_digital_page
@@ -40,22 +33,13 @@ from src.ai.layer2_conversion.scanned import (
     convert_handwritten_via_paddle,
     convert_scanned_page,
 )
-from src.ai.schemas.page import EngineTask, PageCapabilities, PageOutput
+from src.ai.output import write_document
+from src.ai.schemas.page import EngineTask, PageCapabilities, PageOutput, VLMAnalysis
 from src.ai.schemas.page_metadata import PageMetadata
 from src.config.settings import settings
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-# Shared across both routing modes — skip and Indic decisions sit outside the
-# capability vocabulary (skip needs no processor; Indic engine is deferred).
-_INDIC_SCRIPTS = {
-    "devanagari", "tamil", "bengali", "gujarati",
-    "gurmukhi", "kannada", "malayalam", "odia", "telugu",
-}
-
-# Singleton capability router (stateless — safe to reuse across pages).
-_capability_router = CapabilityRouter()
 
 # Route string → engine name mapping used by both single_engine plan wrapping
 # and the escalation ladder's engine lookup.
@@ -66,94 +50,6 @@ _ROUTE_TO_ENGINE: dict[str, str] = {
     "vlm_transcribe": "vlm_transcribe",
     "skip":           "skip",
 }
-
-
-# ---------------------------------------------------------------------------
-# Routing mode helpers
-# ---------------------------------------------------------------------------
-
-def _precheck_skip_or_indic(profile) -> str | None:
-    """
-    Shared pre-check used by the capability-based routing path.
-    Returns a route string ("skip" or "scanned") if the decision is
-    conclusive without entering the capability vocabulary, or None to
-    continue with full capability detection.
-
-    Duplicated in miniature from router.route_from_profile() rather than
-    re-using it directly, to keep the capability path self-contained and
-    avoid coupling it to the legacy routing API. Two tests in
-    test_capability_router.py (test_precheck_agrees_with_router_on_skip /
-    _on_indic) assert this copy stays in agreement with the original.
-    """
-    if (
-        profile.char_count < settings.skip_char_count_threshold
-        and profile.image_coverage < settings.skip_image_coverage_threshold
-    ):
-        return "skip"
-
-    if profile.primary_script in _INDIC_SCRIPTS:
-        logger.warning(
-            "router.indic_engine_deferred",
-            page_number=profile.page_number,
-            primary_script=profile.primary_script,
-        )
-        return "scanned"
-
-    return None
-
-
-def _resolve_route_capability_based(
-    profile, page_number: int, page_image_bytes: bytes, llm_client: LLMClient
-) -> tuple[str, object]:
-    """
-    Capability-based route resolution: detect requirements → match processor
-    → bridge to pipeline route string. Returns (route, classification) where
-    classification is None if Step B was not needed.
-
-    Bridges back to the same route strings ("digital", "scanned",
-    "handwritten", "vlm_transcribe", "skip") that _run_engine_task() already
-    understands — PageOutput and the escalation ladder are unaffected.
-    """
-    precheck = _precheck_skip_or_indic(profile)
-    if precheck is not None:
-        return precheck, None
-
-    # Step A: deterministic capability detection
-    requirements = detect_required_capabilities(profile)
-    classification = None
-
-    # Step B: VLM classification when Step A is inconclusive
-    if requirements is None:
-        try:
-            classification = llm_client.classify_page(
-                page_image_bytes,
-                page_profile_hint=profile.model_dump(),
-            )
-            requirements = detect_required_capabilities_with_classification(
-                profile, classification
-            )
-        except Exception as exc:
-            logger.warning(
-                "pipeline.capability_vlm_unavailable",
-                page_number=page_number,
-                error=str(exc),
-                fallback="scanned",
-            )
-            # Safe fallback: treat as scanned (printed OCR)
-            return "scanned", None
-
-    decision = _capability_router.route(requirements)
-    route = decision_to_pipeline_route(decision)
-
-    logger.info(
-        "pipeline.capability_route_resolved",
-        page_number=page_number,
-        processor=decision.processor,
-        bridged_route=route,
-        reason=decision.reason,
-        routing_mode="capability_based",
-    )
-    return route, classification
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +145,61 @@ def _run_plan(
     return results
 
 
+def _analyze_with_vlm(
+    llm_client: LLMClient, image_bytes: bytes, profile
+) -> VLMAnalysis:
+    """Use rich analysis when available; base clients retain old compatibility."""
+    return llm_client.analyze_page(
+        image_bytes, page_profile_hint=profile.model_dump()
+    )
+
+
+def _finalize_direct_vlm(
+    page_number: int,
+    metadata: PageMetadata,
+    analysis: VLMAnalysis,
+    caps: PageCapabilities,
+    page_start: float,
+) -> tuple[PageOutput, PageMetadata]:
+    """Create the normal page contract for a terminal VLM extraction."""
+    capabilities = sorted(analysis.detected_capabilities)
+    logger.info(
+        "page.routing_decision",
+        page_number=page_number,
+        route="vlm_direct",
+        confidence=analysis.confidence,
+    )
+    metadata.capabilities = capabilities
+    metadata.set_routing(
+        engine_plan=["vlm_direct"],
+        routing_mode="vlm_direct",
+        selected_engine="vlm_direct",
+        route_confidence=analysis.confidence,
+    )
+    metadata.add_engine_result(
+        engine="vlm_direct",
+        confidence=analysis.confidence,
+        success=True,
+        output_type="markdown",
+    )
+    metadata.set_final_result(
+        engine="vlm_direct",
+        confidence=analysis.confidence,
+        success=True,
+        total_latency_ms=round((time.monotonic() - page_start) * 1000, 1),
+    )
+    return PageOutput(
+        page_number=page_number,
+        markdown=analysis.extracted_markdown,
+        engines_used=["vlm_direct"],
+        confidence=analysis.confidence,
+        capabilities=capabilities or caps.active_capabilities(),
+        escalated=False,
+        escalation_attempts=0,
+        low_confidence=False,
+    ), metadata
+
+
 # ---------------------------------------------------------------------------
 # Internal: merge + dedup
 # ---------------------------------------------------------------------------
@@ -329,6 +280,7 @@ def process_page(
     page_image_bytes: bytes,
     document_name: str = "",
     document_id: str = "",
+    extraction_requirements: dict | None = None,
 ) -> tuple[PageOutput, PageMetadata]:
     """
     Full pipeline for one page. Returns (PageOutput, PageMetadata).
@@ -375,33 +327,55 @@ def process_page(
     metadata.complexity_score = float(profile.complexity_score)
 
     # ── Steps 2–4: route resolution + engine plan ────────────────────────────
+    specialized_plan = None
     if settings.routing_mode == "capability_based":
         caps = capabilities_from_profile(profile)
 
         needs_vlm = (
             not caps.is_blank
             and not caps.has_indic_script
-            and not caps.has_digital_text
             and (caps.has_printed_scan or caps.has_handwriting)
-            and caps.handwriting_pct_hint is None
+            and (profile.is_scanned or profile.complexity_score >= 4 or
+                 profile.image_coverage > settings.mixed_content_min_image_coverage)
         )
         if needs_vlm:
             try:
-                classification = llm_client.classify_page(
-                    page_image_bytes,
-                    page_profile_hint=profile.model_dump(),
+                analysis = _analyze_with_vlm(llm_client, page_image_bytes, profile)
+                metadata.classification = (
+                    "vlm_direct" if analysis.can_extract_directly else "specialized"
                 )
-                caps = capabilities_from_classification(caps, classification, profile)
-                # Record VLM classification in metadata
-                metadata.classification            = classification.route
-                metadata.classification_confidence = classification.confidence
+                metadata.classification_confidence = analysis.confidence
+                logger.info(
+                    "pipeline.vlm_analysis",
+                    page_number=page_number,
+                    can_extract_directly=analysis.can_extract_directly,
+                    confidence=analysis.confidence,
+                    capabilities=sorted(analysis.required_capabilities),
+                )
+                exact_required = bool(
+                    (extraction_requirements or {}).get("exact_transcription")
+                )
+                if (
+                    analysis.can_extract_directly
+                    and analysis.confidence
+                    >= settings.vlm_direct_extraction_confidence_threshold
+                    and not exact_required
+                    and not analysis.exact_transcription_required
+                    and analysis.extracted_markdown.strip()
+                ):
+                    return _finalize_direct_vlm(
+                        page_number, metadata, analysis, caps, page_start
+                    )
+                caps = capabilities_from_vlm_analysis(profile, analysis)
+                specialized_plan = build_engine_plan(caps)
             except Exception as exc:
                 logger.warning(
                     "pipeline.vlm_classify_unavailable",
                     page_number=page_number,
                     error=str(exc),
-                    fallback="running_both_ocr_engines",
+                    fallback="scanned",
                 )
+                caps = PageCapabilities(has_printed_scan=True)
 
         plan = build_engine_plan(caps)
 
@@ -420,13 +394,38 @@ def process_page(
         single_route = route_from_profile(profile)
         if single_route is None:
             try:
-                classification = llm_client.classify_page(
-                    page_image_bytes,
-                    page_profile_hint=profile.model_dump(),
+                analysis = _analyze_with_vlm(llm_client, page_image_bytes, profile)
+                metadata.classification = (
+                    "vlm_direct" if analysis.can_extract_directly else "specialized"
                 )
-                single_route = resolve_route_with_classification(profile, classification)
-                metadata.classification            = classification.route
-                metadata.classification_confidence = classification.confidence
+                metadata.classification_confidence = analysis.confidence
+                exact_required = bool(
+                    (extraction_requirements or {}).get("exact_transcription")
+                )
+                if (
+                    analysis.can_extract_directly
+                    and analysis.confidence
+                    >= settings.vlm_direct_extraction_confidence_threshold
+                    and not exact_required
+                    and not analysis.exact_transcription_required
+                    and analysis.extracted_markdown.strip()
+                ):
+                    return _finalize_direct_vlm(
+                        page_number,
+                        metadata,
+                        analysis,
+                        capabilities_from_profile(profile),
+                        page_start,
+                    )
+                caps = capabilities_from_vlm_analysis(profile, analysis)
+                planned = build_engine_plan(caps)
+                specialized_plan = planned
+                engine_to_route = {v: k for k, v in _ROUTE_TO_ENGINE.items()}
+                single_route = (
+                    engine_to_route.get(planned[0].engine, "scanned")
+                    if planned
+                    else "scanned"
+                )
             except Exception as exc:
                 logger.warning(
                     "pipeline.vlm_classify_unavailable",
@@ -436,9 +435,10 @@ def process_page(
                 )
                 single_route = "scanned"
 
-        caps = capabilities_from_profile(profile)
+        if specialized_plan is None:
+            caps = capabilities_from_profile(profile)
 
-        plan = [EngineTask(
+        plan = specialized_plan or [EngineTask(
             engine=_ROUTE_TO_ENGINE.get(single_route, single_route),
             priority=1,
             reason=f"single_engine:{single_route}",
@@ -598,6 +598,9 @@ def process_document(
     llm_client: LLMClient,
     document_name: str = "",
     document_id: str = "",
+    write_output: bool = False,
+    output_dir: str | None = None,
+    overwrite: bool = True,
 ) -> list[tuple[PageOutput, PageMetadata]]:
     """
     Process every page in a document.
@@ -606,6 +609,9 @@ def process_document(
       page_number   — int
       context       — dict with pdf_path, image_array, image_bytes
       image_bytes   — PNG bytes of the rendered page
+
+    If write_output=True and output_dir is set, the merged per-document
+    markdown is written to <output_dir>/<document_stem>.md via md_writer.
 
     Returns a list of (PageOutput, PageMetadata) pairs, one per page.
     """
@@ -634,4 +640,18 @@ def process_document(
         low_confidence_pages=low_conf_pages,
         escalated_pages=escalated_pages,
     )
+
+    if write_output and output_dir and document_name:
+        out_path = write_document(
+            document_name=document_name,
+            pages=results,
+            output_dir=output_dir,
+            overwrite=overwrite,
+        )
+        logger.info(
+            "pipeline.document_written",
+            document=document_name,
+            output_path=out_path,
+        )
+
     return results

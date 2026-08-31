@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IDP Engineer A — Pipeline Console</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header class="app-header">
+        <div class="header-left">
+            <h1>IDP Engineer A Console</h1>
+            <span class="subtitle">Schema Discovery &middot; Document Conversion Pipeline</span>
+        </div>
+        <div class="header-right">
+            <span id="healthBadge" class="badge badge-info">connecting…</span>
+            <span id="llmBadge" class="badge badge-mute">—</span>
+        </div>
+    </header>
+
+    <nav class="tabs">
+        <button class="tab-btn active" data-tab="documents">Documents</button>
+        <button class="tab-btn" data-tab="chatbot">Schema Chatbot</button>
+        <button class="tab-btn" data-tab="pipeline">Run Pipeline</button>
+    </nav>
+
+    <main class="content">
+        <!-- =========================== TAB: Documents =========================== -->
+        <section id="tab-documents" class="tab-panel active">
+            <div class="card">
+                <h2>Upload Documents</h2>
+                <p class="muted">Add PDFs to the dataset folder. They'll be used for schema inference (2–5 samples) and Engineer A batch processing.</p>
+                <div class="upload-zone" id="uploadZone">
+                    <input type="file" id="fileInput" multiple accept="application/pdf,.pdf" hidden>
+                    <div class="upload-inner">
+                        <p class="upload-icon">📄</p>
+                        <p><strong>Drag & drop PDFs here</strong> or <a href="#" id="browseBtn">browse</a></p>
+                        <p class="muted small">Multi-select supported. Files go into <code>dataset/</code>.</p>
+                    </div>
+                </div>
+                <div id="uploadStatus" class="status-box hidden"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2>Dataset (<span id="docCount">0</span>)</h2>
+                    <button class="btn btn-ghost" id="refreshDocsBtn">↻ Refresh</button>
+                </div>
+                <div id="docList" class="doc-list">
+                    <p class="muted">Loading…</p>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2>Outputs (<span id="outCount">0</span>)</h2>
+                </div>
+                <div id="outList" class="doc-list">
+                    <p class="muted">Load documents first.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- =========================== TAB: Chatbot =========================== -->
+        <section id="tab-chatbot" class="tab-panel">
+            <div class="chat-grid">
+                <div class="chat-col">
+                    <div class="card chat-card">
+                        <div class="card-header">
+                            <h2>Schema Discovery Chat</h2>
+                            <div class="card-actions">
+                                <span id="stateBadge" class="badge badge-mute">idle</span>
+                                <button class="btn btn-ghost btn-sm" id="newSessionBtn">+ New Session</button>
+                            </div>
+                        </div>
+                        <div id="chatLog" class="chat-log">
+                            <div class="chat-msg bot">
+                                <div class="msg-bubble">
+                                    Upload 2–5 sample PDFs of the same document type, or start chatting.
+                                </div>
+                            </div>
+                        </div>
+                        <div class="chat-input-row">
+                            <input type="text" id="chatInput" placeholder="Type a message (e.g. 'Add email field')" disabled>
+                            <button class="btn btn-primary" id="sendBtn" disabled>Send</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="chat-col">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>Sample Inference Upload</h2>
+                        </div>
+                        <p class="muted small">Upload 2–5 PDFs of the SAME document type (e.g. all resumes) to auto-infer an initial schema.</p>
+                        <div class="mini-upload" id="inferUploadZone">
+                            <input type="file" id="inferInput" multiple accept="application/pdf,.pdf" hidden>
+                            <button class="btn btn-outline" id="inferBrowseBtn">Select PDFs (2–5)</button>
+                            <span id="inferSelected" class="muted small">no files</span>
+                        </div>
+                        <div class="mt-1">
+                            <button class="btn btn-primary btn-full" id="inferBtn" disabled>Run Inference → Chat</button>
+                            <p class="muted small mt-1">⚠  Sarvam Doc AI OCR + LLM proposal: expect <strong>60–180 s</strong> for 2 PDFs.</p>
+                        </div>
+                        <div id="inferStatus" class="status-box hidden"></div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>Current Schema</h2>
+                            <div>
+                                <button class="btn btn-ghost btn-sm" id="copySchemaBtn" disabled>Copy</button>
+                                <button class="btn btn-ghost btn-sm" id="printSchemaBtn" disabled>/schema</button>
+                            </div>
+                        </div>
+                        <div id="schemaPanel">
+                            <p class="muted">No schema yet.</p>
+                        </div>
+                        <div id="schemaErrors" class="error-list hidden"></div>
+                        <div class="mt-1">
+                            <button class="btn btn-success btn-full" id="confirmBtn" disabled>✓ Confirm Schema</button>
+                            <p class="muted small mt-1">Type <code>/confirm</code> in chat (or press above) once schema looks good. Confirmed schemas are saved to <code>schema_registry/</code>.</p>
+                        </div>
+                        <div id="confirmStatus" class="status-box hidden"></div>
+                        <div id="postConfirmBox" class="mt-1 hidden">
+                            <div class="pipeline-actions">
+                                <button class="btn btn-success btn-lg btn-full" id="quickRunPipelineBtn" disabled>
+                                    ⚡ Run Engineer A Pipeline (Layers A &amp; B) on All Documents Now
+                                </button>
+                            </div>
+                            <p class="muted small mt-1">
+                                Pre-selects the schema you just confirmed, checks every document, and launches
+                                the Engineer A batch pipeline (Layer 1 routing + Layer 2 conversion/writing markdown outputs).
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- =========================== TAB: Pipeline =========================== -->
+        <section id="tab-pipeline" class="tab-panel">
+            <div class="card">
+                <div class="card-header">
+                    <h2>Run Engineer A Pipeline</h2>
+                    <span id="pipelineAvail" class="badge badge-mute">checking…</span>
+                </div>
+
+                <div class="form-row">
+                    <label>
+                        <strong>Schema</strong>
+                        <select id="schemaSelect" disabled>
+                            <option value="">— load schemas first —</option>
+                        </select>
+                        <button class="btn btn-ghost btn-sm mt-1" id="refreshSchemasBtn">↻ Refresh Schemas</button>
+                    </label>
+                </div>
+
+                <div class="form-row">
+                    <label>
+                        <strong>Documents to process</strong>
+                        <div id="docChecklist" class="checklist">
+                            <p class="muted small">Load documents from the Documents tab first.</p>
+                        </div>
+                    </label>
+                    <div class="row-actions">
+                        <button class="btn btn-ghost btn-sm" id="selAllBtn" disabled>All</button>
+                        <button class="btn btn-ghost btn-sm" id="selNoneBtn" disabled>None</button>
+                    </div>
+                </div>
+
+                <div class="pipeline-actions">
+                    <button class="btn btn-primary btn-lg" id="runPipelineBtn" disabled>
+                        ⚙  Run Engineer A Pipeline (Layers A &amp; B)
+                    </button>
+                </div>
+                <p class="muted small">
+                    This runs <code>process_document()</code> for each selected PDF with <code>write_output=True</code>.
+                    <strong>Layer A (routing)</strong> classifies each page (digital / scanned / handwritten / mixed),
+                    then <strong>Layer B (conversion)</strong> runs the chosen engine(s) and writes structured markdown to <code>dataset_output/</code>.
+                    Scanned/handwritten pages need a real VLM adapter wired up — they will loudly fail otherwise so you can detect it early.
+                </p>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2>Job Output</h2>
+                    <button class="btn btn-ghost btn-sm" id="refreshJobsBtn">↻ Refresh</button>
+                </div>
+                <div id="jobList">
+                    <p class="muted">No jobs yet.</p>
+                </div>
+            </div>
+
+            <div id="jobDetailCard" class="card hidden">
+                <div class="card-header">
+                    <h2>Job Detail: <span id="detailJobId">—</span></h2>
+                    <div class="card-actions">
+                        <span id="detailStatus" class="badge">—</span>
+                        <button class="btn btn-sm btn-warn hidden" id="jobPauseBtn" title="Pause active job">⏸ Pause</button>
+                        <button class="btn btn-sm btn-primary hidden" id="jobResumeBtn" title="Resume paused job">▶ Resume</button>
+                        <button class="btn btn-sm btn-danger hidden" id="jobKillBtn" title="Kill / cancel job">✕ Kill</button>
+                    </div>
+                </div>
+                <div id="jobDetail"></div>
+            </div>
+        </section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>
