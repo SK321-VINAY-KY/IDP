@@ -7,7 +7,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>IDP — Extraction Pipeline Console</title>
-    <link rel="stylesheet" href="style.css?v=15">
+    <link rel="stylesheet" href="style.css?v=17">
 </head>
 <body>
     <!-- =========================== LOGIN OVERLAY =========================== -->
@@ -60,6 +60,7 @@
         <button class="tab-btn user-only hidden" data-tab="user-documents" id="tabBtnUserDocuments">📁 My Documents</button>
         <button class="tab-btn admin-only" data-tab="logs" id="tabBtnLogs">📜 Logs</button>
         <button class="tab-btn admin-only" data-tab="users" id="tabBtnUsers">👥 User Management</button>
+        <button class="tab-btn admin-only" data-tab="querybot" id="tabBtnQueryBot">💬 Query Bot</button>
     </nav>
 
     <main class="content">
@@ -389,8 +390,32 @@
                 </div>
             </div>
         </section>
+        <!-- =========================== TAB: Query Bot (Admin Only) =========================== -->
+        <section id="tab-querybot" class="tab-panel admin-only">
+            <div class="card">
+                <div class="card-header">
+                    <h2>Query Bot</h2>
+                    <div class="card-actions">
+                        <button class="btn btn-ghost btn-sm" id="qbClearBtn">🗑 Clear Chat</button>
+                    </div>
+                </div>
+
+                <!-- Chat window -->
+                <div class="query-bot-container">
+                    <div class="query-bot-messages" id="tab_qb_msgs">
+                        <div class="query-bot-msg bot">Hi! Ask me anything about the extracted document data.</div>
+                    </div>
+                    <div class="query-bot-input-row">
+                        <input type="text" class="query-bot-input" id="tab_qb_input"
+                            placeholder="Ask a question about the extracted JSON..."
+                            autocomplete="off">
+                        <button type="button" class="query-bot-send-btn" id="tab_qb_btn">Ask Bot</button>
+                    </div>
+                </div>
+            </div>
+        </section>
     </main>
 
-    <script src="app.js?v=15"></script>
+    <script src="app.js?v=17"></script>
 </body>
 </html>
