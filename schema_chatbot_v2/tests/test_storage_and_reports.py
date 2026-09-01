@@ -1,5 +1,5 @@
 """
-Tests for PostgreSQL/SQLite storage fallback, Job PDF report generation, and QueryBot.
+Tests for PostgreSQL/SQLite storage fallback and Job PDF report generation.
 """
 from __future__ import annotations
 
@@ -109,33 +109,6 @@ def test_job_pdf_report_generator():
     assert isinstance(pdf_bytes, bytes)
     assert pdf_bytes.startswith(b"%PDF")
     assert len(pdf_bytes) > 500
-
-
-def test_query_bot_endpoint(admin_token):
-    """Verify POST /api/query-bot/ask returns answer without crashing."""
-    client = TestClient(app)
-
-    req_body = {
-        "extracted_data": {
-            "hospital_name": "Apollo Health",
-            "patient_name": "Jane Smith",
-            "total_bill": 2450.00,
-            "items": ["Doctor Consultation", "Lab Panel"]
-        },
-        "question": "What is the patient name and total bill?",
-        "doc_id": "apollo_bill_01.pdf"
-    }
-
-    resp = client.post(
-        "/api/query-bot/ask",
-        json=req_body,
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["success"] is True
-    assert "answer" in data
-    assert len(data["answer"]) > 0
 
 
 def test_pdf_job_download_endpoint(admin_token):

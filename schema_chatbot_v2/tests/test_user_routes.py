@@ -169,3 +169,77 @@ def test_user_job_isolation_and_controls(client):
     assert kill_resp.status_code == 200
     assert kill_resp.json()["status"] == "killed"
     assert ctrl.kill_event.is_set()
+
+
+def test_user_job_detail_and_pdf_download(client, monkeypatch):
+    auth_u = get_auth_header(client, "user_download_test", "pass_dl")
+    auth_other = get_auth_header(client, "user_other", "pass_other")
+
+    job_id = "job_dl_123"
+    _pipeline_jobs[job_id] = {
+        "job_id": job_id,
+        "status": "completed",
+        "owner": "user_download_test",
+        "targets": ["invoice.pdf"],
+        "successes": [{"pdf": "invoice.pdf", "pages": 1, "extracted_data": {"total": 500}}],
+        "failures": [],
+        "created_at": "2026-09-01T12:00:00Z",
+        "finished_at": "2026-09-01T12:01:00Z",
+    }
+
+    # 1. Owner can get job details via /me/pipeline/jobs/{job_id}
+    res_b = client.get(f"/me/pipeline/jobs/{job_id}", headers=auth_u)
+    assert res_b.status_code == 200
+    assert res_b.json()["job_id"] == job_id
+
+    # 2. Non-admin gets 403 on admin-only route /pipeline/jobs/{job_id}
+    assert client.get(f"/pipeline/jobs/{job_id}", headers=auth_u).status_code == 403
+
+    # 3. Other user cannot access owner's job detail via /me/pipeline/jobs/{job_id} (returns 404)
+    assert client.get(f"/me/pipeline/jobs/{job_id}", headers=auth_other).status_code == 404
+
+    # 4. Owner can download job PDF report via /me/pipeline/jobs/{job_id}/pdf
+    pdf_resp = client.get(f"/me/pipeline/jobs/{job_id}/pdf", headers=auth_u)
+    assert pdf_resp.status_code == 200
+    assert pdf_resp.headers["content-type"] == "application/pdf"
+    assert len(pdf_resp.content) > 0
+
+    # 5. Other user cannot download owner's PDF report via /me/pipeline/jobs/{job_id}/pdf
+    pdf_forbidden = client.get(f"/me/pipeline/jobs/{job_id}/pdf", headers=auth_other)
+    assert pdf_forbidden.status_code == 403
+
+
+def test_user_schema_download_pdf_and_json(client):
+    auth_s = get_auth_header(client, "user_schema_downloader", "pass_s")
+
+    schema_id = "schema_dl_test_456"
+    schema_record = {
+        "schema_id": schema_id,
+        "document_type": "receipt",
+        "confirmed_at": "2026-09-01T10:00:00Z",
+        "owner": "user_schema_downloader",
+        "schema": {
+            "document_type": "receipt",
+            "fields": [
+                {"name": "merchant", "type": "string", "required": True},
+                {"name": "amount", "type": "number", "required": True, "currency": "USD"},
+            ],
+        },
+    }
+    target_path = SCHEMA_REGISTRY / f"{schema_id}.json"
+    target_path.write_text(json.dumps(schema_record), encoding="utf-8")
+
+    # 1. User can download schema JSON
+    json_resp = client.get(f"/schema/{schema_id}/json", headers=auth_s)
+    assert json_resp.status_code == 200
+    assert json_resp.headers["content-type"] == "application/json"
+    data = json.loads(json_resp.content.decode("utf-8"))
+    assert data["schema_id"] == schema_id
+    assert data["document_type"] == "receipt"
+
+    # 2. User can download schema PDF
+    pdf_resp = client.get(f"/schema/{schema_id}/pdf", headers=auth_s)
+    assert pdf_resp.status_code == 200
+    assert pdf_resp.headers["content-type"] == "application/pdf"
+    assert len(pdf_resp.content) > 0
+

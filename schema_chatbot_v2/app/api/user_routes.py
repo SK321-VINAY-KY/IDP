@@ -1,18 +1,17 @@
 """
 Per-user endpoints: private document management, latest-schema resolution,
-one-click isolated pipeline trigger, and ownership-scoped job monitoring.
+one-click isolated pipeline trigger, and ownership-scoped job monitoring and downloads.
 """
 from __future__ import annotations
 
 import json
-import logging
 import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 
 from app.api.pipeline_routes import (
     DATASET_DIR,
@@ -21,12 +20,14 @@ from app.api.pipeline_routes import (
     _job_controls,
     _pipeline_jobs,
     _run_pipeline_job,
+    download_job_pdf_report,
 )
 from app.core.activity_log import log_activity
 from app.core.auth import get_current_user
 from app.storage.user_store import User
+from src.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -46,7 +47,7 @@ def _latest_owned_schema(username: str) -> Optional[Path]:
     of the one with the latest confirmed_at timestamp (or None if none exist).
     """
     candidate_files = sorted(SCHEMA_REGISTRY.glob("schema_*.json"))
-    matched: List[tuple[str, Path]] = []
+    matched: List[Tuple[str, Path]] = []
     for f in candidate_files:
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
@@ -235,3 +236,39 @@ def kill_my_pipeline_job(job_id: str, user: User = Depends(get_current_user)) ->
     logger.info("pipeline.user_job_kill_requested", job_id=job_id, username=user.username)
     log_activity(user.username, "job_killed", {"job_id": job_id})
     return {"job_id": job_id, "status": "killed", "message": f"Job {job_id} killed."}
+
+
+@router.get("/pipeline/jobs/{job_id}")
+def get_my_pipeline_job(job_id: str, user: User = Depends(get_current_user)) -> Dict[str, Any]:
+    job = _pipeline_jobs.get(job_id)
+    if not job or job.get("owner") != user.username:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
+@router.get("/pipeline/jobs/{job_id}/pdf", response_class=Response)
+def download_my_pipeline_job_pdf(job_id: str, user: User = Depends(get_current_user)) -> Response:
+    return download_job_pdf_report(job_id=job_id, user=user)
+
+
+@router.get("/schemas")
+def list_my_schemas(user: User = Depends(get_current_user)) -> List[Dict[str, Any]]:
+    """
+    Returns list of confirmed schemas owned by the authenticated user.
+    """
+    candidate_files = sorted(SCHEMA_REGISTRY.glob("schema_*.json"))
+    results: List[Dict[str, Any]] = []
+    for f in candidate_files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            if data.get("owner") == user.username or not data.get("owner"):
+                results.append({
+                    "schema_id": data.get("schema_id", f.stem),
+                    "document_type": (data.get("schema") or {}).get("document_type") or data.get("document_type"),
+                    "confirmed_at": data.get("confirmed_at"),
+                    "field_count": len((data.get("schema") or {}).get("fields", [])),
+                    "owner": data.get("owner", user.username),
+                })
+        except Exception as exc:
+            logger.warning("user_schema.list_failed", file=f.name, error=str(exc))
+    return results

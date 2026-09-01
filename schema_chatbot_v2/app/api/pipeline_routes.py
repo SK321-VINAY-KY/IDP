@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import json
-import logging
 import re
 import sys
 import threading
@@ -17,7 +16,8 @@ import pymupdf
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from PIL import Image
 
-from app.core.auth import require_admin
+from app.core.activity_log import log_activity
+from app.core.auth import get_current_user, require_admin
 from app.storage.user_store import User
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -222,9 +222,6 @@ def get_pipeline_job(job_id: str, _: User = Depends(require_admin)) -> Dict[str,
     return _pipeline_jobs[job_id]
 
 
-from app.core.activity_log import log_activity
-
-
 @router.post("/pipeline/jobs/{job_id}/pause")
 def pause_pipeline_job(job_id: str, admin: User = Depends(require_admin)) -> Dict[str, Any]:
     if job_id not in _pipeline_jobs:
@@ -285,12 +282,17 @@ def kill_pipeline_job(job_id: str, admin: User = Depends(require_admin)) -> Dict
     return {"job_id": job_id, "status": "killed", "message": f"Job {job_id} killed."}
 
 
-@router.get("/pipeline/jobs/{job_id}/pdf")
-def download_job_pdf_report(job_id: str):
+@router.get("/pipeline/jobs/{job_id}/pdf", response_class=Response)
+def download_job_pdf_report(job_id: str, user: User = Depends(get_current_user)) -> Response:
     """
     Download the generated PDF report for a job directly from PostgreSQL.
     If not yet stored in PostgreSQL, generate it now, save it, and stream it.
     """
+    if job_id in _pipeline_jobs:
+        job = _pipeline_jobs[job_id]
+        if user.role != "admin" and job.get("owner") != user.username:
+            raise HTTPException(status_code=403, detail="Forbidden: You do not have access to this job")
+
     from src.ai.layer3_extraction.storage import get_job_pdf, save_job_pdf
     from src.utils.job_pdf_report import generate_job_pdf
 
@@ -991,94 +993,6 @@ async def extract_document(
     except Exception as exc:
         logger.exception("pipeline.extract.failed")
         raise HTTPException(status_code=500, detail=f"Extraction failed: {exc}")
-
-
-# ========================= Query Bot (JSON Q&A) =========================
-
-from pydantic import BaseModel, Field
-
-class QueryBotRequest(BaseModel):
-    extracted_data: Any = Field(..., description="Full extracted JSON object")
-    question: str = Field(..., description="User's natural language question about the extracted data")
-    doc_id: Optional[str] = Field(None, description="Optional document name for reference")
-
-
-@router.post("/api/query-bot/ask")
-async def ask_query_bot(req: QueryBotRequest) -> Dict[str, Any]:
-    """
-    Query Bot: Accepts the full extracted JSON from Layer 3 + user question.
-    Sends both to the LLM to inspect the JSON and return a direct, natural-language answer.
-    """
-    if not req.question.strip():
-        raise HTTPException(status_code=400, detail="Question cannot be empty.")
-    if not req.extracted_data:
-        raise HTTPException(status_code=400, detail="Extracted JSON data cannot be empty.")
-
-    from starlette.concurrency import run_in_threadpool
-
-    def _query_llm() -> str:
-        prompt = (
-            "You are a precise Query Bot for an Intelligent Document Processing (IDP) system.\n"
-            "Below is the FULL structured JSON extracted from the document:\n\n"
-            f"```json\n{json.dumps(req.extracted_data, indent=2)}\n```\n\n"
-            f"User Question: {req.question}\n\n"
-            "Instructions:\n"
-            "1. Answer the user's question directly and concisely using ONLY the information present in the extracted JSON above.\n"
-            "2. Cite the exact field name(s) and value(s) from the JSON in your answer.\n"
-            "3. If the answer or field is NOT present in the extracted JSON, state clearly: "
-            "'This information is not present in the extracted data.'\n"
-            "4. Do NOT hallucinate or guess any values not in the JSON."
-        )
-
-        backend = getattr(a_settings, "extraction_backend", "sarvam")
-        try:
-            if backend == "sarvam" and a_settings.sarvam_api_key:
-                from openai import OpenAI
-                client = OpenAI(
-                    base_url=a_settings.sarvam_base_url,
-                    api_key=a_settings.sarvam_api_key,
-                )
-                response = client.chat.completions.create(
-                    model=a_settings.sarvam_model_name,
-                    messages=[
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=0.1,
-                    max_tokens=400,
-                    extra_body={"reasoning_effort": None},
-                )
-                choice = response.choices[0]
-                content = choice.message.content or getattr(choice.message, "reasoning_content", "") or ""
-                return content.strip()
-            else:
-                import httpx
-                resp = httpx.post(
-                    f"{a_settings.ollama_base_url.rstrip('/v1')}/api/generate",
-                    json={
-                        "model": a_settings.extraction_model_name,
-                        "prompt": prompt,
-                        "stream": False,
-                    },
-                    timeout=30.0,
-                )
-                if resp.status_code == 200:
-                    return resp.json().get("response", "").strip()
-                return f"LLM error: HTTP {resp.status_code}"
-        except Exception as e:
-            logger.error("query_bot.failed", error=str(e))
-            return f"Error communicating with LLM: {str(e)}"
-
-    try:
-        answer = await run_in_threadpool(_query_llm)
-        return {
-            "success": True,
-            "question": req.question,
-            "answer": answer,
-            "doc_id": req.doc_id,
-        }
-    except Exception as exc:
-        logger.exception("query_bot.error")
-        raise HTTPException(status_code=500, detail=f"Query bot failed: {exc}")
 
 
 

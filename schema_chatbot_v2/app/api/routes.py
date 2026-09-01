@@ -16,7 +16,12 @@ from app.output.schema_renderer import render_json, render_pdf
 from app.storage.session_store import get_session_store
 from app.storage.user_store import User
 
-SCHEMA_REGISTRY_DIR = Path(__file__).resolve().parents[2] / "schema_registry"
+SCHEMA_REGISTRY_DIR = Path(__file__).resolve().parents[3] / "schema_registry"
+if not SCHEMA_REGISTRY_DIR.exists():
+    # Fallback if running from a different root
+    alt = Path(__file__).resolve().parents[2] / "schema_registry"
+    if alt.exists():
+        SCHEMA_REGISTRY_DIR = alt
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -164,18 +169,78 @@ def update_schema(
 # Schema download endpoints
 # ---------------------------------------------------------------------------
 
-def _load_schema_record(schema_id: str) -> dict:
+@router.get(
+    "/schema/my",
+    summary="List schemas owned by the current user",
+    response_model=list,
+)
+def list_my_schemas(
+    user: User = Depends(get_current_user),
+) -> list:
+    """
+    Returns a list of confirmed schema summaries owned by the authenticated user.
+    ADMIN sees all schemas. USER sees only their own.
+
+    Each item contains: schema_id, document_type, confirmed_at, field_count.
+    """
+    from app.storage.user_store import Role
+
+    if not SCHEMA_REGISTRY_DIR.exists():
+        return []
+
+    results = []
+    for path in sorted(SCHEMA_REGISTRY_DIR.glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        owner = record.get("owner")
+        if user.role != Role.ADMIN and owner and owner != user.username:
+            continue
+
+        results.append({
+            "schema_id":    record.get("schema_id"),
+            "document_type": record.get("document_type"),
+            "confirmed_at": record.get("confirmed_at"),
+            "field_count":  len(record.get("schema", {}).get("fields", [])),
+            "owner":        owner,
+        })
+
+    return results
+
+def _load_schema_record(schema_id: str, requesting_user: User) -> dict:
     """
     Load a confirmed schema record from the schema_registry directory.
-    Raises HTTPException 404 if the file does not exist.
+
+    Access rules:
+      - ADMIN: can download any schema.
+      - USER:  can only download schemas they own (record.owner == username).
+                If the record has no owner set (legacy records), access is
+                granted to avoid breaking existing data.
+
+    Raises 404 if the file does not exist, 403 if the user does not own it.
     """
+    from app.storage.user_store import Role
+
     path = SCHEMA_REGISTRY_DIR / f"{schema_id}.json"
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"schema '{schema_id}' not found")
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"could not read schema file: {exc}")
+
+    # Ownership check for non-admin users
+    if requesting_user.role != Role.ADMIN:
+        owner = record.get("owner")
+        if owner and owner != requesting_user.username:
+            raise HTTPException(
+                status_code=403,
+                detail="You do not have permission to download this schema.",
+            )
+
+    return record
 
 
 @router.get(
@@ -190,6 +255,12 @@ def _load_schema_record(schema_id: str) -> dict:
         404: {"description": "Schema not found"},
     },
 )
+@router.get(
+    "/schema/{schema_id}/json",
+    summary="Download confirmed schema as JSON (alias)",
+    response_class=Response,
+    include_in_schema=False,
+)
 def download_schema_json(
     schema_id: str,
     user: User = Depends(get_current_user),
@@ -202,7 +273,7 @@ def download_schema_json(
     session metadata. Suitable for direct import into downstream pipeline
     configuration or manual inspection.
     """
-    record = _load_schema_record(schema_id)
+    record = _load_schema_record(schema_id, requesting_user=user)
     doc_type = (record.get("document_type") or "schema").replace(" ", "_")
     filename = f"{doc_type}_{schema_id}.json"
 
@@ -227,6 +298,12 @@ def download_schema_json(
         500: {"description": "PDF generation failed"},
     },
 )
+@router.get(
+    "/schema/{schema_id}/pdf",
+    summary="Download confirmed schema as PDF (alias)",
+    response_class=Response,
+    include_in_schema=False,
+)
 def download_schema_pdf(
     schema_id: str,
     user: User = Depends(get_current_user),
@@ -240,7 +317,7 @@ def download_schema_pdf(
     description). Suitable for review, sign-off, or sharing with non-technical
     stakeholders.
     """
-    record = _load_schema_record(schema_id)
+    record = _load_schema_record(schema_id, requesting_user=user)
     doc_type = (record.get("document_type") or "schema").replace(" ", "_")
     filename = f"{doc_type}_{schema_id}.pdf"
 

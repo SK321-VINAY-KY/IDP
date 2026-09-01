@@ -3,8 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>IDP — Extraction Pipeline Console</title>
-    <link rel="stylesheet" href="style.css?v=13">
+    <link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
     <!-- =========================== LOGIN OVERLAY =========================== -->
@@ -111,6 +114,8 @@
                                 <button class="btn btn-outline btn-sm" id="addSchemaFieldBtn" disabled>+ Add Field</button>
                                 <button class="btn btn-ghost btn-sm" id="copySchemaBtn" disabled>Copy</button>
                                 <button class="btn btn-ghost btn-sm" id="printSchemaBtn" disabled>/schema</button>
+                                <button class="btn btn-ghost btn-sm" id="downloadSchemaPdfHeaderBtn" title="Download confirmed schema as PDF" disabled>📄 PDF</button>
+                                <button class="btn btn-ghost btn-sm" id="downloadSchemaJsonHeaderBtn" title="Download confirmed schema as JSON" disabled>📥 JSON</button>
                             </div>
                         </div>
                         <div id="schemaPanel">
@@ -128,8 +133,16 @@
                                     ⚡ Run Extraction Pipeline Now
                                 </button>
                             </div>
+                            <div class="schema-download-actions mt-1" style="display: flex; gap: 8px;">
+                                <button class="btn btn-outline btn-sm btn-full" id="downloadSchemaPdfBtn">
+                                    📄 Download Schema PDF
+                                </button>
+                                <button class="btn btn-outline btn-sm btn-full" id="downloadSchemaJsonBtn">
+                                    📥 Download Schema JSON
+                                </button>
+                            </div>
                             <p class="muted small mt-1">
-                                Launches extraction for your confirmed schema.
+                                Launches extraction for your confirmed schema, or download the schema spec above.
                             </p>
                         </div>
                     </div>
@@ -226,6 +239,19 @@
                     <div id="userJobList">
                         <p class="muted">No jobs yet.</p>
                     </div>
+                </div>
+
+                <div id="userJobDetailCard" class="card hidden">
+                    <div class="card-header">
+                        <h2>Job Detail: <span id="userDetailJobId">—</span></h2>
+                        <div class="card-actions">
+                            <span id="userDetailStatus" class="badge">—</span>
+                            <button class="btn btn-sm btn-warn hidden" id="userJobPauseBtn" title="Pause active job">⏸ Pause</button>
+                            <button class="btn btn-sm btn-primary hidden" id="userJobResumeBtn" title="Resume paused job">▶ Resume</button>
+                            <button class="btn btn-sm btn-danger hidden" id="userJobKillBtn" title="Kill / cancel job">✕ Kill</button>
+                        </div>
+                    </div>
+                    <div id="userJobDetail"></div>
                 </div>
             </div>
         </section>
@@ -365,6 +391,6 @@
         </section>
     </main>
 
-    <script src="app.js?v=13"></script>
+    <script src="app.js?v=15"></script>
 </body>
 </html>

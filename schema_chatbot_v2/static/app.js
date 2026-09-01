@@ -175,7 +175,7 @@
             }
 
             if (!state.sessionId) {
-                newSession();
+                newSession(false);
             }
         } catch (err) {
             console.warn('initAuthenticatedSession failed', err);
@@ -618,7 +618,7 @@
         setTimeout(() => {
             const inputs = document.querySelectorAll('.field-name-input');
             if (inputs.length) {
-                inputs[inputs.length - 1].focus();
+                inputs[inputs.length - 1].focus({ preventScroll: true });
                 inputs[inputs.length - 1].select();
             }
         }, 50);
@@ -637,6 +637,8 @@
             if (errs) errs.classList.add('hidden');
             if ($('copySchemaBtn')) $('copySchemaBtn').disabled = true;
             if ($('printSchemaBtn')) $('printSchemaBtn').disabled = true;
+            if ($('downloadSchemaPdfHeaderBtn')) $('downloadSchemaPdfHeaderBtn').disabled = true;
+            if ($('downloadSchemaJsonHeaderBtn')) $('downloadSchemaJsonHeaderBtn').disabled = true;
             if ($('confirmBtn')) $('confirmBtn').disabled = true;
             if (addBtn) addBtn.disabled = !state.sessionId;
             return;
@@ -644,6 +646,9 @@
 
         if ($('copySchemaBtn')) $('copySchemaBtn').disabled = false;
         if ($('printSchemaBtn')) $('printSchemaBtn').disabled = false;
+        const canDownloadSchema = !!(state.completed || state.lastConfirmedSchemaId);
+        if ($('downloadSchemaPdfHeaderBtn')) $('downloadSchemaPdfHeaderBtn').disabled = !canDownloadSchema;
+        if ($('downloadSchemaJsonHeaderBtn')) $('downloadSchemaJsonHeaderBtn').disabled = !canDownloadSchema;
         if (addBtn) addBtn.disabled = state.completed;
 
         const docType = schema.document_type || '';
@@ -760,7 +765,7 @@
         }
     }
 
-    async function newSession() {
+    async function newSession(shouldFocus = true) {
         try {
             state.lastConfirmedSchemaId = null;
             if ($('postConfirmBox')) $('postConfirmBox').classList.add('hidden');
@@ -769,13 +774,15 @@
             state.sessionId = data.session_id;
             if ($('chatLog')) $('chatLog').innerHTML = '';
             handleChatResponse(data);
-            if ($('chatInput')) $('chatInput').focus();
+            if (shouldFocus && $('chatInput')) {
+                $('chatInput').focus({ preventScroll: true });
+            }
         } catch (e) {
             addChatMsg('bot', 'Failed to start session: ' + e.message);
         }
     }
 
-    if ($('newSessionBtn')) $('newSessionBtn').addEventListener('click', newSession);
+    if ($('newSessionBtn')) $('newSessionBtn').addEventListener('click', () => newSession(true));
 
     async function sendChat() {
         const input = $('chatInput');
@@ -840,6 +847,19 @@
             if ($('chatInput')) $('chatInput').value = '/confirm';
             sendChat();
         });
+    }
+
+    if ($('downloadSchemaPdfHeaderBtn')) {
+        $('downloadSchemaPdfHeaderBtn').addEventListener('click', () => downloadSchemaPdf());
+    }
+    if ($('downloadSchemaJsonHeaderBtn')) {
+        $('downloadSchemaJsonHeaderBtn').addEventListener('click', () => downloadSchemaJson());
+    }
+    if ($('downloadSchemaPdfBtn')) {
+        $('downloadSchemaPdfBtn').addEventListener('click', () => downloadSchemaPdf());
+    }
+    if ($('downloadSchemaJsonBtn')) {
+        $('downloadSchemaJsonBtn').addEventListener('click', () => downloadSchemaJson());
     }
 
     if ($('addSchemaFieldBtn')) {
@@ -1131,33 +1151,77 @@
                         else if (act === 'kill') killJob(jid, e);
                         return;
                     }
-                    loadJobDetail(j.job_id);
+                    loadJobDetail(j.job_id, true);
                 });
                 host.appendChild(row);
             });
-            if (state.selectedJobId) loadJobDetail(state.selectedJobId);
+            if (state.selectedJobId) loadJobDetail(state.selectedJobId, false);
         } catch (e) {
             console.warn('loadJobs failed', e);
         }
     }
 
-    async function loadJobDetail(jobId) {
-        if (!jobId || jobId === 'undefined' || state.role !== 'admin') return;
+    async function pauseUserJob(jobId, e) {
+        if (e) e.stopPropagation();
+        try {
+            await api(`/me/pipeline/jobs/${jobId}/pause`, { method: 'POST' });
+            loadUserJobs();
+            loadJobDetail(jobId);
+        } catch (err) {
+            alert('Pause failed: ' + err.message);
+        }
+    }
+
+    async function resumeUserJob(jobId, e) {
+        if (e) e.stopPropagation();
+        try {
+            await api(`/me/pipeline/jobs/${jobId}/resume`, { method: 'POST' });
+            loadUserJobs();
+            loadJobDetail(jobId);
+        } catch (err) {
+            alert('Resume failed: ' + err.message);
+        }
+    }
+
+    async function killUserJob(jobId, e) {
+        if (e) e.stopPropagation();
+        if (!confirm(`Cancel job ${jobId}?`)) return;
+        try {
+            await api(`/me/pipeline/jobs/${jobId}/kill`, { method: 'POST' });
+            loadUserJobs();
+            loadJobDetail(jobId);
+        } catch (err) {
+            alert('Kill failed: ' + err.message);
+        }
+    }
+
+    async function loadJobDetail(jobId, shouldScroll = false) {
+        if (!jobId || jobId === 'undefined') return;
         state.selectedJobId = jobId;
         try {
-            const j = await api('/pipeline/jobs/' + jobId);
-            const card = $('jobDetailCard');
-            if (card) card.classList.remove('hidden');
-            if ($('detailJobId')) $('detailJobId').textContent = jobId;
-            const st = $('detailStatus');
+            const apiPath = state.role === 'user' ? ('/me/pipeline/jobs/' + jobId) : ('/pipeline/jobs/' + jobId);
+            const j = await api(apiPath);
+            window.__currentJobDetail = j;
+
+            const isUser = state.role === 'user';
+            const card = isUser ? ($('userJobDetailCard') || $('jobDetailCard')) : $('jobDetailCard');
+            if (card) {
+                card.classList.remove('hidden');
+                if (shouldScroll) {
+                    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+            }
+            const idSpan = isUser ? ($('userDetailJobId') || $('detailJobId')) : $('detailJobId');
+            if (idSpan) idSpan.textContent = jobId;
+            const st = isUser ? ($('userDetailStatus') || $('detailStatus')) : $('detailStatus');
             if (st) {
                 st.textContent = j.status;
                 st.className = 'badge ' + jobStatusBadgeClass(j.status);
             }
 
-            const pauseBtn = $('jobPauseBtn');
-            const resumeBtn = $('jobResumeBtn');
-            const killBtn = $('jobKillBtn');
+            const pauseBtn = isUser ? ($('userJobPauseBtn') || $('jobPauseBtn')) : $('jobPauseBtn');
+            const resumeBtn = isUser ? ($('userJobResumeBtn') || $('jobResumeBtn')) : $('jobResumeBtn');
+            const killBtn = isUser ? ($('userJobKillBtn') || $('jobKillBtn')) : $('jobKillBtn');
 
             if (pauseBtn && resumeBtn && killBtn) {
                 if (j.status === 'running' || j.status === 'queued') {
@@ -1174,13 +1238,25 @@
                     killBtn.classList.add('hidden');
                 }
 
-                pauseBtn.onclick = (e) => pauseJob(jobId, e);
-                resumeBtn.onclick = (e) => resumeJob(jobId, e);
-                killBtn.onclick = (e) => killJob(jobId, e);
+                pauseBtn.onclick = (e) => isUser ? pauseUserJob(jobId, e) : pauseJob(jobId, e);
+                resumeBtn.onclick = (e) => isUser ? resumeUserJob(jobId, e) : resumeJob(jobId, e);
+                killBtn.onclick = (e) => isUser ? killUserJob(jobId, e) : killJob(jobId, e);
             }
 
-            const host = $('jobDetail');
+            const host = isUser ? ($('userJobDetail') || $('jobDetail')) : $('jobDetail');
             if (!host) return;
+
+            const newJsonStr = JSON.stringify(j);
+            // Skip full DOM rebuild if this job's data is identical to what's already rendered
+            if (window.__renderedJobId === j.job_id && window.__renderedJobJson === newJsonStr && host.children.length > 0) {
+                return;
+            }
+
+            // Capture current scroll positions before replacing innerHTML
+            const fullJsonEl = document.getElementById('fullJsonView');
+            const preScrollTop = fullJsonEl ? fullJsonEl.scrollTop : 0;
+            const preScrollLeft = fullJsonEl ? fullJsonEl.scrollLeft : 0;
+            const hostScrollTop = host.scrollTop;
 
             const wall = j.wall_time_s ? `${j.wall_time_s.toFixed(1)}s` : '--';
             const sucs = j.successes || [];
@@ -1214,7 +1290,7 @@
                                     <strong style="color: #38bdf8; font-size: 12.5px;">⚡ Layer 3 Extracted JSON (${escapeHtml(s.extracted_json)})</strong>
                                     <button class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(JSON.stringify(${escapeHtml(JSON.stringify(s.extracted_data))}, null, 2)); this.textContent='✓ Copied!'; setTimeout(()=>this.textContent='Copy JSON', 1500)">Copy JSON</button>
                                 </div>
-                                <pre style="margin: 0; font-size: 12px; color: #a5f3fc; max-height: 160px; overflow: auto; background: transparent; border: none; padding: 0;">${escapeHtml(JSON.stringify(s.extracted_data, null, 2))}</pre>
+                                <pre style="margin: 0; font-size: 12px; color: #a5f3fc; max-height: 160px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; background: transparent; border: none; padding: 0;">${escapeHtml(JSON.stringify(s.extracted_data, null, 2))}</pre>
                             </div>
                             ` : ''}
                         </div>
@@ -1236,31 +1312,6 @@
                 </div>
                 ` : ''}
 
-                <!-- Unified Query Bot on Full JSON -->
-                <div class="job-section">
-                    <div class="query-bot-container" id="unifiedQueryBot">
-                        <div class="query-bot-header">
-                            <div class="query-bot-title">💬 Query Bot (Ask anything about the Full Extracted JSON)</div>
-                            <span class="muted small">Grounded on the entire JSON below</span>
-                        </div>
-                        <div class="query-bot-messages" id="unified_qb_msgs">
-                            <div class="query-bot-msg bot">
-                                Hi! Ask me anything about this full extraction result (e.g. <em>"What is the patient address and bill amount?"</em> or <em>"Did insurance cover the full claim?"</em>).
-                            </div>
-                        </div>
-                        <div class="query-bot-input-row">
-                            <input type="text" class="query-bot-input" id="unified_qb_input" placeholder="Ask a question about the full JSON..." onkeydown="if(event.key==='Enter') window.__askUnifiedQueryBot()">
-                            <button class="query-bot-send-btn" id="unified_qb_btn" onclick="window.__askUnifiedQueryBot()">Ask Bot</button>
-                        </div>
-                        <div class="query-bot-suggestions">
-                            <span class="query-bot-chip" onclick="window.__fillUnifiedQueryBot('What is the patient name and ID?')">Patient name &amp; ID</span>
-                            <span class="query-bot-chip" onclick="window.__fillUnifiedQueryBot('What is the hospital name and doctor name?')">Hospital &amp; doctor</span>
-                            <span class="query-bot-chip" onclick="window.__fillUnifiedQueryBot('What was the total bill amount and amount paid?')">Total bill &amp; paid</span>
-                            <span class="query-bot-chip" onclick="window.__fillUnifiedQueryBot('What is the insurance policy number, claim number and claim amount?')">Insurance &amp; claim</span>
-                        </div>
-                    </div>
-                </div>
-
                 <div class="job-section">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
                         <h3 style="margin:0;">Full JSON</h3>
@@ -1270,11 +1321,23 @@
                             <button class="btn btn-sm btn-primary" onclick="downloadJobPdf('${j.job_id}')">📄 Download PDF</button>
                         </div>
                     </div>
-                    <pre>${escapeHtml(JSON.stringify(j, null, 2))}</pre>
+                    <pre id="fullJsonView" class="job-full-json-pre">${escapeHtml(JSON.stringify(j, null, 2))}</pre>
                 </div>
 
             `;
-            window.__currentJobDetail = j;
+
+            // Restore scroll positions after rebuilding
+            const restoredPre = document.getElementById('fullJsonView');
+            if (restoredPre && (preScrollTop || preScrollLeft)) {
+                restoredPre.scrollTop = preScrollTop;
+                restoredPre.scrollLeft = preScrollLeft;
+            }
+            if (host && hostScrollTop) {
+                host.scrollTop = hostScrollTop;
+            }
+
+            window.__renderedJobId = j.job_id;
+            window.__renderedJobJson = newJsonStr;
         } catch (e) {
             console.warn('job detail failed', e);
         }
@@ -1392,6 +1455,11 @@
                         <button class="btn btn-ghost btn-sm" title="Resume job" style="color:#6ee7b7" data-action="resume" data-job="${escapeHtml(j.job_id)}">▶ Resume</button>
                         <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}">✕ Kill</button>
                     `;
+                } else if (j.status === 'completed' || j.succeeded > 0) {
+                    actionButtons = `
+                        <button class="btn btn-outline btn-sm" title="Download JSON report" data-action="download-json" data-job="${escapeHtml(j.job_id)}">📥 JSON</button>
+                        <button class="btn btn-primary btn-sm" title="Download PDF report" data-action="download-pdf" data-job="${escapeHtml(j.job_id)}">📄 PDF</button>
+                    `;
                 }
 
                 const currentDoc = j.currently_processing ? ` • processing: <code>${escapeHtml(j.currently_processing)}</code>` : '';
@@ -1413,25 +1481,47 @@
 
                 row.addEventListener('click', async (e) => {
                     const btn = e.target.closest('button[data-action]');
-                    if (!btn) return;
-                    e.stopPropagation();
-                    const act = btn.dataset.action;
-                    const jid = btn.dataset.job;
-                    try {
-                        if (act === 'pause') await api(`/me/pipeline/jobs/${jid}/pause`, { method: 'POST' });
-                        else if (act === 'resume') await api(`/me/pipeline/jobs/${jid}/resume`, { method: 'POST' });
-                        else if (act === 'kill') {
-                            if (!confirm(`Cancel job ${jid}?`)) return;
-                            await api(`/me/pipeline/jobs/${jid}/kill`, { method: 'POST' });
+                    if (btn) {
+                        e.stopPropagation();
+                        const act = btn.dataset.action;
+                        const jid = btn.dataset.job;
+                        try {
+                            if (act === 'download-json') {
+                                const jobDetail = await api(`/me/pipeline/jobs/${jid}`);
+                                const jsonStr = JSON.stringify(jobDetail, null, 2);
+                                const blob = new Blob([jsonStr], { type: 'application/json' });
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = `${jid}.json`;
+                                document.body.appendChild(a);
+                                a.click();
+                                document.body.removeChild(a);
+                                URL.revokeObjectURL(url);
+                                return;
+                            }
+                            if (act === 'download-pdf') {
+                                downloadJobPdf(jid);
+                                return;
+                            }
+                            if (act === 'pause') await api(`/me/pipeline/jobs/${jid}/pause`, { method: 'POST' });
+                            else if (act === 'resume') await api(`/me/pipeline/jobs/${jid}/resume`, { method: 'POST' });
+                            else if (act === 'kill') {
+                                if (!confirm(`Cancel job ${jid}?`)) return;
+                                await api(`/me/pipeline/jobs/${jid}/kill`, { method: 'POST' });
+                            }
+                            loadUserJobs();
+                        } catch (err) {
+                            alert(`Action ${act} failed: ${err.message}`);
                         }
-                        loadUserJobs();
-                    } catch (err) {
-                        alert(`Action ${act} failed: ${err.message}`);
+                        return;
                     }
+                    loadJobDetail(j.job_id, true);
                 });
 
                 host.appendChild(row);
             });
+            if (state.selectedJobId && state.role === 'user') loadJobDetail(state.selectedJobId, false);
         } catch (e) {
             console.warn('loadUserJobs failed', e);
         }
@@ -1615,72 +1705,7 @@
         });
     }
 
-    // ======================= Unified Query Bot Client =======================
-    window.__fillUnifiedQueryBot = function(text) {
-        const input = document.getElementById('unified_qb_input');
-        if (input) {
-            input.value = text;
-            input.focus();
-        }
-    };
-
-    window.__askUnifiedQueryBot = async function() {
-        const input = document.getElementById('unified_qb_input');
-        const btn = document.getElementById('unified_qb_btn');
-        const msgs = document.getElementById('unified_qb_msgs');
-        if (!input || !btn || !msgs) return;
-
-        const question = input.value.trim();
-        if (!question) return;
-
-        // Use the FULL JSON (window.__currentJobDetail)
-        const fullJson = window.__currentJobDetail;
-        if (!fullJson) {
-            alert('No full JSON available. Please select a job first.');
-            return;
-        }
-
-        // Add user message to UI
-        const userMsgDiv = document.createElement('div');
-        userMsgDiv.className = 'query-bot-msg user';
-        userMsgDiv.textContent = question;
-        msgs.appendChild(userMsgDiv);
-
-        // Add thinking indicator
-        const botMsgDiv = document.createElement('div');
-        botMsgDiv.className = 'query-bot-msg bot loading';
-        botMsgDiv.textContent = 'Thinking (evaluating full JSON)...';
-        msgs.appendChild(botMsgDiv);
-        msgs.scrollTop = msgs.scrollHeight;
-
-        input.value = '';
-        input.disabled = true;
-        btn.disabled = true;
-
-        try {
-            const res = await api('/api/query-bot/ask', {
-                method: 'POST',
-                json: {
-                    extracted_data: fullJson,
-                    question: question,
-                    doc_id: fullJson.job_id || 'Full Pipeline Output',
-                }
-            });
-            botMsgDiv.className = 'query-bot-msg bot';
-            botMsgDiv.textContent = res.answer || 'No answer returned.';
-        } catch (err) {
-            botMsgDiv.className = 'query-bot-msg bot';
-            botMsgDiv.style.color = '#fca5a5';
-            botMsgDiv.textContent = 'Error: ' + err.message;
-        } finally {
-            input.disabled = false;
-            btn.disabled = false;
-            input.focus();
-            msgs.scrollTop = msgs.scrollHeight;
-        }
-    };
-
-    // ======================= Job Downloads =======================
+    // ======================= Downloads (Jobs & Schemas) =======================
     window.downloadJobJson = function() {
         if (!window.__currentJobDetail) return;
         const jsonStr = JSON.stringify(window.__currentJobDetail, null, 2);
@@ -1695,19 +1720,94 @@
         URL.revokeObjectURL(url);
     };
 
-    window.downloadJobPdf = function(jobId) {
+    window.downloadJobPdf = async function(jobId) {
         if (!jobId && window.__currentJobDetail) jobId = window.__currentJobDetail.job_id;
         if (!jobId) return;
-        const downloadUrl = `/pipeline/jobs/${jobId}/pdf`;
-        const a = document.createElement('a');
-        a.href = downloadUrl;
-        a.download = `${jobId}_report.pdf`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        try {
+            const apiPath = state.role === 'user' ? (`${API_BASE}/me/pipeline/jobs/${jobId}/pdf`) : (`${API_BASE}/pipeline/jobs/${jobId}/pdf`);
+            const resp = await fetch(apiPath, {
+                headers: state.token ? { 'Authorization': 'Bearer ' + state.token } : {}
+            });
+            if (!resp.ok) {
+                const errText = await resp.text();
+                throw new Error(errText || 'Failed to download PDF');
+            }
+            const blob = await resp.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${jobId}_report.pdf`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            alert('PDF download failed: ' + e.message);
+        }
+    };
+
+    window.downloadSchemaPdf = async function(schemaId) {
+        schemaId = schemaId || state.lastConfirmedSchemaId;
+        if (!schemaId) {
+            alert('No confirmed schema available to download.');
+            return;
+        }
+        try {
+            const resp = await fetch(`${API_BASE}/schema/${schemaId}/pdf`, {
+                headers: state.token ? { 'Authorization': 'Bearer ' + state.token } : {}
+            });
+            if (!resp.ok) {
+                const errText = await resp.text();
+                throw new Error(errText || 'Failed to download schema PDF');
+            }
+            const blob = await resp.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${schemaId}.pdf`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            alert('Schema PDF download failed: ' + e.message);
+        }
+    };
+
+    window.downloadSchemaJson = async function(schemaId) {
+        schemaId = schemaId || state.lastConfirmedSchemaId;
+        if (!schemaId) {
+            alert('No confirmed schema available to download.');
+            return;
+        }
+        try {
+            const resp = await fetch(`${API_BASE}/schema/${schemaId}/json`, {
+                headers: state.token ? { 'Authorization': 'Bearer ' + state.token } : {}
+            });
+            if (!resp.ok) {
+                const errText = await resp.text();
+                throw new Error(errText || 'Failed to download schema JSON');
+            }
+            const blob = await resp.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${schemaId}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            alert('Schema JSON download failed: ' + e.message);
+        }
     };
 
     // ======================= Init & Bootstrap =======================
+
+    if ('scrollRestoration' in history) {
+        history.scrollRestoration = 'manual';
+    }
+    window.scrollTo(0, 0);
 
     initTheme();
     checkHealth();
