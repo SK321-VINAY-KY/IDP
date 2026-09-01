@@ -5,7 +5,10 @@ Owner: engineer-a@idp-pilot
 Created: 2026-08-19 | Updated: 2026-08-20 (Stage 1 capability-based routing thresholds)
 Deps: pydantic-settings
 """
+import os
 from pathlib import Path
+from typing import Any
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -21,8 +24,8 @@ class Settings(BaseSettings):
 
     # --- LLM / VLM (provider selection) ---
     # Set `llm_provider` to the concrete provider you want to use.
-    # Supported values: "ollama" (local), "gemini" (Google Gemini via REST/proxy).
-    llm_provider: str = "ollama"
+    # Supported values: "ollama" (local), "gemini" (Google Gemini via REST/proxy), "sarvam".
+    llm_provider: str = "sarvam"
 
     # Ollama (local) settings (kept for backwards compatibility)
     ollama_base_url: str = "http://localhost:11434/v1"
@@ -43,12 +46,33 @@ class Settings(BaseSettings):
     sarvam_base_url: str = "https://api.sarvam.ai/v1"
     sarvam_model_name: str = "sarvam-105b"
     sarvam_api_key: str = ""
+    sarvam_timeout_s: float = 180.0
     extraction_model_name: str = "qwen2.5:7b"
     summary_model_name: str = "qwen2.5:7b"
     max_extraction_retries: int = 2
 
     # --- PostgreSQL Storage ---
     database_url: str = "postgresql://postgres:password@localhost:5432/idp"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fallback_unprefixed_env(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if not data.get("sarvam_api_key"):
+                data["sarvam_api_key"] = os.getenv("IDP_SARVAM_API_KEY") or os.getenv("SARVAM_API_KEY") or ""
+            if not data.get("sarvam_base_url"):
+                data["sarvam_base_url"] = os.getenv("IDP_SARVAM_BASE_URL") or os.getenv("SARVAM_BASE_URL") or "https://api.sarvam.ai/v1"
+            if not data.get("sarvam_model_name"):
+                data["sarvam_model_name"] = os.getenv("IDP_SARVAM_MODEL_NAME") or os.getenv("SARVAM_MODEL") or "sarvam-105b"
+            if not data.get("sarvam_timeout_s"):
+                raw_timeout = os.getenv("IDP_SARVAM_TIMEOUT_S") or os.getenv("SARVAM_TIMEOUT_S")
+                if raw_timeout:
+                    data["sarvam_timeout_s"] = float(raw_timeout)
+            if not data.get("extraction_backend"):
+                data["extraction_backend"] = os.getenv("IDP_EXTRACTION_BACKEND") or os.getenv("EXTRACTION_BACKEND") or "sarvam"
+            if not data.get("llm_provider"):
+                data["llm_provider"] = os.getenv("IDP_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "sarvam"
+        return data
 
     # --- PaddleOCR engine settings ---
     # Handwriting mode: lower detection threshold so thinner/more irregular
