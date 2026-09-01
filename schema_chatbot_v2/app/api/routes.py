@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
 
 from app.core.auth import get_current_user
 from app.core.conversation_manager import MAX_DOCUMENT_SAMPLES, MIN_DOCUMENT_SAMPLES, ConversationManager, TurnResult
 from app.llm.factory import get_llm_adapter
 from app.models.api_models import ChatRequest, ChatResponse, UpdateSchemaRequest
+from app.output.schema_renderer import render_json, render_pdf
 from app.storage.session_store import get_session_store
 from app.storage.user_store import User
+
+SCHEMA_REGISTRY_DIR = Path(__file__).resolve().parents[2] / "schema_registry"
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -152,3 +158,100 @@ def update_schema(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return _to_response(result)
+
+
+# ---------------------------------------------------------------------------
+# Schema download endpoints
+# ---------------------------------------------------------------------------
+
+def _load_schema_record(schema_id: str) -> dict:
+    """
+    Load a confirmed schema record from the schema_registry directory.
+    Raises HTTPException 404 if the file does not exist.
+    """
+    path = SCHEMA_REGISTRY_DIR / f"{schema_id}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"schema '{schema_id}' not found")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"could not read schema file: {exc}")
+
+
+@router.get(
+    "/schema/{schema_id}/download/json",
+    summary="Download confirmed schema as JSON",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/json": {}},
+            "description": "JSON file containing the full confirmed schema record",
+        },
+        404: {"description": "Schema not found"},
+    },
+)
+def download_schema_json(
+    schema_id: str,
+    user: User = Depends(get_current_user),
+) -> Response:
+    """
+    Download the confirmed extraction schema as a formatted JSON file.
+
+    The file contains the complete schema record — document_type, all fields
+    with their types/constraints, schema_id, confirmed_at timestamp, and
+    session metadata. Suitable for direct import into downstream pipeline
+    configuration or manual inspection.
+    """
+    record = _load_schema_record(schema_id)
+    doc_type = (record.get("document_type") or "schema").replace(" ", "_")
+    filename = f"{doc_type}_{schema_id}.json"
+
+    payload = render_json(record)
+    return Response(
+        content=payload,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get(
+    "/schema/{schema_id}/download/pdf",
+    summary="Download confirmed schema as PDF",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/pdf": {}},
+            "description": "PDF report of the confirmed schema with a formatted fields table",
+        },
+        404: {"description": "Schema not found"},
+        500: {"description": "PDF generation failed"},
+    },
+)
+def download_schema_pdf(
+    schema_id: str,
+    user: User = Depends(get_current_user),
+) -> Response:
+    """
+    Download the confirmed extraction schema as a human-readable PDF.
+
+    The PDF contains a metadata header (document_type, schema_id,
+    confirmed_at) and a formatted table of all fields — name, type, required
+    flag, and any additional constraints (item_type, currency, pattern,
+    description). Suitable for review, sign-off, or sharing with non-technical
+    stakeholders.
+    """
+    record = _load_schema_record(schema_id)
+    doc_type = (record.get("document_type") or "schema").replace(" ", "_")
+    filename = f"{doc_type}_{schema_id}.pdf"
+
+    try:
+        payload = render_pdf(record)
+    except Exception as exc:
+        logger.exception("PDF generation failed for schema_id=%s", schema_id)
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}")
+
+    return Response(
+        content=payload,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

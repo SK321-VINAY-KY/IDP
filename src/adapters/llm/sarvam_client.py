@@ -47,6 +47,7 @@ class SarvamExtractionClient:
         base_url = (settings.sarvam_base_url or os.getenv("IDP_SARVAM_BASE_URL") or os.getenv("SARVAM_BASE_URL") or "https://api.sarvam.ai/v1").rstrip("/")
         self.model = settings.sarvam_model_name or os.getenv("IDP_SARVAM_MODEL_NAME") or os.getenv("SARVAM_MODEL") or "sarvam-105b"
         self.timeout = float(getattr(settings, "sarvam_timeout_s", None) or os.getenv("SARVAM_TIMEOUT_S") or 180.0)
+        self.reasoning_effort = getattr(settings, "sarvam_reasoning_effort", None) or os.getenv("IDP_SARVAM_REASONING_EFFORT") or os.getenv("SARVAM_REASONING_EFFORT", None)
 
         # Base OpenAI client configured for Sarvam
         self.raw_client = OpenAI(
@@ -82,6 +83,7 @@ class SarvamExtractionClient:
             response_model=schema,
             temperature=params.get("temperature", 0.0),
             max_tokens=params.get("max_tokens", 4000),
+            extra_body={"reasoning_effort": self.reasoning_effort},
         )
 
         try:
@@ -108,9 +110,10 @@ class SarvamExtractionClient:
                     ],
                     temperature=params.get("temperature", 0.0),
                     max_tokens=params.get("max_tokens", 4000),
+                    extra_body={"reasoning_effort": self.reasoning_effort},
                 )
                 choice = raw_resp.choices[0]
-                text = choice.message.content or getattr(choice.message, "reasoning_content", "") or ""
+                text = choice.message.content or ""
                 text = _strip_fences(text)
                 parsed = json.loads(text)
                 return schema.model_validate(parsed)
@@ -130,9 +133,10 @@ class SarvamExtractionClient:
             messages=[{"role": "user", "content": prompt}],
             temperature=params.get("temperature", 0.0),
             max_tokens=params.get("max_tokens", 500),
+            extra_body={"reasoning_effort": self.reasoning_effort},
         )
         choice = resp.choices[0]
-        content = choice.message.content or getattr(choice.message, "reasoning_content", "") or ""
+        content = choice.message.content or ""
         return content.strip()
 
     def navigate(self, page_summaries: List[str], schema_fields: List[str]) -> Dict[str, List[int]]:
@@ -151,9 +155,10 @@ class SarvamExtractionClient:
             messages=[{"role": "user", "content": prompt}],
             temperature=params.get("temperature", 0.0),
             max_tokens=params.get("max_tokens", 1000),
+            extra_body={"reasoning_effort": self.reasoning_effort},
         )
         choice = resp.choices[0]
-        raw = choice.message.content or getattr(choice.message, "reasoning_content", "") or ""
+        raw = choice.message.content or ""
         raw = _strip_fences(raw)
         try:
             parsed = json.loads(raw)
@@ -190,9 +195,10 @@ class SarvamExtractionClient:
             messages=[{"role": "user", "content": prompt}],
             temperature=params.get("temperature", 0.0),
             max_tokens=params.get("max_tokens", 4000),
+            extra_body={"reasoning_effort": self.reasoning_effort},
         )
         choice = resp.choices[0]
-        raw = choice.message.content or getattr(choice.message, "reasoning_content", "") or ""
+        raw = choice.message.content or ""
         if not raw:
             logger.warning("sarvam.check_page_for_fields.empty_content",
                            finish_reason=choice.finish_reason)

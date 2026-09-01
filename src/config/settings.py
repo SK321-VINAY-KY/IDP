@@ -7,7 +7,7 @@ Deps: pydantic-settings
 """
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     sarvam_model_name: str = "sarvam-105b"
     sarvam_api_key: str = ""
     sarvam_timeout_s: float = 180.0
+    sarvam_reasoning_effort: Optional[str] = None
     extraction_model_name: str = "qwen2.5:7b"
     summary_model_name: str = "qwen2.5:7b"
     max_extraction_retries: int = 2
@@ -68,6 +69,8 @@ class Settings(BaseSettings):
                 raw_timeout = os.getenv("IDP_SARVAM_TIMEOUT_S") or os.getenv("SARVAM_TIMEOUT_S")
                 if raw_timeout:
                     data["sarvam_timeout_s"] = float(raw_timeout)
+            if "sarvam_reasoning_effort" not in data or data.get("sarvam_reasoning_effort") is None:
+                data["sarvam_reasoning_effort"] = os.getenv("IDP_SARVAM_REASONING_EFFORT") or os.getenv("SARVAM_REASONING_EFFORT") or None
             if not data.get("extraction_backend"):
                 data["extraction_backend"] = os.getenv("IDP_EXTRACTION_BACKEND") or os.getenv("EXTRACTION_BACKEND") or "sarvam"
             if not data.get("llm_provider"):

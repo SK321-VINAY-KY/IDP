@@ -99,7 +99,14 @@ def extract_by_page_scan(
         logger.info("layer3.page_scan.all_found_in_scan", provenance=scratchpad.provenance())
 
     # --- 4. Give Scratchpad evidence to LLM for final extraction ---
-    evidence_text = scratchpad.format_evidence_for_llm()
+    scratchpad_values = scratchpad.to_values_dict()
+    if not scratchpad_values:
+        logger.warning("layer3.page_scan.no_candidates_found_fallback_to_markdown")
+        # Fall back to full document markdown if page scanning missed fields
+        evidence_text = "\n\n".join([p["markdown"] for p in pages if p.get("markdown")])
+    else:
+        evidence_text = scratchpad.format_evidence_for_llm()
+
     logger.info("layer3.llm_final_extraction.start", evidence_lines=len(evidence_text.splitlines()))
 
     try:
@@ -118,7 +125,16 @@ def extract_by_page_scan(
         default_values: Dict[str, Any] = (
             default_instance.model_dump() if default_instance is not None else {}
         )
-        result = schema.model_validate({**default_values, **scratchpad.to_values_dict()})
+        result = schema.model_validate({**default_values, **scratchpad_values})
+
+    # Merge scratchpad candidates for any missing / blank fields in result
+    res_dict = result.model_dump()
+    merged = dict(res_dict)
+    for k, v in scratchpad_values.items():
+        if k in merged and (merged[k] in ("", None)) and v not in ("", None):
+            merged[k] = v
+    if merged != res_dict:
+        result = schema.model_validate(merged)
 
     logger.info(
         "layer3.page_scan.result",
