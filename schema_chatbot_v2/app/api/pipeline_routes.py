@@ -1004,6 +1004,7 @@ class QueryBotRequest(BaseModel):
     extracted_data: Any = Field(..., description="Full extracted JSON object or record dictionary")
     question: str = Field(..., description="User's natural language question about the extracted data")
     doc_id: Optional[str] = Field(None, description="Optional document name for reference")
+    history: Optional[List[Dict[str, str]]] = Field(default=None, description="Previous conversation turns as [{role, content}]")
 
 
 @router.post("/api/query-bot/ask")
@@ -1029,14 +1030,22 @@ async def ask_query_bot(req: QueryBotRequest) -> Dict[str, Any]:
             else json.dumps(req.extracted_data, indent=2)
         )
 
-        prompt = (
-            "You are a friendly document assistant. The user has uploaded a document and the following data was extracted from it:\n\n"
+        system_content = (
+            "You are a friendly document assistant. The user has uploaded documents and the following data was extracted from them:\n\n"
             f"{data_json_str}\n\n"
-            "Answer the user's question naturally and conversationally, like a helpful human assistant. "
+            "Answer questions naturally and conversationally, like a helpful human assistant. "
             "Use the data above to answer. Do not show JSON, field names, asterisks, or technical formatting. "
-            "Just give a clear, plain English answer. If the information is not in the data, say so politely.\n\n"
-            f"User: {req.question}\nAssistant:"
+            "Just give a clear, plain English answer. If the information is not in the data, say so politely."
         )
+
+        # Build messages array — system + history + current question
+        messages = [{"role": "system", "content": system_content}]
+        for turn in (req.history or []):
+            role = turn.get("role", "user")
+            content = turn.get("content", "")
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": req.question})
 
         api_key = (
             getattr(app_settings, "sarvam_api_key", None)
@@ -1071,9 +1080,7 @@ async def ask_query_bot(req: QueryBotRequest) -> Dict[str, Any]:
             if (backend == "sarvam" or api_key) and api_key:
                 payload = {
                     "model": model_name,
-                    "messages": [
-                        {"role": "user", "content": prompt},
-                    ],
+                    "messages": messages,
                     "temperature": 0.2,
                     "max_tokens": 400,
                     "reasoning_effort": None,
@@ -1114,11 +1121,15 @@ async def ask_query_bot(req: QueryBotRequest) -> Dict[str, Any]:
             # Fallback to Ollama
             ollama_url = getattr(a_settings, "ollama_base_url", "http://localhost:11434/v1").rstrip("/v1")
             ollama_model = getattr(a_settings, "extraction_model_name", "llama3.1")
+            # Build a single prompt string from messages for Ollama's generate API
+            ollama_prompt = "\n".join(
+                f"{m['role'].capitalize()}: {m['content']}" for m in messages
+            ) + "\nAssistant:"
             resp = httpx.post(
                 f"{ollama_url}/api/generate",
                 json={
                     "model": ollama_model,
-                    "prompt": prompt,
+                    "prompt": ollama_prompt,
                     "stream": False,
                 },
                 timeout=30.0,

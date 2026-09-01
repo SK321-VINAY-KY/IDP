@@ -1711,6 +1711,8 @@
 
     // Holds all extracted data merged from every completed job
     let qbAllExtractedData = null;
+    // Conversation history for multi-turn memory
+    let qbChatHistory = [];
 
     async function loadAllExtractedData() {
         try {
@@ -1789,11 +1791,16 @@
                 json: {
                     extracted_data: qbAllExtractedData,
                     question,
+                    history: qbChatHistory,
                     doc_id: 'all extracted documents'
                 }
             });
+            const answer = res.answer || 'No answer returned.';
             botDiv.className = 'query-bot-msg bot';
-            botDiv.textContent = res.answer || 'No answer returned.';
+            botDiv.textContent = answer;
+            // Append to history only on success
+            qbChatHistory.push({ role: 'user', content: question });
+            qbChatHistory.push({ role: 'assistant', content: answer });
         } catch (err) {
             botDiv.className = 'query-bot-msg bot error';
             botDiv.textContent = 'Error: ' + (err.message || String(err));
@@ -1818,6 +1825,7 @@
             if (msgs) {
                 msgs.innerHTML = '<div class="query-bot-msg bot">Hi! Ask me anything about the extracted document data.</div>';
             }
+            qbChatHistory = [];
         });
     }
 
