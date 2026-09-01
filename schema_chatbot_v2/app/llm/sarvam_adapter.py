@@ -35,6 +35,36 @@ from app.llm.prompts import (
 
 logger = logging.getLogger(__name__)
 
+
+class TruncatedCompletionError(RuntimeError):
+    """Raised when the LLM response is truncated due to hitting max_tokens (finish_reason='length')."""
+
+    def __init__(self, message: str, finish_reason: str = "length"):
+        super().__init__(message)
+        self.finish_reason = finish_reason
+
+
+class ChatResult(str):
+    """Subclass of str carrying response metadata (reasoning_content, reasoning_len, completion_tokens, finish_reason)."""
+    reasoning_content: str
+    reasoning_len: int
+    completion_tokens: int | None
+    finish_reason: str | None
+
+    def __new__(
+        cls,
+        content: str,
+        reasoning_content: str = "",
+        completion_tokens: int | None = None,
+        finish_reason: str | None = None,
+    ):
+        obj = super().__new__(cls, content)
+        obj.reasoning_content = reasoning_content
+        obj.reasoning_len = len(reasoning_content)
+        obj.completion_tokens = completion_tokens
+        obj.finish_reason = finish_reason
+        return obj
+
 # Reuses the same shape as the Bedrock tool schema - one schema, one
 # source of truth for "what an extraction looks like" across providers.
 # One "operations" list (add/update/remove) replaces the old separate
@@ -186,10 +216,19 @@ class SarvamAdapter(LLMAdapter):
                 system=sys_prompt,
                 user=user_prompt,
                 temperature=0.1,
-                reasoning_effort="low",
-                max_tokens=8192,
+                reasoning_effort=None,
+                max_tokens=2560,
             )
+            reasoning_len = getattr(raw, "reasoning_len", len(getattr(raw, "reasoning_content", "")))
+            completion_tokens = getattr(raw, "completion_tokens", "N/A")
+            logger.info("schema-inference reasoning_len=%d completion_tokens=%s", reasoning_len, completion_tokens)
             parsed = self._parse_json(raw)
+        except TruncatedCompletionError as exc:
+            logger.warning("Sarvam schema-inference output truncated: %s", exc)
+            return SchemaProposal(
+                extraction_failed=True,
+                failure_reason="model output truncated (hit max_tokens)",
+            )
         except Exception:
             logger.exception("Sarvam schema-inference call failed")
             return SchemaProposal(extraction_failed=True, failure_reason="LLM provider error")
@@ -350,8 +389,7 @@ class SarvamAdapter(LLMAdapter):
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-        if reasoning_effort is not None:
-            payload["reasoning_effort"] = reasoning_effort
+        payload["reasoning_effort"] = reasoning_effort
         if response_format is not None:
             payload["response_format"] = response_format
 
@@ -373,14 +411,49 @@ class SarvamAdapter(LLMAdapter):
             )
             resp.raise_for_status()
         data = resp.json()
+        usage = data.get("usage", {})
+        completion_tokens = usage.get("completion_tokens")
+
         choices = data.get("choices", [])
         if not choices:
             raise ValueError(f"Sarvam API returned no choices: {data}")
-        msg = choices[0].get("message", {})
-        content = msg.get("content") or ""
-        reasoning = msg.get("reasoning_content") or ""
+        choice = choices[0]
+        finish_reason = (
+            choice.get("finish_reason")
+            if isinstance(choice, dict)
+            else getattr(choice, "finish_reason", None)
+        )
+        if finish_reason == "length":
+            raise TruncatedCompletionError(
+                f"Sarvam completion was truncated by max_tokens (finish_reason='{finish_reason}', max_tokens={max_tokens})",
+                finish_reason=finish_reason,
+            )
+
+        msg = (
+            choice.get("message", {})
+            if isinstance(choice, dict)
+            else getattr(choice, "message", {})
+        )
+        content = (
+            msg.get("content")
+            if isinstance(msg, dict)
+            else getattr(msg, "content", None)
+        ) or ""
+        reasoning = (
+            msg.get("reasoning_content")
+            if isinstance(msg, dict)
+            else getattr(msg, "reasoning_content", None)
+        ) or ""
+
+        out_text = content
         if not content:
-            return reasoning
-        if "{" in reasoning and "{" not in content:
-            return reasoning
-        return content
+            out_text = reasoning
+        elif "{" in reasoning and "{" not in content:
+            out_text = reasoning
+
+        return ChatResult(
+            out_text,
+            reasoning_content=reasoning,
+            completion_tokens=completion_tokens,
+            finish_reason=finish_reason,
+        )
