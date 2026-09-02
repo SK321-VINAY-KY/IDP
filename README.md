@@ -1,557 +1,610 @@
-# IDP System — Engineer A Pipeline (Layer 1 Routing + Layer 2 Conversion)
+# Intelligent Document Processing (IDP) System — End-to-End Platform
 
-> **Engineer A responsibility**: Accept any PDF, detect what's on each page, pick the right extraction engine(s), and output structured Markdown with full provenance metadata. This is the **document-type-agnostic** conversion half of the IDP product. Field-level extraction (schema matching) lives in Engineer B's Layer 3 and operates exclusively on the `.md` output produced here.
+> An enterprise-grade Intelligent Document Processing (IDP) platform featuring multi-engine document conversion, capability-based routing, interactive AI schema discovery, and relational extraction storage.
+
+---
+
+## 📑 Table of Contents
+1. [System Architecture](#-system-architecture)
+2. [Architectural Details & Key Mechanisms](#-architectural-details--key-mechanisms)
+3. [Cloning & Environment Setup](#-cloning--environment-setup)
+4. [API Keys & Configuration Guide](#-api-keys--configuration-guide)
+5. [Execution & Run Instructions](#-execution--run-instructions)
+6. [Database Setup & Storage Engine](#-database-setup--storage-engine)
+7. [Automated Test Suite](#-automated-test-suite)
+8. [Docker Deployment](#-docker-deployment)
+9. [Repository File Guide (4–6 Lines Per File)](#-repository-file-guide)
 
 ---
 
 ## 🏗️ System Architecture
 
-```
-                              ┌───────────────────────────────────────────────────────┐
-                              │                    IDP PRODUCT                        │
-                              └───────────────────────────────────────────────────────┘
-                                                         │
- ┌───────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┐
- │                                                       │                                                       │
- │  ENGINEER A (THIS REPO)                               │                  ENGINEER B                           │
- │  Layer 1 Routing  +  Layer 2 Conversion               │                  Layer 3 Extraction                     │
- │  Produces:  structured .md  +  provenance metadata    │                  Consumes:  .md  +  cached schema       │
- │  Schema-agnostic  (works on ANY document type)        │                  Schema-aware  (resumes / invoices /   │
- │                                                       │                  receipts / forms / etc.)              │
- │                                                       │                                                       │
- │  PDF → inspect → route → engines → merge → .md        │                  .md → field extraction → JSON        │
- │        +  .schema_ref.json sidecar                    │                                                         │
- └───────────────────────────────────────────────────────┴───────────────────────────────────────────────────────┘
-```
-
-### Engineer B Cache-Building Phase (Schema Discovery)
-
-Before Engineer A batch-processes a corpus, Engineer B's schema cache is populated. This subsystem lives inside `schema_chatbot_v2/` and is served on port 8000. **It does not use Engineer A's pipeline** — it uploads 2–5 sample PDFs to Sarvam Document AI for OCR, then sends the merged text to Sarvam LLM to derive a shared schema. The result is persisted to `schema_registry/schema_<id>.json` as Engineer B's cache.
-
-### Engineer A Data Flow (Per-Document Pipeline)
-
-For every PDF processed:
+The IDP platform operates across three tightly integrated layers:
+- **Layer 1: Routing & Heuristics** — Inspects raw PDF pages with zero-model heuristics, evaluates page layout complexity, and dispatches single or multi-engine extraction plans with VLM escalation.
+- **Layer 2: Conversion & Engine Execution** — Executes the optimal extraction engine (Docling, PaddleOCR printed, or tuned handwritten DBNet), performs line-level normalized deduplication, and generates standardized Markdown with provenance metadata.
+- **Layer 3: Schema Discovery, Extraction & Admin Application** — FastAPI web platform (`schema_chatbot_v2`) providing multi-tenant JWT authentication, interactive schema derivation via Sarvam Document AI and LLM, ReportLab PDF job reporting, PostgreSQL persistence, and interactive JSON Q&A.
 
 ```
- PDF
-  │
-  ▼
-┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Step A  —  inspect_page()              [PyMuPDF heuristics only, ~10 ms, no GPU / no model] │
-│   char_count, image_coverage, is_scanned, primary_script, complexity_score (0..5),          │
-│   has_tables, has_vector_drawings, dpi_estimate                                             │
-└─────────────────────────────────────────────────┬──────────────────────────────────────────┘
-                                                  │
-                                                  ▼
-┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Step B  —  Route Resolution  (two modes controlled by settings.routing_mode)                │
-│                                                                                              │
-│   ◦  Mode:  "single_engine"  (DEFAULT, backwards-compatible)                                │
-│      route_from_profile(profile) → one route string OR None (ambiguous → VLM Step)          │
-│         ├─ definitive:  wrap into 1-task EnginePlan                                         │
-│         └─ ambiguous:   llm_client.analyze_page(image_bytes) → VLMAnalysis                  │
-│                         If VLM direct-extraction >= threshold, terminal result.              │
-│                         Else capabilities_from_vlm_analysis() → build_engine_plan()          │
-│                                                                                              │
-│   ◦  Mode:  "capability_based"  (opt-in, Stage 1)                                           │
-│      capabilities_from_profile(profile) → PageCapabilities SET (multiple booleans)          │
-│      If ambiguous → llm_client.analyze_page() → enrich with VLM-derived caps                │
-│      build_engine_plan(capabilities, hints) → list[EngineTask] (multi-engine)               │
-└─────────────────────────────────────────────────┬──────────────────────────────────────────┘
-                                                  │
-                                                  ▼
-┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Step 3  —  Engine Plan Execution + Merge                                                    │
-│   Engine priority (lower # runs first, wins tie):                                           │
-│     1. docling                 digital embedded text (conf ~0.97)                           │
-│     2. paddleocr_printed       scanned printed sheets  (PP-OCRv6 via PaddleX)               │
-│     3. paddleocr_handwritten  handwritten fill-ins     (lowered det_db_thresh)              │
-│     4. vlm_transcribe          escalation fallback (Ollama / Gemini)                        │
-│                                                                                              │
-│   Merge: line-level normalized dedup + char-count-weighted confidence avg                   │
-└─────────────────────────────────────────────────┬──────────────────────────────────────────┘
-                                                  │
-                                                  ▼
-┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Step 4  —  Escalation Ladder  (if merged confidence < escalation_confidence_threshold)     │
-│   digital  →  paddleocr_printed  →  paddleocr_handwritten  →  vlm_transcribe  →  GIVE UP   │
-│   Hard cap max_escalation_attempts=1 prevents loops; terminal = low_confidence=True flag    │
-└─────────────────────────────────────────────────┬──────────────────────────────────────────┘
-                                                  │
-                                                  ▼
-┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Step 5  —  Output Write                                                                     │
-│   md_writer.write_document() → dataset_output/<stem>.md                                     │
-│       • per-page HTML comments: engine, confidence, capabilities, latency_ms               │
-│       • PIPELINE_SUMMARY JSON footer (parseable audit block)                               │
-│   + sidecar <stem>.schema_ref.json linking document → schema_id from Engineer B cache      │
-└────────────────────────────────────────────────────────────────────────────────────────────┘
+                                  ┌─────────────────────────────────────────────────────────────┐
+                                  │                  INTELLIGENT DOCUMENT PROCESSING            │
+                                  └─────────────────────────────────────────────────────────────┘
+                                                                 │
+      ┌──────────────────────────────────────────────────────────┴──────────────────────────────────────────────────────────┐
+      │                                                                                                                     │
+      ▼                                                                                                                     ▼
+┌────────────────────────────────────────────────────────┐                            ┌────────────────────────────────────────────────────────┐
+│               LAYER 1: ROUTING & INSPECTION            │                            │             LAYER 3: SCHEMA DISCOVERY & APP            │
+│  • PyMuPDF heuristic inspection (~10ms / page)         │                            │  • FastAPI 0.111 web server on port 8000               │
+│  • Primary script & complexity score (0..5)            │                            │  • Multi-tenant Auth: RBAC (Admin / User) with JWT     │
+│  • Single-engine or capability-based matching          │                            │  • User Store: JSONFileUserStore (data/users.json)     │
+│  • VLM fallback: Ollama (Qwen2.5-VL) / Gemini          │                            │  • Tab Isolation: Scoped sessionStorage in browser     │
+└──────────────────────────┬─────────────────────────────┘                            │  • Discovery State Machine: COLLECT → INFER → REVIEW   │
+                           │                                                          │  • Sarvam Document AI OCR + Sarvam-105b LLM           │
+                           ▼                                                          │  • ReportLab PDF job report generation                 │
+┌────────────────────────────────────────────────────────┐                            │  • Query Bot: Interactive JSON QA endpoint             │
+│              LAYER 2: CONVERSION ENGINES               │                            │  • Storage: PostgreSQL 18 (with SQLite fallback)       │
+│  • Digital PDF: Docling 2.x (structured tables/text)   │                            └──────────────────────────┬─────────────────────────────┘
+│  • Scanned Printed: PP-OCRv6 via PaddleOCR/PaddleX     │                                                       │
+│  • Handwritten: PaddleOCR with det_db_thresh=0.20      │                                                       │
+│  • Escalation Ladder: Digital → Printed → Hand → VLM   │                                                       │
+│  • Line-level normalized deduplication & confidence    │                                                       │
+│  • Output: <doc>.md with PIPELINE_SUMMARY JSON audit   │                                                       │
+└──────────────────────────┬─────────────────────────────┘                                                       │
+                           │                                                                                     │
+                           └───────────────────────────────────┬─────────────────────────────────────────────────┘
+                                                               │
+                                                               ▼
+                                              ┌─────────────────────────────────┐
+                                              │   POSTGRESQL 18 / RELATIONAL    │
+                                              │  • documents (PDF blobs)        │
+                                              │  • schemas (confirmed JSON)     │
+                                              │  • document_markdowns (.md)     │
+                                              │  • extraction_runs (JSON data)  │
+                                              │  • job_pdfs (ReportLab reports) │
+                                              └─────────────────────────────────┘
 ```
 
 ---
 
-## 🧰 Technology Stack, By Role
+## 🔍 Architectural Details & Key Mechanisms
 
-| Role / Feature | Library | Scope | Notes |
-|----------------|---------|-------|-------|
-| **PDF inspection** (Step A) | **PyMuDF (`pymupdf`)** | [inspect.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/layer1_routing/inspect.py) | `get_text("words")`, `get_image_info()`, `get_drawings()`, Unicode block script detection, page-area arithmetic, DPI estimation, complexity heuristics. ~10 ms / page, zero model calls. |
-| **Page rendering** | **PyMuPDF + Pillow + NumPy** | [pipeline.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/layer1_routing/pipeline.py#L101-L143) | Render pages at 150 DPI → `np.ndarray` (RGB, H×W×3) for PaddleOCR; same pixmap encoded to PNG bytes for VLM calls. |
-| **Digital text extraction** | **Docling 2.x** | [digital.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/layer2_conversion/digital.py#L15-L72) | Uses Docling's native page-range support. Outputs structured Markdown with headings, tables. Cold-start model load ~15–20 s first call; subsequent pages sub-second. Gracefully falls back to plain `pymupdf.get_text("text")` if Docling package missing on host. |
-| **Scanned printed OCR** | **PaddleOCR (PP-OCRv6) via PaddleX** | [scanned.py `convert_scanned_page()`](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/layer2_conversion/scanned.py#L101-L132) | `PP-OCRv6_medium_det` + `PP-OCRv6_medium_rec` detector + recognizer. Lazy-loaded singleton per mode (printed vs handwritten). Runs on CPU only. Confidence rolled up as weighted average of per-word `rec_scores`. |
-| **Handwritten OCR** | **PaddleOCR (handwritten-tuned instance)** | [scanned.py `convert_handwritten_via_paddle()`](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/layer2_conversion/scanned.py#L139-L176) | Same PaddleOCR class as printed, **separate singleton instance**. Tuned via `settings.paddle_handwriting_det_db_thresh` (default 0.20 vs printed's 0.30) to catch thinner strokes; `use_textline_orientation=True` for less predictable handwriting angles. PaddleOCR DBNet performs line-level segmentation internally — no external TrOCR-style line pre-splitting needed. |
-| **VLM classification + transcription** (Step B ambiguous) | **Ollama (REST)** OR **Google Gemini (REST)** OR **MockLLMClient** | [adapters/llm/](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/adapters/llm/) | Abstract `LLMClient` ABC with 3 methods: `classify_page` (light), `analyze_page` (rich VLMAnalysis), `transcribe_handwriting` (escalation). Typed outputs via Pydantic. Controlled by `settings.llm_provider` (default `"ollama"`) + `settings.vlm_model_name`. Only invoked when Step A heuristics are genuinely ambiguous — digital pages with `char_count > 100` skip VLM entirely. |
-| **VLM: Ollama adapter** | **httpx** + **`http://localhost:11434/v1/chat/completions`** | [ollama_client.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/adapters/llm/ollama_client.py) | OpenAI-compatible REST endpoint, base-64 inline image payloads. Model: default `qwen2.5vl:7b` or override via env. |
-| **VLM: Gemini adapter** | **`google.genai` SDK** | [gemini_client.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/adapters/llm/gemini_client.py) | Uses `IDP_GEMINI_API_KEY` from root `.env`. Native Gemini structured-output + binary image inline upload support. |
-| **Schema Discovery: Phase 1 NL chat** | **httpx** → Sarvam `/v1/chat/completions` | [schema_chatbot_v2/app/llm/sarvam_adapter.py `_chat()`](file:///C:/Users/Dell/Desktop/IDP/engineer_a/schema_chatbot_v2/app/llm/sarvam_adapter.py#L265-L296) | **No SDK used** — plain REST POST with `api-subscription-key` header. Constrained via `response_format: {type: json_schema}`. Two call sites: `extract()` (user NL → field ops), `infer_schema_from_pdfs()` step 2 (OCR texts → schema JSON). |
-| **Schema Discovery: Phase 1 Doc AI OCR** | **`sarvamai` SDK (lazy import)** | [sarvam_adapter.py `_digitise()`](file:///C:/Users/Dell/Desktop/IDP/engineer_a/schema_chatbot_v2/app/llm/sarvam_adapter.py#L225-L249) + [doc_ai_client lazy property](file:///C:/Users/Dell/Desktop/IDP/engineer_a/schema_chatbot_v2/app/llm/sarvam_adapter.py#L217-L223) | **Only place `sarvamai` SDK is used** — wraps the async job lifecycle: `doc_ai.digitise(file=[…])` → poll `get_status(job_id)` → `get_download_url()` → httpx GET of ZIP → parse out primary `.md` page content via `zipfile`. Reason for SDK: async poll loop + multipart upload naming + ZIP output convention would be ~30 lines of bespoke code to match what the SDK provides. SDK is lazily imported inside the property getter (not module top-level) so `sarvamai` stays optional for non-doc-intake usages. |
-| **Schema Discovery: HTTP server** | **FastAPI 0.111 + Uvicorn** | [schema_chatbot_v2/app/](file:///C:/Users/Dell/Desktop/IDP/engineer_a/schema_chatbot_v2/app/) | Three endpoints: `/health`, `/chat` (interactive REVIEW state machine), `/schema/infer` (multipart upload → async Sarvam Doc AI). Served on port 8000. |
-| **All configuration** | **Pydantic Settings** (`pydantic-settings`) + **`python-dotenv`** | [config/settings.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/config/settings.py) + [schema_chatbot_v2/app/config.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/schema_chatbot_v2/app/config.py) | Every threshold and feature flag tunable via env var (`IDP_` prefix for Engineer A, no prefix for chatbot). No recompilation needed between environments. |
-| **Structured logging** | Custom JSON formatter + **`correlation_id`** context var | [utils/logger.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/utils/logger.py) | Every decision (inspect, route, engine start/complete, escalation attempt, merge, output write) emits one JSON line with `correlation_id`, `page_number`, structured fields. Written to `logs/pipeline.log` when a logger sink is configured. |
-| **Engineer A ↔ Engineer B Contract types** | **Pydantic v1 (v2 in chatbot)** | [ai/schemas/page.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/schemas/page.py) | Typed data classes: `PageProfile`, `PageClassification`, `VLMAnalysis`, `PageCapabilities`, `EngineTask`, `PageOutput`. All I/O between modules uses these — any structural change needs bilateral sign-off. |
-| **Multi-engine merge** | Pure Python (sets, normalized strings, weighted avg) | [pipeline.py `_merge_results_with_capabilities()`](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/layer1_routing/pipeline.py#L207-L269) | Stage 1 line-level dedup: primary engine lines go in unconditionally, subsequent engine lines appended only if their normalized whitespace-collapsed lowercase form is unseen. Final confidence = weighted average by character contribution. Stage 2 (future): bbox-level spatial dedup when OCR engines expose geometry. |
-| **Capability-based matcher** (Stage 1 routing mode) | Pure Python set operations | [capability_router.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/layer1_routing/capability_router.py) | `PROCESSOR_CAPABILITIES` map = {engine_name: set(requirements)}. Match engines whose requirements are a SUBSET of the detected `PageCapabilities`. Produces `(matched, unmatched, missing_reasons)` tuple used by `build_engine_plan()` to rank tasks. |
-| **Markdown output writer** | Standard-library only (f-strings, JSON) | [output/md_writer.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/output/md_writer.py) | Pure stdlib — no markdown library. Concatenates provenance HTML comments, page Markdown bodies, then a `<!-- PIPELINE_SUMMARY [{…}, …] -->` JSON footer (parseable with regex by Engineer B without rendering Markdown). |
-| **Structured LLM outputs (chatbot)** | **Instructor** (OpenAI wrapper) + **Pydantic** | [schema_chatbot_v2/app/core/validator.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/schema_chatbot_v2/app/core/validator.py) | JSON-schema validation rules for field add/update/remove ops, type-checking `string/number/date/currency/enum/list[...]` types in schema. |
-| **Conversation state (chatbot)** | in-memory dict (single-process dev) or Redis (pluggable) | [schema_chatbot_v2/app/core/conversation_manager.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/schema_chatbot_v2/app/core/conversation_manager.py) + [schema_state.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/schema_chatbot_v2/app/core/schema_state.py) | REVIEW state machine with transitions `{COLLECT → INFER → REVIEW → CONFIRMED}`. Side effects only when user issues `/json` / `/confirm`. |
-| **Testing (routing logic, no models)** | **pytest 8.x** | [tests/test_router_smoke.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/tests/test_router_smoke.py), [test_capability_router.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/tests/test_capability_router.py) | Pure-logic parameterized tests: every routing table branch, escalation ladder cap, Indic-script warning, blank page skip, mixed-content VLM trigger, capability matcher edge cases. Zero model downloads — runs in < 1 s. |
+### 1. Step A: Fast Heuristic Inspection (Zero-Model)
+- Evaluates raw page metrics using **PyMuPDF (`fitz`)** in ~10 milliseconds without loading GPU weights or invoking external APIs.
+- Computes character count, word density, vector drawings, table line intersections, and image coverage ratio (`image_area / page_area`).
+- Estimates raster DPI and inspects character Unicode blocks to detect Latin vs. Indic scripts.
+- Assigns a heuristic `complexity_score` (0 to 5) based on dense layouts, vector sketches, and table structures.
 
----
+### 2. Step B: Dual Routing Modes & Dead-Zone Resolution
+- **`single_engine` mode**: Fast single-engine assignment. High-density digital pages (`char_count > 100` and `image_coverage < 0.02`) shortcut directly to Docling without VLM intervention.
+- **`capability_based` mode**: Evaluates a mathematical set of booleans (`PageCapabilities`) and matches against engine capability subsets.
+- **Dead-Zone Resolution**: When handwriting coverage falls in the ambiguous 10%–30% band, the router engages both printed and handwritten engines simultaneously rather than guessing a single winner.
+- **VLM Disambiguation**: When heuristics are inconclusive (`route is None`), the page is rendered as PNG bytes and passed to the configured VLM adapter (`Ollama` or `Gemini`) for layout classification.
 
-## 📂 Repository Layout: What Every File Does
+### 3. Escalation Ladder & Multi-Engine Merging
+- If extraction confidence falls below `settings.escalation_confidence_threshold` (0.70), the page climbs the escalation ladder: `digital → paddleocr_printed → paddleocr_handwritten → vlm_transcribe`.
+- Capped at `max_escalation_attempts=1` to prevent latency spirals; low-confidence pages are explicitly flagged in metadata.
+- Multi-engine results are merged using line-level normalized deduplication: primary engine lines take precedence, and lower-priority lines are only appended if their normalized lowercase representation is unique.
 
-```
-engineer_a/
-│
-├── .env                          ← Engineer A env vars, IDP_ prefix. Currently only IDP_GEMINI_API_KEY
-│                                   (activates Gemini adapter when settings.llm_provider="gemini").
-│
-├── requirements.txt              ← Engineer A pip deps: pydantic-settings, pymupdf, docling,
-│                                   paddleocr, pillow, numpy, httpx, pydantic-v1, google-genai,
-│                                   pytest 8.x. Install into .venv/.
-│
-├── .venv/                        ← Python 3.11.9 virtualenv. PRE-INSTALLED deps:
-│     └── Scripts/python.exe         paddleocr 3.7.0, docling 2.x, fastapi, rapidocr, torch,
-│                                      huggingface, google-genai, httpx, pymupdf, pydantic,
-│                                      numpy, pillow, pytest.
-│                                      ⚠️  Use this interpreter (NOT system Python 3.14).
-│                                      System Python lacks paddleocr.
-│
-├── demo_resume_pipeline.py       ← Engineer A pipeline-only harness.
-│                                   Wires: PDF → PyMuPDF render → process_document() → md_writer.
-│                                   Uses MockLLMClient intentionally to surface any VLM dependency.
-│                                   Intended for resume PDFs in tests/fixtures/; works on any corpus
-│                                   that passes through Step A without VLM-classifiable pages.
-│
-├── demo_end_to_end.py            ← Unified harness. Two phases:
-│                                   • PHASE 1: hit chatbot :8000 /health → POST /schema/infer with
-│                                     N selected sample PDFs → REVIEW loop /json → persist to
-│                                     schema_registry/.
-│                                   • PHASE 2: iterate dataset/ → Engineer A process_document()
-│                                     (MockLLMClient) → md_writer → dataset_output/ + sidecar
-│                                     schema_ref.json linking each doc → schema_id.
-│
-├── dataset/                      ← Input PDFs. Engineer A batch phase consumes every *.pdf here.
-│                                   Can mix digital PDFs (Docling handles) + raster-scanned image
-│                                   PDFs (PaddleOCR handles). Mixing document TYPES here reduces
-│                                   schema quality in Phase 1 inference — keep same-type in one run.
-│
-├── dataset_output/               ← Engineer A output sink.
-│     ├── <stem>.md                  Per-PDF Markdown w/ per-page provenance HTML comments +
-│     │                               PIPELINE_SUMMARY JSON audit footer.
-│     └── <stem>.schema_ref.json     Sidecar: source_pdf, schema_id, schema_registry_file path,
-│                                     document_type, per-page engine usage summary from Phase 2.
-│                                     Parsed by Engineer B as the schema-id lookup handle.
-│
-├── schema_registry/              ← Engineer B cache of CONFIRMED schemas written by Phase 1.
-│     └── schema_<hash>.json         JSON shape: schema_id, document_type, fields[] (Pydantic
-│                                     field spec incl. name, type, required, item_type, pattern,
-│                                     currency, description, seen_in_samples), provenance
-│                                     (inference_source, created_at), sample_documents[], metadata.
-│                                     Write-once confirmed. Engineer B reads this at startup.
-│
-├── schema_chatbot_v2/            ← Phase 1 Schema Discovery HTTP service (FastAPI, port 8000).
-│     ├── .env                       LLM_PROVIDER=sarvam; SARVAM_API_KEY; SARVAM_MODEL= sarvam-105b;
-│     │                               SARVAM_BASE_URL; SARVAM_DOC_AI_LANGUAGE / POLL / TIMEOUT.
-│     ├── requirements.txt           fastapi, uvicorn[standard], pydantic-v2, httpx, python-dotenv,
-│     │                               python-multipart (for /schema/infer upload), boto3 (bedrock),
-│     │                               sarvamai>=0.1 (Doc AI digitise only).
-│     ├── README.md                  Chatbot deployment docs.
-│     └── app/
-│          ├── main.py               FastAPI app factory: lifespan (init LLM adapter + state stores),
-│          │                            routes include, /health probe.
-│          ├── config.py             Chatbot-side pydantic-settings singleton w/ sarvam + session cfg.
-│          ├── api/routes.py         HTTP endpoints:
-│          │                            GET  /health
-│          │                            POST /chat  (conversation_id, message, mode → turns + state)
-│          │                            POST /schema/infer  (files: list[UploadFile] → schema JSON)
-│          ├── models/api_models.py  Pydantic v2 schemas for request/response (ChatRequest,
-│          │                            ChatTurn, SchemaInferenceResponse, etc.)
-│          ├── llm/
-│          │    ├── base.py          LLMAdapter ABC: extract(), phrase_question(),
-│          │    │                      infer_schema_from_pdfs().
-│          │    ├── factory.py       build_adapter(settings.llm_provider) factory dispatcher.
-│          │    ├── prompts.py       System/user prompt templates for extraction, document
-│          │    │                      inference, question phrasing fallback string.
-│          │    ├── sarvam_adapter.py  ⭐ core Sarvam integration:
-│          │    │                      • _chat() → httpx POST /chat/completions (NO SDK).
-│          │    │                      • extract() → _chat() w/ ExtractionResult json_schema.
-│          │    │                      • phrase_question() → _chat() to rephrase gap templates.
-│          │    │                      • infer_schema_from_pdfs(): _digitise() each PDF then
-│          │    │                        aggregate over _chat() w/ SchemaProposal json_schema.
-│          │    │                      • doc_ai_client property: LAZY from sarvamai import
-│          │    │                        SarvamAI — SDK used *only* for Doc AI digitise lifecycle.
-│          │    │                      • _digitise(): doc_ai.digitise() → poll loop with
-│          │    │                        settings.sarvam_doc_ai_poll_interval_s until timeout →
-│          │    │                        get_download_url → httpx → zip bytes.
-│          │    │                      • _extract_markdown(): zipfile → find first non-metadata
-│          │    │                        .md → utf-8 decode.
-│          │    ├── ollama_adapter.py   Local Ollama adapter. Mirrors sarvam_adapter endpoints.
-│          │    └── bedrock_adapter.py  AWS Bedrock adapter placeholder for prod deploy.
-│          └── core/
-│               ├── conversation_manager.py  REVIEW state machine.
-│               │      handle_message() dispatches by state:
-│               │        COLLECT → /infer → INFER
-│               │        INFER  → propose_schema() → REVIEW
-│               │        REVIEW → extract() → {add, update, remove} ops; /json → persist, /confirm → CONFIRMED
-│               │      Emits gaps on first review pass if any fields lack type/required.
-│               ├── schema_state.py    In-memory CRUD for schema dict:
-│               │      propose(), add_field(), update_field(), remove_field(), list_fields().
-│               │      Field name uniqueness enforcement + type-system checks.
-│               └── validator.py       JSON-schema style rules for field type validation,
-│                                      list-of-X nested type expansions, enum/currency keys.
-│
-├── src/
-│   ├── config/
-│   │   └── settings.py             ⭐ All tunables. Pydantic BaseSettings with env_prefix="IDP_":
-│   │                                    routing_mode ("single_engine" | "capability_based"),
-│   │                                    digital_char_count_threshold (=100 shortcut),
-│   │                                    scanned_char_count_threshold (=30),
-│   │                                    escalation_confidence_threshold (=0.70),
-│   │                                    max_escalation_attempts (=1),
-│   │                                    vlm_direct_extraction_confidence_threshold (=0.85),
-│   │                                    capability_low_confidence_floor (=0.50),
-│   │                                    llm_provider ("ollama"),
-│   │                                    ollama_base_url, vlm_model_name,
-│   │                                    render_dpi (=150),
-│   │                                    paddle_printed_det_db_thresh (=0.30),
-│   │                                    paddle_handwriting_det_db_thresh (=0.20),
-│   │                                    vlm_classify_thresholds (scan_handwriting_midband…),
-│   │                                    dead_zone (handwriting_pct 0.10-0.30 gap fix),
-│   │                                    output_dir default.
-│   │
-│   ├── utils/
-│   │   └── logger.py               setup_logger(service), json formatter, ContextVar
-│   │                                   correlation_id used by every JSON log line.
-│   │
-│   ├── adapters/
-│   │   └── llm/
-│   │        ├── base.py            LLMClient ABC:
-│   │        │                         classify_page(image_bytes, hint) → PageClassification
-│   │        │                         analyze_page(image_bytes, hint) → VLMAnalysis
-│   │        │                         transcribe_handwriting(image_bytes) → str md
-│   │        ├── factory.py         get_llm_client(settings.llm_provider, **overrides) dispatcher
-│   │        ├── ollama_client.py   Ollama REST via httpx localhost:11434. Base64 PNG inline.
-│   │        ├── gemini_client.py   google.genai SDK, genai.configure(api_key). PIL + bytes ingest.
-│   │        └── schema_models.py   Pydantic v1 models for typed VLM returns: PageClassification,
-│   │                                   VLMAnalysis fields incl. has_printed_text_pct,
-│   │                                   has_handwriting_pct, has_tables, has_diagrams, script,
-│   │                                   layout_quality_score, digital_text_hint,
-│   │                                   direct_markdown_extract + confidence.
-│   │
-│   └── ai/
-│        ├── schemas/
-│        │   ├── page.py            ⭐ CROSS-TEAM CONTRACT — all types shared between modules:
-│        │   │                           PageProfile: Step A output (page_number, has_text,
-│        │   │                             char_count, word_count, image_count, image_coverage,
-│        │   │                             is_scanned, primary_script, has_tables,
-│        │   │                             has_vector_drawings, complexity_score, dpi_estimate,
-│        │   │                             raw_flags).
-│        │   │                           PageClassification: VLM Step B light return.
-│        │   │                           VLMAnalysis: VLM Step B full return.
-│        │   │                           PageCapabilities: Stage 1 Set-of-booleans capacity spec.
-│        │   │                           EngineTask: (engine, priority, mode, image_bytes?,
-│        │   │                             pdf_path?, page_number?, context?).
-│        │   │                           PageOutput: FINAL contract w/ Engineer B:
-│        │   │                             page_number, markdown, engines_used, confidence,
-│        │   │                             capabilities (List[str]), escalated, low_confidence.
-│        │   └── page_metadata.py   Internal: EngineResult, RoutingDecision, EscalationRecord,
-│        │                                PageMetadata. Full audit trail; not part of B contract.
-│        │
-│        ├── layer1_routing/        ← ⭐ Step A + Step B + top-level orchestration.
-│        │   ├── inspect.py
-│        │   │       inspect_page(page, page_number) -> PageProfile   (Step A — all pages)
-│        │   │         _count_chars_words(): pymupdf get_text("words")
-│        │   │         _analyze_images(): get_image_info() → bbox area frac → image_coverage
-│        │   │         _detect_tables(): get_drawings() horizontal/vertical line geometry stub
-│        │   │         _detect_scanned(): char_count < 30 AND image_coverage > 0.25
-│        │   │         _detect_script(): unicodedata.category + block ranges per char
-│        │   │         _compute_complexity(): tables(+2) + vectors(+1) + sparse(+1) + partial_img(+1)
-│        │   │         _estimate_dpi(): widest pixel width / page inches
-│        │   │
-│        │   ├── router.py
-│        │   │       route_from_profile()      → "digital" | "scanned" | "skip" | None
-│        │   │         decision tree: blank → skip; Indic → scanned (warn); has_text+chars>100 →
-│        │   │           (mixed?→VLM); complexity>=4→VLM; else→VLM
-│        │   │       route_from_classification() → "digital" | "scanned" | "handwritten" | "vlm"
-│        │   │       capabilities_from_profile() → PageCapabilities Set
-│        │   │         {has_digital_text, has_printed_scan, has_handwriting, has_tables,
-│        │   │          has_figures, has_indic_script, is_blank, has_mixed_content}
-│        │   │         + dead_zone fix for handwriting_pct 0.10–0.30 (biases conservative)
-│        │   │       capabilities_from_classification()  → PageCapabilities from VLMAnalysis
-│        │   │       build_engine_plan(capabilities, hints, route) → list[EngineTask]
-│        │   │         single_engine: 1 task
-│        │   │         multi_engine:  matched engines by priority, extras=skip for is_blank
-│        │   │       route_and_build_plan(profile, vlm_client, image_bytes) → (tasks, routing_decision)
-│        │   │         wraps the Step B two-path above: definitive or VLM-enriched
-│        │   │       pick_escalation_engine(failed, current_caps) → Optional[str]
-│        │   │         maps current capability → next rung on escalation ladder
-│        │   │
-│        │   ├── capability_router.py
-│        │   │       PROCESSOR_CAPABILITIES dict literal
-│        │   │       match_engines(caps) → (matched list[(engine, prio)], unmatched, missing_reasons)
-│        │   │         pure set subset check per engine's requirements vs PageCapabilities
-│        │   │
-│        │   └── pipeline.py         ⭐ TOP-LEVEL ORCHESTRATION.
-│        │       build_page_contexts(pdf_path) → list[render ctx dicts] (pymupdf render, np arr, PNG bytes)
-│        │       _run_engine_task(task, llm_client, ctx) → EngineResult
-│        │         dispatch table: docling→convert_digital_page(), paddleocr_printed→…, etc.
-│        │       _merge_results_with_capabilities(results, tasks) → (merged_md, conf, engines_used)
-│        │         Stage 1 line-dedup + weighted confidence (documented in merge section)
-│        │       _apply_escalation_ladder(page_number, initial_res, initial_conf, tasks, ctx, caps)
-│        │         while conf<threshold AND rungs left AND attempts<cap → _run next rung → merge
-│        │         returns (final_res, final_conf, final_engines, escalated_flag, attempts)
-│        │       process_page(page, page_number, ctx, llm_client, corr_id) → (PageOutput, PageMetadata)
-│        │         THE CORE FUNCTION:  inspect → route_and_build_plan → run tasks → merge →
-│        │         escalate → build types + return
-│        │       process_document(pages, llm_client, doc_name, doc_id, write_output,
-│        │                           output_dir, overwrite) -> list[(PageOutput, PageMetadata)]
-│        │         iterates pages, calls process_page, logs document_complete,
-│        │         optionally md_writer.write_document().
-│        │
-│        ├── layer2_conversion/     ← Step 5 — actual extraction engines.
-│        │   ├── digital.py
-│        │   │       _DoclingStore._get_instance()   singleton lazy DoclingConverter()
-│        │   │       convert_digital_page(pdf_path, page_number) → (md:str, conf:float)
-│        │   │         Docling pipeline.convert(path, pages=[page_n-1]) → dljson → _to_markdown()
-│        │   │         except ImportError: pymupdf fallback get_text("text")
-│        │   │       _to_markdown(doc, page_num) → iterate doc.pages[0].content → H/H2/P/TABLE MD
-│        │   │
-│        │   └── scanned.py
-│        │           _paddle_engines: dict[str, PaddleOCR]   singleton cache per mode
-│        │           _get_paddle_engine(mode="printed"|"handwritten") → PaddleOCR instance
-│        │             settings thresholds applied per-instance (det_db_thresh, textline_orientation)
-│        │           _paddle_result_to_markdown(lines, page_number) → md
-│        │             lines sorted by y-then-x → ## heading heuristic → bullet heuristic → "## Page N"
-│        │           convert_scanned_page(image_array) → (md, conf)
-│        │             printed instance.ocr() → full result rollup
-│        │           convert_handwritten_via_paddle(image_array) → (md, conf)
-│        │             handwritten instance.ocr() → full result rollup
-│        │
-│        └── output/
-│            └── md_writer.py
-│                  write_document(page_outputs_metadata, pdf_path, out_dir, overwrite)
-│                    _build_page_header(page_n, engines, caps, conf, latency) → HTML comment
-│                    _build_summary_json(page_metadatas) → <!-- PIPELINE_SUMMARY [JSON] -->
-│                    write_file → dataset_output/<stem>.md
-│                  write_schema_sidecar(pdf_path, md_path, schema_doc, out_dir)
-│                    writes <stem>.schema_ref.json with schema_id + registry path + doc_type + page summaries
-│
-├── tests/
-│   ├── fixtures/                    PDFs for routing+extraction tests:
-│   │     ├── MY_resume.pdf          (2294 chars, digital → Docling)
-│   │     ├── Vinay_Resume.pdf       (2312 chars, digital → Docling)
-│   │     ├── camscanner_handwritten.pdf (0 chars, scanned image + handwritten annotations)
-│   │     └── sdg_goals.pdf          (digital with tables; complexity>1 may trigger VLM paths)
-│   ├── test_router_smoke.py         Core smoke tests (parameterized): blank/skip, pure digital,
-│   │                                 pure scanned, mixed content (must return None VLM trigger),
-│   │                                 Indic script (→ scanned with warning), low chars not blank,
-│   │                                 escalation rung progression, hard cap at MAX_ATTEMPTS.
-│   ├── test_router_edgecases.py     Additional boundary: empty profile, all-zero img, all-1 img,
-│   │                                 complexity=4+ (VLM trigger), high chars still flagged mixed,
-│   │                                 route_from_classification branches for printed vs handwritten.
-│   ├── test_capability_router.py    PROCESSOR_CAPABILITIES unit tests. pure set operations.
-│   ├── test_vlm_routing.py          Hooks for real LLMClient.analyze_page() wired for
-│   │                                 integration runs only (skipped in default smoke env).
-│   ├── test_pdf_extraction.py       Real Docling/PaddleOCR integration harness (fixture-based).
-│   └── test_handwritten_extraction.py  PaddleOCR handwritten mode route only (escalation path from
-│                                     scanned ladder).
-│
-└── logs/  (created at runtime)   pipeline.log sink when logger configured with file handler.
-```
+### 4. Storage Architecture & Graceful Database Fallback
+- `src/ai/layer3_extraction/storage.py` maintains SQLAlchemy ORM models across 5 distinct tables:
+  1. `documents`: Uploaded PDF binaries with SHA-256 integrity hashes and file metadata.
+  2. `schemas`: Target JSON schema definitions, field lists, and sample associations.
+  3. `document_markdowns`: Converted Markdown texts (.md) from Layer 2.
+  4. `extraction_runs`: Extracted JSON structured entities with performance timings and model telemetry.
+  5. `job_pdfs`: Binary PDF report artifacts generated by ReportLab.
+- On startup, the engine attempts connection to PostgreSQL 18 via pre-ping. If connection or authentication fails, it logs a warning and transparently switches to local SQLite (`sqlite:///./idp_storage.db`), ensuring zero downtime.
+
+### 5. Multi-Tab Session Scoping & Persistent User Store
+- **Per-Tab Isolation**: The web application stores JWT bearer tokens and roles in browser `sessionStorage` rather than `localStorage`. Tab A login never automatically logs into Tab B, and refreshing retains session state.
+- **`JSONFileUserStore`**: Users are persisted to disk at `schema_chatbot_v2/data/users.json` using atomic file writes (`.tmp` replacement).
+- **Cryptographic Security**: Passwords are saved strictly as salted PBKDF2-HMAC-SHA256 hashes (100,000 iterations); plaintext passwords are never stored. Server restarts preserve all existing users without overwriting.
 
 ---
 
-## 🔗 Engineer A → Engineer B Contract
+## 🚀 Cloning & Environment Setup
 
-Everything Engineer B consumes from this repo is one of two artifacts:
-
-### 1. `PageOutput` (in-memory type — via Python call)
-Defined in [ai/schemas/page.py#L112-L129](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/schemas/page.py#L112-L129):
-```python
-class PageOutput(BaseModel):
-    page_number: int
-    markdown: str                      # Cleaned markdown body ready for B's regex/LLM extraction
-    engines_used: List[str]            # ["docling"]  or ["paddleocr_printed", "paddleocr_handwritten"]
-    confidence: float                  # 0.0–1.0  merged weight
-    capabilities: List[str]            # Subset of {"has_digital_text","has_printed_scan", …}
-    escalated: bool                    # True if any rung on escalation ladder was climbed
-    low_confidence: bool               # True if final confidence < settings.capability_low_confidence_floor
-```
-
-### 2. `.md` file + sidecar (disk artifacts — Engineer B preferred)
-
-`.md` shape in [output/md_writer.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/output/md_writer.py):
-```
-# <file>.pdf
-<!-- IDP Pipeline Output  [metadata block: Generated, Pages, Engines, Avg conf, Escalated, Low-conf] -->
----
-<!-- PAGE N | engine=… | conf=… | caps=[…] | latency=…ms -->
-<markdown content of page N>
-<!-- /PAGE N -->
----
-<!-- PAGE N+1 | engine=… | conf=… | caps=[…] | latency=…ms -->
-...
----
-<!-- PIPELINE_SUMMARY [JSON per-page array] -->
-```
-
-Engineer B **must parse only between PAGE open/close HTML comments** for page-level provenance reuse; `PIPELINE_SUMMARY` block is a fast pre-scan audit (JSON array) without a Markdown parser.
-
-Sidecar `<stem>.schema_ref.json` — document-level schema link:
-```json
-{
-  "source_pdf": "MY_resume.pdf",
-  "output_md": "MY_resume.md",
-  "schema_id": "schema_d3437ac77d3c",
-  "schema_registry_file": "schema_d3437ac77d3c.json",
-  "document_type": "resume",
-  "pages": [ {"page_number": 1, "engines_used": ["docling"],
-              "confidence": 0.970, "capabilities": ["has_digital_text"],
-              "escalated": false, "low_confidence": false, "chars": 2750, "latency_ms": 17897.3} ]
-}
-```
-
----
-
-## 🔌 VLM Provider Wiring (Engineer A Step B)
-
-Switch via `settings.llm_provider` → dispatched in [adapters/llm/factory.py#get_llm_client()](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/adapters/llm/factory.py):
-
-| Provider | `llm_provider` value | Package | How images sent |
-|----------|----------------------|---------|-----------------|
-| Ollama (local dev default) | `"ollama"` | httpx only, no SDK | base64 PNG within `/chat/completions` content array |
-| Google Gemini | `"gemini"` | `google-genai` SDK (pip) | PIL Image or bytes directly to `GenerativeModel.generate_content()` |
-| Mock (for deterministic tests / demo harnesses that don't want network) | — | none (MockLLMClient subclass throws RuntimeError on every method) — intentional: makes VLM dependency LOUD if any page reaches it without a real provider configured |
-
-Sarvam is **not** used as Engineer A's VLM — only for Phase 1 schema discovery chatbot, which is a separate service.
-
----
-
-## 🧠 Core Routing Algorithms
-
-### Step B Dead-Zone Fix
-For pages where the handwritten/printed split is genuinely uncertain (VLMAnalysis handwriting_pct between 0.10 and 0.30), the original routing table has an ambiguous gap: neither engine wins confidently enough. `capabilities_from_classification()` in [router.py](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/layer1_routing/router.py) resolves this conservatively: **has_handwriting=True AND has_printed_scan=True** → engine plan runs BOTH, escalates if merged output is still poor. This is the dead-zone fix referenced in legacy tests.
-
-### Multi-Engine Merge Priority Tiebreak
-In `capability_based` mode, multiple engines can run on one page. The order is set by the `priority` int on each `EngineTask`:
-- Docling → priority 1 (highest, wins all baseline lines)
-- paddleocr_printed → priority 2
-- paddleocr_handwritten → priority 3
-- vlm_transcribe → priority 4
-
-The merge function then **only appends new lines** from lower-priority engines that weren't already in higher-priority output, which prevents the classic "printed+handwritten overlap duplicates text twice" bug.
-
-### Mixed Content VLM Trigger (single_engine mode)
-`char_count > 100` is the "shortcut pure digital" fast path — no VLM cost. But if ALSO `0.02 < image_coverage < 0.85`, that means embedded figures exist alongside text (not a full-page scan), which can confuse Docling's layout model. In that specific case, `route_from_profile()` returns `None` → Step B MUST invoke VLM.analyze_page(). This prevents false "all digital" routing on brochures and spec sheets where Docling silently drops figure-callout content.
-
----
-
-## ⚖️ Architectural Principles (Non-Negotiable)
-
-1. **Engineer A stays schema-agnostic**. If code in this repo ever applies `field.extract()` using a schema from Engineer B, the responsibility boundary has been broken. All field-level logic goes in Engineer B's repo against the `.md` outputs only.
-2. **Provenance is replayable data, not logging**. Page HTML comments MUST contain exact `engine=` + `conf=` + `caps=` + `latency=` values sufficient for Engineer B's downstream debug re-runs WITHOUT re-invoking PyMuPDF/OCR/Docling.
-3. **Capability Set > one label**. A "printed form with handwritten fill-ins" is not `scanned` OR `handwritten`. It is both. Use `capability_based` routing mode + multi-engine merge + dedup instead of forcing a one-route pick.
-4. **Thou shalt not make VLM the default path**. Every page > 100 chars embedded text MUST route Docling directly per the shortcut. VLM is expensive and slow. Use it only for genuinely ambiguous cases where Step A heuristics actually produce `None` / ambiguous capability flags.
-5. **Escalation is a ladder, not a restart**. Each rung is a superset engine that handles the failure mode of the last. Re-running the same engine with a different seed is never an escalation step.
-6. **Singletons for heavy engines**. Both Docling (in [digital.py `_DoclingStore`](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/layer2_conversion/digital.py#L28-L37)) and PaddleOCR (in [scanned.py `_paddle_engines` dict](file:///C:/Users/Dell/Desktop/IDP/engineer_a/src/ai/layer2_conversion/scanned.py#L20-L23)) cache at the module top level per mode. Instantiating a fresh PaddleX model for every page = 30 s/page cold start. With singleton reuse, subsequent pages < 3 s scanned.
-
----
-
-## 🐳 Docker Deployment & Containerization Guide
-
-The IDP project is fully containerized with Docker and Docker Compose, separating concerns across two dedicated container services while persisting datasets, outputs, schemas, and model caches.
-
-### 📦 Container Architecture
-
-| Service Name | Description | Execution Type | Exposed Ports | Default Command |
-|---|---|---|---|---|
-| **`idp-layer12`** | Layer 1 (Routing) + Layer 2 (Conversion) Pipeline | Batch / CLI | None | `python demo_resume_pipeline.py` |
-| **`schema-chatbot`** | Layer 3 Schema Discovery Chatbot | FastAPI HTTP API | `8000:8000` | `uvicorn app.main:app --host 0.0.0.0 --port 8000` |
-
----
-
-### 🚀 Quick Start
-
-#### 1. Configure Environment Variables
-Copy the environment template and configure any external API keys (Sarvam, Ollama, Google Gemini, AWS Bedrock):
+### 1. Clone the Repository
 ```bash
-cp .env.example .env
+git clone https://github.com/SK321-VINAY-KY/IDP.git
+cd IDP/engineer_a
 ```
 
-#### 2. Build Docker Images
-Build both images locally:
+### 2. Create and Activate a Python 3.11 Virtual Environment
+> ⚠️ **Important**: Python 3.11 is strongly recommended. PaddleOCR and Docling require Python <= 3.11.
+
 ```bash
+# Windows (PowerShell)
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# Linux / macOS
+python3.11 -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Install Dependencies
+```bash
+# Install core pipeline dependencies (PyMuPDF, Docling, PaddleOCR, PyTorch)
+pip install -r requirements.txt
+
+# Install Layer 3 Web Application dependencies (FastAPI, Uvicorn, ReportLab, Sarvam SDK)
+pip install -r schema_chatbot_v2/requirements.txt
+```
+
+---
+
+## 🔑 API Keys & Configuration Guide
+
+Create and configure `.env` in the repository root and inside `schema_chatbot_v2/`.
+
+### 1. Root `.env` Configuration (`c:\Users\Dell\Desktop\IDP\engineer_a\.env`)
+```env
+# --- LLM & VLM Providers ---
+LLM_PROVIDER=sarvam
+IDP_LLM_PROVIDER=sarvam
+SARVAM_API_KEY=sk_your_sarvam_api_key_here
+IDP_SARVAM_API_KEY=sk_your_sarvam_api_key_here
+SARVAM_MODEL=sarvam-105b
+IDP_SARVAM_MODEL_NAME=sarvam-105b
+SARVAM_BASE_URL=https://api.sarvam.ai/v1
+IDP_SARVAM_BASE_URL=https://api.sarvam.ai/v1
+
+# --- Google Gemini VLM (Optional for Layer 1 Ambiguity) ---
+IDP_GEMINI_API_KEY=your_google_gemini_api_key_here
+
+# --- Sarvam Document AI OCR Settings ---
+SARVAM_TIMEOUT_S=180
+SARVAM_DOC_AI_LANGUAGE=en-IN
+SARVAM_DOC_AI_POLL_INTERVAL_S=6
+SARVAM_DOC_AI_TIMEOUT_S=120
+
+# --- PostgreSQL Database ---
+DATABASE_URL=postgresql://postgres:12345@localhost:5432/idp
+IDP_DATABASE_URL=postgresql://postgres:12345@localhost:5432/idp
+
+# --- Storage & Logging ---
+SESSION_STORE=memory
+LOG_LEVEL=INFO
+```
+
+### 2. Schema Chatbot `.env` (`schema_chatbot_v2/.env`)
+```env
+LLM_PROVIDER=sarvam
+SARVAM_API_KEY=sk_your_sarvam_api_key_here
+SARVAM_MODEL=sarvam-105b
+SARVAM_BASE_URL=https://api.sarvam.ai/v1
+SARVAM_TIMEOUT_S=180
+SARVAM_DOC_AI_LANGUAGE=en-IN
+SARVAM_DOC_AI_POLL_INTERVAL_S=6
+SARVAM_DOC_AI_TIMEOUT_S=120
+SESSION_STORE=memory
+LOG_LEVEL=INFO
+DATABASE_URL=postgresql://postgres:12345@localhost:5432/idp
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=changeme
+JWT_SECRET=idp-schema-pipeline-dev-secret-key-change-me
+```
+
+---
+
+## ⚡ Execution & Run Instructions
+
+### 1. Run the FastAPI Web Application & Dashboard
+Start the Uvicorn application server:
+```bash
+# From schema_chatbot_v2 directory:
+cd schema_chatbot_v2
+..\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+# Or from workspace root:
+.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir schema_chatbot_v2 --host 127.0.0.1 --port 8000
+```
+- **Web UI & Admin Dashboard**: Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
+- **Interactive OpenAPI Docs**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+- **Health Check**: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+
+### 2. Run Layer 1 & 2 Document Pipeline (Batch Conversion)
+To convert PDFs in `dataset/` to structured Markdown in `dataset_output/`:
+```bash
+# Run resume pipeline conversion demo
+.venv\Scripts\python.exe demo_resume_pipeline.py
+
+# Run end-to-end multi-phase conversion harness
+.venv\Scripts\python.exe demo_end_to_end.py
+```
+
+---
+
+## 🗄️ Database Setup & Storage Engine
+
+The application natively connects to **PostgreSQL 18** on `localhost:5432`.
+
+### Verify Database Connection
+Run a quick Python command to confirm tables are created and connected:
+```bash
+.venv\Scripts\python.exe -c "from src.ai.layer3_extraction.storage import get_engine, init_db; init_db(); print('Connected Dialect:', get_engine().dialect.name)"
+```
+
+### Table Structure in PostgreSQL (`idp` Database):
+- `documents`: Stores PDF filename, SHA-256 checksum, content type, and binary blob (`BYTEA`).
+- `schemas`: Stores schema ID, document type, field count, and complete JSON schema definition (`JSONB`).
+- `document_markdowns`: Stores document ID, Markdown filename, raw Markdown text, and page references.
+- `extraction_runs`: Stores structured JSON extraction outputs, LLM model used, and latency metrics.
+- `job_pdfs`: Stores generated ReportLab PDF job report documents for asynchronous download.
+
+---
+
+## 🧪 Automated Test Suite
+
+The repository contains 161 automated test cases covering routing tables, escalation logic, capability matching, Sarvam token caps, user stores, and session persistence:
+
+```bash
+# Run the complete test suite
+.venv\Scripts\python.exe -m pytest tests/ schema_chatbot_v2/tests/ -v
+
+# Run specific test suites
+.venv\Scripts\python.exe -m pytest schema_chatbot_v2/tests/test_user_store.py -v
+.venv\Scripts\python.exe -m pytest schema_chatbot_v2/tests/test_sarvam_adapter.py -v
+.venv\Scripts\python.exe -m pytest schema_chatbot_v2/tests/test_storage_and_reports.py -v
+```
+
+---
+
+## 🐳 Docker Deployment
+
+Run both the conversion pipeline and the web service inside isolated containers:
+
+```bash
+# 1. Build container images
 docker compose build
-```
 
-#### 3. Run Layer 3 Schema Chatbot
-Start the FastAPI server in the background:
-```bash
+# 2. Run the Schema Chatbot web app in the background
 docker compose up -d schema-chatbot
-```
-- **Health check**: `curl http://localhost:8000/health` (returns `{"status":"ok","llm_provider":"..."}`)
-- **Swagger Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
-- **View Logs**: `docker compose logs -f schema-chatbot`
-- **Stop Server**: `docker compose down`
 
-#### 4. Run Layer 1 + 2 Document Processing Pipeline
-Execute batch document conversion jobs:
-```bash
-# Run resume processing demo
+# 3. Execute batch document conversion
 docker compose run --rm idp-layer12 python demo_resume_pipeline.py
 
-# Run PDF extraction accuracy harness
-docker compose run --rm idp-layer12 python tests/test_pdf_extraction.py
-
-# Run handwritten document OCR extraction
-docker compose run --rm idp-layer12 python tests/test_handwritten_extraction.py
-
-# Process custom documents in dataset/
-docker compose run --rm idp-layer12 python -c "from src.ai.layer1_routing.pipeline import process_document; process_document('dataset/sample.pdf', 'dataset_output/sample.md')"
-```
-
----
-
-### 🧪 Running Tests Inside Docker
-
-Run the comprehensive unit test suites in isolation:
-
-```bash
-# Layer 1 + Layer 2 Pipeline Tests (Router, Escalation, Capabilities, VLM)
-docker compose run --rm idp-layer12 pytest tests/test_router_smoke.py tests/test_router_edgecases.py tests/test_capability_router.py tests/test_vlm_routing.py -v
-
-# Layer 3 Schema Chatbot Tests (State Machine, Conversation, Validation, Pipeline Jobs)
+# 4. Run tests inside Docker
 docker compose run --rm schema-chatbot pytest /app/schema_chatbot_v2/tests -v
 ```
 
 ---
 
-### 💾 Volumes & Model Caching Strategy
+## 📂 Repository File Guide
 
-The Docker setup uses bind mounts for application data and named volumes for AI model weights:
-- **`./dataset`**: Input PDF documents mount at `/app/dataset`
-- **`./dataset_output`**: Processed Markdown & schema reference sidecars output to `/app/dataset_output`
-- **`./schema_registry`**: Generated JSON schemas saved at `/app/schema_registry`
-- **`idp-paddle-cache`** (`/root/.paddleocr`): Persists downloaded PaddleOCR / PaddleX weights across runs.
-- **`idp-hf-cache`** (`/root/.cache`): Persists Hugging Face / Docling layout analysis weights.
+*Detailed breakdown of every file across the codebase with its primary responsibility and underlying technology (4 to 6 lines per file).*
 
+### Core Pipeline & Routing (`src/ai/layer1_routing/`)
+
+#### `src/ai/layer1_routing/inspect.py`
+Inspects incoming PDF pages using PyMuPDF to extract text density, bounding boxes, vector lines, and image coverage ratios.
+Calculates heuristic metrics including character count, DPI estimates, script detection, and layout complexity score (0–5).
+Runs in approximately 10ms per page as a zero-model heuristic step before any neural network or VLM invocation.
+Built using PyMuPDF (`fitz`), Python standard library `unicodedata`, and native math geometry arithmetic.
+
+#### `src/ai/layer1_routing/router.py`
+Determines optimal extraction routes and builds multi-engine execution tasks based on page inspection profiles.
+Implements the dead-zone resolution heuristic for pages with 10%–30% handwriting to prevent misclassification.
+Evaluates single-engine shortcut pathways (e.g. pure digital pages) and routes ambiguous pages to VLM analysis.
+Built with Python standard library typing, Pydantic contract models, and custom routing decision trees.
+
+#### `src/ai/layer1_routing/capability_router.py`
+Defines the `PROCESSOR_CAPABILITIES` dictionary mapping OCR engines to required document feature sets.
+Matches detected page capabilities against engine prerequisites using strict mathematical subset operations.
+Ranks viable candidate engines by priority and generates explainability diagnostics for unmatched engines.
+Implemented using pure Python sets, dataclasses, and immutable tuple mappings without external library dependencies.
+
+#### `src/ai/layer1_routing/pipeline.py`
+Coordinates the end-to-end processing lifecycle for individual pages and multi-page PDF documents.
+Renders pages at 150 DPI into NumPy arrays for OCR engines and PNG bytes for VLM analysis.
+Applies the escalation ladder when initial confidence is low and deduplicates multi-engine line outputs.
+Built with PyMuPDF, NumPy, Pillow (PIL), and standard library concurrent orchestration logic.
+
+---
+
+### Conversion Engines (`src/ai/layer2_conversion/`)
+
+#### `src/ai/layer2_conversion/digital.py`
+Extracts structured Markdown from born-digital PDF pages using Docling's layout-aware parsing pipeline.
+Preserves complex reading orders, nested lists, and multi-column tables with high semantic fidelity.
+Caches a singleton `DoclingConverter` instance to avoid costly model re-initialization on subsequent pages.
+Employs Docling 2.x, PyMuPDF fallback extraction, and Pydantic validation models.
+
+#### `src/ai/layer2_conversion/scanned.py`
+Performs optical character recognition on scanned printed pages and handwritten fill-in forms.
+Maintains two tuned singleton instances of PaddleOCR: standard printed PP-OCRv6 and a low-threshold handwritten DBNet.
+Orders recognized text bounding boxes geometrically and computes character-weighted recognition confidence scores.
+Built using PaddleOCR / PaddleX, PyTorch, NumPy, and standard-library regex layout heuristics.
+
+---
+
+### Extraction Storage & Markdown Output (`src/ai/`)
+
+#### `src/ai/layer3_extraction/storage.py`
+Provides centralized relational persistence across 5 ORM tables for documents, schemas, markdowns, runs, and job PDFs.
+Initializes PostgreSQL 18 connections with connection pooling and implements an automated fallback to local SQLite.
+Offers helper functions to save raw PDFs, store confirmed schemas, record extraction runs, and retrieve ReportLab PDFs.
+Constructed with SQLAlchemy ORM, psycopg2-binary, SQLite3, hashlib SHA-256, and Pydantic.
+
+#### `src/ai/output/md_writer.py`
+Formats extracted page bodies into clean Markdown documents featuring per-page provenance HTML comments.
+Generates an audit-ready `<!-- PIPELINE_SUMMARY [...] -->` JSON footer encapsulating engine choices, confidence, and timings.
+Writes document-level `<stem>.schema_ref.json` sidecar files linking documents to confirmed schema definitions.
+Built purely with Python standard library string formatting, Pathlib, and JSON serialization.
+
+---
+
+### Schemas & Contract Types (`src/ai/schemas/`)
+
+#### `src/ai/schemas/page.py`
+Defines the cross-module contract dataclasses: `PageProfile`, `PageClassification`, `VLMAnalysis`, and `PageOutput`.
+Guarantees strict type safety between Layer 1 routing, Layer 2 conversion, and Layer 3 schema extraction.
+Encapsulates merged confidence ratings, capability flag lists, escalation status, and engine attribution strings.
+Implemented using Pydantic v1 BaseModel specifications with rigid field constraints and default values.
+
+#### `src/ai/schemas/page_metadata.py`
+Maintains internal tracking structures including `EngineResult`, `RoutingDecision`, `EscalationRecord`, and `PageMetadata`.
+Captures granular latency measurements, intermediate engine failures, and execution traces for audit logging.
+Supplements public contract types with execution telemetry without exposing internal mechanics downstream.
+Built using Pydantic BaseModel and Python standard library typing constructs.
+
+---
+
+### VLM & LLM Adapters (`src/adapters/llm/`)
+
+#### `src/adapters/llm/base.py`
+Establishes the abstract base class `LLMClient` declaring methods for page classification, analysis, and transcription.
+Defines synchronous and asynchronous signatures ensuring pluggable compatibility across different vision-language providers.
+Enforces typed returns using Pydantic models for structured visual page decomposition.
+Built using Python's `abc` module and typing annotations.
+
+#### `src/adapters/llm/factory.py`
+Implements a factory pattern function `get_llm_client()` that instantiates the configured VLM adapter.
+Dispatches between local Ollama instances, Google Gemini cloud clients, or lightweight deterministic mock clients.
+Reads configuration settings dynamically while allowing runtime keyword argument overrides.
+Constructed using standard Python factory patterns and module imports.
+
+#### `src/adapters/llm/ollama_client.py`
+Integrates local Vision-Language Models (e.g., Qwen2.5-VL) via Ollama's OpenAI-compatible REST endpoint.
+Encodes page pixmaps into base64 PNG data URLs and transmits them via HTTP POST to `localhost:11434`.
+Parses returned JSON payloads into strongly typed `VLMAnalysis` structures with layout quality scores.
+Built with `httpx`, base64 encoding, and Pydantic schema validation.
+
+#### `src/adapters/llm/gemini_client.py`
+Connects to Google Gemini multimodal models using the official Google GenAI SDK for visual document inspection.
+Transmits rendered page image bytes directly to generate structured layout and handwritten transcription analyses.
+Utilizes `IDP_GEMINI_API_KEY` loaded securely from root `.env` configuration.
+Built with `google-genai` SDK, Pillow (PIL), and Pydantic models.
+
+#### `src/adapters/llm/schema_models.py`
+Specifies Pydantic v1 response models for VLM inference including printed vs. handwritten percentage splits.
+Contains typed schema representations for table detection, diagram flags, and direct markdown transcription output.
+Ensures JSON responses from external VLMs adhere strictly to the internal Layer 1 routing expectations.
+Constructed using Pydantic v1 schema definitions.
+
+---
+
+### Configuration & Utilities (`src/config/`, `src/utils/`)
+
+#### `src/config/settings.py`
+Centralized application configuration managing pipeline thresholds, engine modes, and service connection strings.
+Loads environment variables from `.env` using Pydantic Settings with automatic `IDP_` prefix fallback resolution.
+Defines tunable parameters for DPI rendering, confidence floors, DBNet detection thresholds, and database URLs.
+Built with `pydantic-settings`, `python-dotenv`, and Python `pathlib`.
+
+#### `src/utils/logger.py`
+Configures structured JSON logging across the application with contextual metadata for distributed tracing.
+Tracks individual document processing lifecycles using a Python `ContextVar` to inject consistent `correlation_id` values.
+Formats log records with ISO timestamps, log levels, service names, and custom structured dictionary arguments.
+Implemented using Python standard library `logging` and `contextvars`.
+
+---
+
+### Web Application & API Routes (`schema_chatbot_v2/app/`)
+
+#### `schema_chatbot_v2/app/main.py`
+Initializes the FastAPI application instance, configures CORS middleware, mounts static UI assets, and registers routers.
+Manages application lifespan events by initializing the active LLM adapter and verifying database connectivity.
+Exposes root health probe endpoints and redirects browser root paths to the static admin portal.
+Built using FastAPI, Starlette, Uvicorn, and Python standard library logging.
+
+#### `schema_chatbot_v2/app/config.py`
+Defines the Pydantic Settings configuration dataclass for the Layer 3 schema discovery web service.
+Manages settings for Sarvam Document AI, LLM model names, JWT secrets, session timeouts, and database URLs.
+Resolves configuration values from `schema_chatbot_v2/.env` and system environment variables.
+Constructed using `pydantic-settings` and `python-dotenv`.
+
+#### `schema_chatbot_v2/app/api/auth_routes.py`
+Implements user authentication endpoints including `/auth/login`, `/auth/register`, and `/auth/me`.
+Validates OAuth2 password request forms, compares PBKDF2 password hashes, and issues signed JWT bearer tokens.
+Provides current user profile and role introspection to front-end clients.
+Built with FastAPI, OAuth2PasswordRequestForm, and `app.core.auth` helper utilities.
+
+#### `schema_chatbot_v2/app/api/routes.py`
+Exposes the core interactive chatbot endpoints: `POST /chat` and `POST /schema/infer`.
+Handles conversational turns against the schema discovery state machine to add, update, and confirm schema fields.
+Accepts multipart PDF document uploads and triggers Sarvam Document AI OCR extraction and schema derivation.
+Constructed using FastAPI, Pydantic v2 schemas, and ConversationManager orchestration.
+
+#### `schema_chatbot_v2/app/api/pipeline_routes.py`
+Provides pipeline execution endpoints for document intake, batch extraction jobs, status polling, and report downloads.
+Generates comprehensive ReportLab PDF job report documents detailing page metrics, field counts, and extraction accuracy.
+Hosts the Query Bot endpoint (`POST /api/query-bot/ask`) for interactive natural language queries over extracted JSON.
+Built with FastAPI, ReportLab Platypus, SQLAlchemy ORM storage, and Sarvam LLM adapters.
+
+#### `schema_chatbot_v2/app/api/user_routes.py`
+Delivers self-service document management endpoints for standard non-admin users.
+Allows users to upload personal PDFs, list uploaded documents, and initiate extraction jobs against confirmed schemas.
+Restricts document access to the authenticated document owner to maintain tenant data boundaries.
+Built using FastAPI, HTTP bearer authentication dependencies, and SQLAlchemy storage.
+
+#### `schema_chatbot_v2/app/api/admin_routes.py`
+Supplies administrative control endpoints for listing all registered users, updating user roles, and managing schemas.
+Provides administrative oversight over pipeline jobs, execution histories, and system health status.
+Secured with role-based access control (RBAC) requiring verified administrator privileges.
+Constructed with FastAPI, JWT security dependencies, and UserStore abstractions.
+
+---
+
+### Core State & Authentication (`schema_chatbot_v2/app/core/`)
+
+#### `schema_chatbot_v2/app/core/auth.py`
+Implements password hashing, salt verification, and JWT creation/validation logic.
+Utilizes standard library PBKDF2-HMAC-SHA256 with 100,000 iterations to eliminate external binary hashing dependencies.
+Decodes bearer tokens, verifies cryptographic expiration, and injects current user identity into FastAPI dependencies.
+Built using Python standard libraries `hashlib`, `hmac`, `secrets`, and `pyjwt`.
+
+#### `schema_chatbot_v2/app/core/conversation_manager.py`
+Drives the interactive schema discovery state machine through `COLLECT`, `INFER`, `REVIEW`, and `CONFIRMED` states.
+Parses natural language user feedback to modify schema fields, alter data types, and update validation constraints.
+Generates proactive clarification questions when inferred schema fields contain ambiguous types or missing descriptions.
+Built using Python dataclasses, SchemaState CRUD, and LLMAdapter abstractions.
+
+#### `schema_chatbot_v2/app/core/schema_state.py`
+Maintains an in-memory structured representation of field definitions throughout an active schema review session.
+Enforces field name uniqueness, validates data type changes (string, number, date, list, object), and tracks required flags.
+Exports finalized schemas to JSON definitions matching the schema registry storage contract.
+Constructed with Python standard library dictionaries, copy utilities, and Pydantic validation.
+
+#### `schema_chatbot_v2/app/core/state_machine.py`
+Enumerates the lifecycle states of schema discovery: `START`, `COLLECT`, `INFER`, `REVIEW`, and `CONFIRMED`.
+Validates valid transitions between conversational phases and guards against illegal state modifications.
+Ensures schemas cannot be committed to disk without user confirmation.
+Implemented with Python `enum.Enum` and standard library state validation logic.
+
+#### `schema_chatbot_v2/app/core/validator.py`
+Validates schema JSON definitions against strict JSON-schema standards and structural integrity constraints.
+Ensures nested list items, currency codes, date formatting patterns, and enumeration choices adhere to specifications.
+Provides detailed error messages indicating problematic field names and corrective actions.
+Constructed using standard library regex patterns and JSON schema inspection logic.
+
+#### `schema_chatbot_v2/app/core/activity_log.py`
+Records user interactions, pipeline triggers, and administrative operations into an append-only event log.
+Structures activity events with timestamps, user identities, action categories, and execution outcomes.
+Enables administrative audit tracking and user history inspection.
+Implemented using standard library collections, time utilities, and JSON formatting.
+
+#### `schema_chatbot_v2/app/core/log_buffer.py`
+Maintains a thread-safe circular memory buffer capturing recent application log entries.
+Exposes recent server log lines via API endpoints to power the real-time admin monitoring dashboard.
+Prevents memory exhaustion by evicting older log lines past a fixed capacity limit.
+Built with Python `collections.deque` and threading synchronization locks.
+
+---
+
+### LLM Adapters & Prompts (`schema_chatbot_v2/app/llm/`)
+
+#### `schema_chatbot_v2/app/llm/base.py`
+Defines the `LLMAdapter` abstract interface declaring methods for document extraction, question phrasing, and schema inference.
+Standardizes how LLM providers parse structured JSON from text and digitize PDF documents.
+Enforces consistent parameter signatures across local and cloud LLM implementations.
+Built using Python's `abc` module and asynchronous type annotations.
+
+#### `schema_chatbot_v2/app/llm/factory.py`
+Factory module responsible for instantiating the appropriate `LLMAdapter` based on environment configuration.
+Supports seamless switching between Sarvam AI, Ollama, AWS Bedrock, and Mock adapters.
+Validates required API keys and connection parameters before returning active adapter instances.
+Implemented using Python factory design patterns and conditional module loading.
+
+#### `schema_chatbot_v2/app/llm/sarvam_adapter.py`
+Core adapter integrating Sarvam AI's Document AI OCR and `sarvam-105b` large language model.
+Calls Sarvam's REST API with defensive token cap truncation detection and token budget management (`max_tokens=2560`).
+Manages the asynchronous Document AI digitization lifecycle: multipart upload, polling, ZIP download, and Markdown extraction.
+Built with `httpx`, lazy-imported `sarvamai` SDK, `zipfile`, and custom `TruncatedCompletionError` handling.
+
+#### `schema_chatbot_v2/app/llm/ollama_adapter.py`
+Implements the `LLMAdapter` interface for local model execution via Ollama's REST API.
+Enables local development and offline schema discovery without external commercial API dependencies.
+Converts OpenAI-compatible chat completion JSON into internal schema proposal structures.
+Built using `httpx` asynchronous client and Pydantic response parsing.
+
+#### `schema_chatbot_v2/app/llm/bedrock_adapter.py`
+Cloud production adapter designed for deploying schema discovery on Amazon Web Services (AWS) Bedrock.
+Invokes Anthropic Claude or Amazon Titan models using the AWS Boto3 SDK with AWS IAM credential management.
+Structures requests and extracts structured JSON outputs following Bedrock Converse API conventions.
+Constructed using `boto3` and AWS SDK runtime clients.
+
+#### `schema_chatbot_v2/app/llm/mock_adapter.py`
+Deterministic mock adapter for automated integration tests and offline unit validation.
+Simulates Document AI digitization and returns predefined schema definitions without network overhead.
+Enables comprehensive continuous integration (CI) testing without consuming API credits.
+Implemented purely in Python using static dictionaries and simulated async delays.
+
+#### `schema_chatbot_v2/app/llm/prompts.py`
+Houses system prompt templates, few-shot examples, and JSON schema formatting instructions for LLM calls.
+Guides models to extract consistent field structures, identify primary document types, and formulate polite clarification questions.
+Contains specialized prompt blocks for invoices, resumes, medical bills, and complex government forms.
+Maintained as pure Python multi-line string templates.
+
+---
+
+### Storage, Models & Client (`schema_chatbot_v2/app/storage/`, `models/`, `cli/`)
+
+#### `schema_chatbot_v2/app/storage/user_store.py`
+Provides persistent storage for application user accounts using the `JSONFileUserStore` implementation.
+Loads users from `data/users.json` on startup, writes updates atomically via `.tmp` replacement, and preserves PBKDF2 password hashes.
+Seeds a default administrator account from environment variables only if the store is empty, avoiding overwrite on restart.
+Built with Python standard library `json`, `pathlib`, `uuid`, and `InMemoryUserStore` for tests.
+
+#### `schema_chatbot_v2/app/storage/session_store.py`
+Manages conversation and review sessions through `JSONFileSessionStore` and `InMemorySessionStore`.
+Persists active conversation states, turn counts, schema drafts, and ownership tokens across server restarts.
+Offers configurable backends selectable via the `SESSION_STORE` environment variable (`memory` or `file`).
+Built with Pydantic BaseModel, `pathlib`, `uuid`, and Python standard library `json`.
+
+#### `schema_chatbot_v2/app/models/api_models.py`
+Defines request and response Pydantic models for all Layer 3 FastAPI routes.
+Encapsulates structures for chat requests, schema field operations, token responses, and job submissions.
+Enforces type validation, field constraints, and automatic OpenAPI schema generation.
+Built with Pydantic v2 BaseModel and Field declarations.
+
+#### `schema_chatbot_v2/app/output/schema_renderer.py`
+Renders confirmed schema definitions into human-readable Markdown documentation and graphical summaries.
+Generates sample JSON templates from schema definitions illustrating expected extraction output shapes.
+Assists users in reviewing schema structures before finalizing extraction configurations.
+Constructed using Python standard library string templates and JSON formatting.
+
+#### `schema_chatbot_v2/cli/client.py`
+Command-line interface (CLI) client for interacting with the schema chatbot service directly from the terminal.
+Supports session initiation, interactive message dispatching, document uploading, and schema confirmation from CLI.
+Formats JSON server responses into terminal tables and color-coded status banners.
+Built with Python standard library `urllib`, `argparse`, and terminal ANSI escape sequences.
+
+---
+
+### Frontend UI & Demo Harnesses (`static/`, root scripts)
+
+#### `schema_chatbot_v2/static/index.html`
+Semantic single-page web interface providing document upload, schema chatbot interaction, and admin management tabs.
+Includes responsive panels for pipeline status monitoring, JSON data viewing, ReportLab PDF downloads, and Query Bot Q&A.
+Features light/dark theme toggling and cache-busted asset inclusion (`app.js?v=18`).
+Structured using semantic HTML5 elements, CSS custom properties, and accessible form controls.
+
+#### `schema_chatbot_v2/static/app.js`
+Client-side JavaScript application driving the dynamic UI without third-party frontend frameworks.
+Uses `sessionStorage` for `TOKEN_KEY` and `ROLE_KEY` to guarantee strict per-tab authentication isolation.
+Manages asynchronous API communication, polling loops for pipeline jobs, and query bot chat rendering.
+Built with vanilla modern ECMAScript (ES6+), Fetch API, DOM manipulation, and sessionStorage.
+
+#### `schema_chatbot_v2/static/style.css`
+Custom CSS stylesheet implementing a modern design system with curated dark and light mode themes.
+Styles glassmorphic cards, admin data tables, query bot message bubbles, and high-contrast JSON viewers.
+Provides smooth CSS transitions, responsive grid layouts, and mobile-friendly media queries.
+Authored in pure Vanilla CSS using CSS variables, flexbox, and grid layouts.
+
+#### `demo_resume_pipeline.py`
+Demonstration script executing the Layer 1 & 2 extraction pipeline on sample resume documents.
+Renders PDF pages, evaluates routing heuristics, executes Docling or PaddleOCR, and writes output Markdown.
+Uses `MockLLMClient` to verify that pure digital documents process without external network model dependencies.
+Built with PyMuPDF, `pipeline.process_document()`, and `md_writer`.
+
+#### `demo_end_to_end.py`
+Comprehensive two-phase demonstration harness linking Phase 1 schema discovery with Phase 2 document conversion.
+Calls `/schema/infer` on the running chatbot to derive a shared schema, then processes corpus PDFs through Engineer A.
+Outputs Markdown files and schema sidecars linking each processed document to its registry schema identifier.
+Built using `httpx`, PyMuPDF, Pathlib, and the Layer 1 routing pipeline.
+
+---
+
+## 📜 License
+Internal IDP Platform — Proprietary & Confidential.

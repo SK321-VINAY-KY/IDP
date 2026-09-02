@@ -14,6 +14,7 @@ pymupdf>=1.28.0
 pillow>=11.0.0
 numpy>=1.24.0
 sqlalchemy>=2.0
+psycopg2-binary>=2.9.9
 reportlab>=4.0
 jinja2>=3.1
 

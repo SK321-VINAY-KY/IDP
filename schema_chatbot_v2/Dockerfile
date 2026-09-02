@@ -38,7 +38,7 @@ RUN pip install --no-cache-dir -U pip setuptools wheel && \
 COPY . /app
 
 # Ensure standard runtime directories exist
-RUN mkdir -p dataset dataset_output schema_registry logs schema_chatbot_v2/logs
+RUN mkdir -p dataset dataset_output schema_registry logs schema_chatbot_v2/logs data schema_chatbot_v2/data
 
 EXPOSE 8000
 

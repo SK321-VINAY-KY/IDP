@@ -30,6 +30,8 @@ build/
 logs/
 scratch/
 dataset_output/
+data/
+schema_chatbot_v2/data/
 
 # OS specific
 .DS_Store

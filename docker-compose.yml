@@ -17,6 +17,8 @@ services:
     env_file:
       - path: .env
         required: false
+      - path: schema_chatbot_v2/.env
+        required: false
     volumes:
       - ./dataset:/app/dataset
       - ./dataset_output:/app/dataset_output
@@ -24,6 +26,8 @@ services:
       - ./schema_chatbot_v2/static:/app/schema_chatbot_v2/static
       - ./schema_chatbot_v2/app:/app/schema_chatbot_v2/app
       - ./src:/app/src
+      - ./schema_chatbot_v2/data:/app/schema_chatbot_v2/data
+      - ./data:/app/data
       - ./schema_chatbot_v2/logs:/app/schema_chatbot_v2/logs
       - ./logs:/app/logs
       - paddle-cache:/root/.paddleocr
@@ -46,6 +50,7 @@ services:
       - ./dataset:/app/dataset
       - ./dataset_output:/app/dataset_output
       - ./schema_registry:/app/schema_registry
+      - ./data:/app/data
       - ./logs:/app/logs
       - paddle-cache:/root/.paddleocr
       - hf-cache:/root/.cache

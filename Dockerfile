@@ -35,7 +35,7 @@ RUN pip install --no-cache-dir -U pip setuptools wheel && \
 COPY . /app
 
 # Ensure standard runtime directories exist
-RUN mkdir -p dataset dataset_output schema_registry logs
+RUN mkdir -p dataset dataset_output schema_registry logs data
 
 # Default entrypoint runs the resume pipeline verification demo
 CMD ["python", "demo_resume_pipeline.py"]

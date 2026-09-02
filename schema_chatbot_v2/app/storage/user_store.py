@@ -272,16 +272,21 @@ def get_user_store(file_path: Optional[str | Path] = None) -> UserStore:
     """
     global _user_store
     if _user_store is None:
-        if file_path is None:
-            raw_path = os.getenv("USER_STORE_FILE")
-            if raw_path:
-                path = Path(raw_path)
-            else:
-                path = Path(__file__).resolve().parent.parent.parent / "data" / "users.json"
+        store_type = os.getenv("USER_STORE_TYPE", "").lower()
+        if store_type == "memory" and not file_path and not os.getenv("USER_STORE_FILE"):
+            store = InMemoryUserStore()
         else:
-            path = Path(file_path)
+            if file_path is None:
+                raw_path = os.getenv("USER_STORE_FILE")
+                if raw_path:
+                    path = Path(raw_path)
+                else:
+                    path = Path(__file__).resolve().parent.parent.parent / "data" / "users.json"
+            else:
+                path = Path(file_path)
 
-        store = JSONFileUserStore(path)
+            store = JSONFileUserStore(path)
+
         if not store.list_users():
             admin_user = os.getenv("ADMIN_USERNAME", "admin")
             admin_pass = os.getenv("ADMIN_PASSWORD", "changeme")
