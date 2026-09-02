@@ -121,54 +121,6 @@ class SarvamExtractionClient:
                 logger.error("sarvam.extract.raw_fallback_failed", error=str(raw_exc))
                 raise exc
 
-    def summarize_page(self, page_md: str, max_words: int = 150) -> str:
-        """
-        Summarize a single document page in max_words or fewer.
-        """
-        prompt = render_prompt("page_summary", page_md=page_md, max_words=max_words)
-        params = prompt_params("page_summary")
-
-        resp = self.raw_client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=params.get("temperature", 0.0),
-            max_tokens=params.get("max_tokens", 500),
-            extra_body={"reasoning_effort": self.reasoning_effort},
-        )
-        choice = resp.choices[0]
-        content = choice.message.content or ""
-        return content.strip()
-
-    def navigate(self, page_summaries: List[str], schema_fields: List[str]) -> Dict[str, List[int]]:
-        """
-        Map target schema fields to likely page numbers using page summaries.
-        """
-        prompt = render_prompt(
-            "navigation",
-            page_summaries="\n".join(page_summaries),
-            schema_fields=schema_fields,
-        )
-        params = prompt_params("navigation")
-
-        resp = self.raw_client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=params.get("temperature", 0.0),
-            max_tokens=params.get("max_tokens", 1000),
-            extra_body={"reasoning_effort": self.reasoning_effort},
-        )
-        choice = resp.choices[0]
-        raw = choice.message.content or ""
-        raw = _strip_fences(raw)
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                return {str(k): list(v) if isinstance(v, list) else [] for k, v in parsed.items()}
-            return {f: [] for f in schema_fields}
-        except json.JSONDecodeError:
-            logger.warning("sarvam.navigate.parse_failed", raw=raw[:200])
-            return {f: [] for f in schema_fields}
-
     def check_page_for_fields(
         self,
         page_md: str,
@@ -181,18 +133,38 @@ class SarvamExtractionClient:
         Supports both {"matches": [{"field": ..., "value": ...}]} and direct {"field": "value"} maps.
         """
         valid_names = {f["name"] for f in schema_fields}
-        prompt = render_prompt(
-            "page_field_check",
-            page_md=page_md,
-            schema_fields=schema_fields,
-            page_number=page_number,
-            total_pages=total_pages,
+
+        # Build schema system prompt once — constant prefix across all pages
+        # Sarvam caches identical system prompts automatically, reducing input token cost
+        schema_lines = "\n".join(
+            f"- {f['name']}: {f['description']}" for f in schema_fields
         )
+        system_prompt = (
+            f"You are extracting structured data from a document.\n\n"
+            f"Target schema fields:\n{schema_lines}\n\n"
+            f"Instructions:\n"
+            f"- Go through EVERY schema field listed above one by one and check if the page contains it.\n"
+            f"- Only include a field in \"matches\" if an actual value is present on THIS page.\n"
+            f"- Do NOT include fields not found. Do NOT return \"Not found\", \"N/A\", \"null\", or placeholders.\n"
+            f"- Extract exact values as written.\n\n"
+            f"Respond with ONLY this JSON format:\n"
+            f'{{ "matches": [{{"field": "<field_name>", "value": "<extracted_value>"}}] }}\n'
+            f"If no fields found: {{\"matches\": []}}"
+        )
+
+        # Page content goes in user message — changes every page
+        user_prompt = (
+            f"Page {page_number} of {total_pages}:\n\n{page_md}"
+        )
+
         params = prompt_params("page_field_check")
 
         resp = self.raw_client.chat.completions.create(
             model=self.model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": system_prompt},  # cached by Sarvam
+                {"role": "user",   "content": user_prompt},    # changes per page
+            ],
             temperature=params.get("temperature", 0.0),
             max_tokens=params.get("max_tokens", 4000),
             extra_body={"reasoning_effort": self.reasoning_effort},

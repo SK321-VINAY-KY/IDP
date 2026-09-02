@@ -15,12 +15,6 @@ class ExtractionLLMClient(Protocol):
     def extract(self, content: str, schema: type[BaseModel]) -> BaseModel:
         ...
 
-    def summarize_page(self, page_md: str, max_words: int) -> str:
-        ...
-
-    def navigate(self, page_summaries: List[str], schema_fields: List[str]) -> Dict[str, List[int]]:
-        ...
-
     def check_page_for_fields(
         self,
         page_md: str,
