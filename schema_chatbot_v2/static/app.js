@@ -6,8 +6,8 @@
     const ROLE_KEY = 'idp_auth_role';
 
     let state = {
-        token: localStorage.getItem(TOKEN_KEY) || null,
-        role: localStorage.getItem(ROLE_KEY) || null,
+        token: sessionStorage.getItem(TOKEN_KEY) || null,
+        role: sessionStorage.getItem(ROLE_KEY) || null,
         username: null,
         sessionId: null,
         docs: [],
@@ -99,6 +99,8 @@
         state.role = null;
         state.username = null;
         state.sessionId = null;
+        sessionStorage.removeItem(TOKEN_KEY);
+        sessionStorage.removeItem(ROLE_KEY);
         localStorage.removeItem(TOKEN_KEY);
         localStorage.removeItem(ROLE_KEY);
         showLoginModal();
@@ -135,8 +137,10 @@
 
             state.token = data.access_token;
             state.role = data.role;
-            localStorage.setItem(TOKEN_KEY, state.token);
-            localStorage.setItem(ROLE_KEY, state.role);
+            sessionStorage.setItem(TOKEN_KEY, state.token);
+            sessionStorage.setItem(ROLE_KEY, state.role);
+            localStorage.removeItem(TOKEN_KEY);
+            localStorage.removeItem(ROLE_KEY);
 
             hideLoginModal();
             await initAuthenticatedSession();
