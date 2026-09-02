@@ -995,4 +995,153 @@ async def extract_document(
         raise HTTPException(status_code=500, detail=f"Extraction failed: {exc}")
 
 
+# ========================= Query Bot (JSON Q&A) =========================
+
+from pydantic import BaseModel, Field
+
+
+class QueryBotRequest(BaseModel):
+    extracted_data: Any = Field(..., description="Full extracted JSON object or record dictionary")
+    question: str = Field(..., description="User's natural language question about the extracted data")
+    doc_id: Optional[str] = Field(None, description="Optional document name for reference")
+
+
+@router.post("/api/query-bot/ask")
+async def ask_query_bot(req: QueryBotRequest) -> Dict[str, Any]:
+    """
+    Query Bot: Accepts the full extracted JSON from Layer 3 + user question.
+    Sends both to the LLM to inspect the JSON and return a direct, natural-language answer.
+    """
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+    if not req.extracted_data:
+        raise HTTPException(status_code=400, detail="Extracted JSON data cannot be empty.")
+
+    import os
+    import httpx
+    from starlette.concurrency import run_in_threadpool
+    from app.config import settings as app_settings
+
+    def _query_llm() -> str:
+        data_json_str = (
+            req.extracted_data
+            if isinstance(req.extracted_data, str)
+            else json.dumps(req.extracted_data, indent=2)
+        )
+
+        prompt = (
+            "You are a friendly document assistant. The user has uploaded a document and the following data was extracted from it:\n\n"
+            f"{data_json_str}\n\n"
+            "Answer the user's question naturally and conversationally, like a helpful human assistant. "
+            "Use the data above to answer. Do not show JSON, field names, asterisks, or technical formatting. "
+            "Just give a clear, plain English answer. If the information is not in the data, say so politely.\n\n"
+            f"User: {req.question}\nAssistant:"
+        )
+
+        api_key = (
+            getattr(app_settings, "sarvam_api_key", None)
+            or getattr(a_settings, "sarvam_api_key", None)
+            or os.getenv("IDP_SARVAM_API_KEY")
+            or os.getenv("SARVAM_API_KEY")
+            or ""
+        )
+        base_url = (
+            getattr(app_settings, "sarvam_base_url", None)
+            or getattr(a_settings, "sarvam_base_url", None)
+            or os.getenv("IDP_SARVAM_BASE_URL")
+            or os.getenv("SARVAM_BASE_URL")
+            or "https://api.sarvam.ai/v1"
+        ).rstrip("/")
+        model_name = (
+            getattr(app_settings, "sarvam_model", None)
+            or getattr(a_settings, "sarvam_model_name", None)
+            or os.getenv("IDP_SARVAM_MODEL_NAME")
+            or os.getenv("SARVAM_MODEL")
+            or "sarvam-105b"
+        )
+        backend = (
+            getattr(app_settings, "llm_provider", None)
+            or getattr(a_settings, "extraction_backend", None)
+            or os.getenv("IDP_EXTRACTION_BACKEND")
+            or os.getenv("LLM_PROVIDER")
+            or "sarvam"
+        )
+
+        try:
+            if (backend == "sarvam" or api_key) and api_key:
+                payload = {
+                    "model": model_name,
+                    "messages": [
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 400,
+                    "reasoning_effort": None,
+                }
+                headers = {
+                    "api-subscription-key": api_key,
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                }
+                resp = httpx.post(
+                    f"{base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                    timeout=60.0,
+                )
+                if resp.is_success:
+                    data = resp.json()
+                    choices = data.get("choices", [])
+                    if choices:
+                        msg = choices[0].get("message", {})
+                        content = msg.get("content") or msg.get("reasoning_content") or ""
+                        # Strip internal thinking tags if present
+                        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+                        # Strip markdown bold/italic markers
+                        content = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", content)
+                        # Strip "Assistant:" prefix if model echoed it
+                        content = re.sub(r"^Assistant:\s*", "", content.strip())
+                        if content.strip():
+                            return content.strip()
+                logger.warning(
+                    "query_bot.sarvam_error",
+                    status_code=resp.status_code,
+                    body=resp.text[:200],
+                )
+                if resp.status_code in (401, 402, 403):
+                    return f"Sarvam API Auth Error ({resp.status_code}): {resp.text}"
+
+            # Fallback to Ollama
+            ollama_url = getattr(a_settings, "ollama_base_url", "http://localhost:11434/v1").rstrip("/v1")
+            ollama_model = getattr(a_settings, "extraction_model_name", "llama3.1")
+            resp = httpx.post(
+                f"{ollama_url}/api/generate",
+                json={
+                    "model": ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                },
+                timeout=30.0,
+            )
+            if resp.status_code == 200:
+                return resp.json().get("response", "").strip()
+            return f"LLM error: HTTP {resp.status_code}"
+        except Exception as e:
+            logger.error("query_bot.failed", error=str(e))
+            return f"Error communicating with LLM: {str(e)}"
+
+    try:
+        answer = await run_in_threadpool(_query_llm)
+        return {
+            "success": True,
+            "question": req.question,
+            "answer": answer,
+            "doc_id": req.doc_id,
+        }
+    except Exception as exc:
+        logger.exception("query_bot.error")
+        raise HTTPException(status_code=500, detail=f"Query bot failed: {exc}")
+
+
+
 

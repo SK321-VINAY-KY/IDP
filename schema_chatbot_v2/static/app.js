@@ -251,6 +251,8 @@
                 loadUserActivityLogs();
             } else if (btn.dataset.tab === 'users') {
                 loadUsersList();
+            } else if (btn.dataset.tab === 'querybot') {
+                loadAllExtractedData();
             }
         });
     });
@@ -1271,6 +1273,7 @@
                     <div class="summary-box"><div class="lbl">Wall time</div><div class="val">${wall}</div></div>
                 </div>
                 ${sucs.length ? `
+                <div class="job-section">
                     <h3>✓ Successful (${sucs.length})</h3>
                     ${sucs.map((s, idx) => `
                         <div class="result-row ok" style="flex-direction: column; align-items: stretch; gap: 8px;">
@@ -1285,12 +1288,12 @@
                                 </div>
                             </div>
                             ${s.extracted_data ? `
-                            <div style="background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 10px 14px;">
+                            <div class="extracted-json-box">
                                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                                    <strong style="color: #38bdf8; font-size: 12.5px;">⚡ Layer 3 Extracted JSON (${escapeHtml(s.extracted_json)})</strong>
+                                    <strong class="extracted-json-title">⚡ Layer 3 Extracted JSON (${escapeHtml(s.extracted_json || 'record.json')})</strong>
                                     <button class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(JSON.stringify(${escapeHtml(JSON.stringify(s.extracted_data))}, null, 2)); this.textContent='✓ Copied!'; setTimeout(()=>this.textContent='Copy JSON', 1500)">Copy JSON</button>
                                 </div>
-                                <pre style="margin: 0; font-size: 12px; color: #a5f3fc; max-height: 160px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; background: transparent; border: none; padding: 0;">${escapeHtml(JSON.stringify(s.extracted_data, null, 2))}</pre>
+                                <pre class="extracted-json-pre">${escapeHtml(JSON.stringify(s.extracted_data, null, 2))}</pre>
                             </div>
                             ` : ''}
                         </div>
@@ -1701,6 +1704,120 @@
                 showStatus('createUserStatus', 'Failed to create user: ' + err.message, 'error');
             } finally {
                 btn.disabled = false;
+            }
+        });
+    }
+
+    // ======================= Query Bot Tab =======================
+
+    // Holds all extracted data merged from every completed job
+    let qbAllExtractedData = null;
+
+    async function loadAllExtractedData() {
+        try {
+            const data = await api('/pipeline/status');
+            const jobs = Object.values(data.jobs || {});
+            const completed = jobs.filter(j => j.status === 'completed');
+
+            if (!completed.length) {
+                qbAllExtractedData = null;
+                return;
+            }
+
+            const details = await Promise.all(
+                completed.map(j => api('/pipeline/jobs/' + j.job_id).catch(() => null))
+            );
+
+            const merged = {};
+            details.forEach(j => {
+                if (!j) return;
+                const sucs = j.successes || [];
+                sucs.forEach(s => {
+                    if (s.extracted_data) {
+                        const key = s.extracted_json || s.pdf || s.doc_id || 'document';
+                        merged[key] = s.extracted_data;
+                    }
+                });
+                if (!sucs.length && j.extracted_data) {
+                    merged[j.job_id] = j.extracted_data;
+                }
+            });
+
+            qbAllExtractedData = Object.keys(merged).length ? merged : null;
+        } catch (e) {
+            qbAllExtractedData = null;
+            console.warn('loadAllExtractedData error', e);
+        }
+    }
+
+    async function askTabQueryBot() {
+        const input = $('tab_qb_input');
+        const btn = $('tab_qb_btn');
+        const msgs = $('tab_qb_msgs');
+        if (!input || !btn || !msgs) return;
+
+        const question = input.value.trim();
+        if (!question) { input.focus(); return; }
+
+        if (!qbAllExtractedData) {
+            const errDiv = document.createElement('div');
+            errDiv.className = 'query-bot-msg bot error';
+            errDiv.textContent = 'No extracted data available yet. Run a pipeline job first.';
+            msgs.appendChild(errDiv);
+            msgs.scrollTop = msgs.scrollHeight;
+            return;
+        }
+
+        const userDiv = document.createElement('div');
+        userDiv.className = 'query-bot-msg user';
+        userDiv.textContent = question;
+        msgs.appendChild(userDiv);
+
+        const botDiv = document.createElement('div');
+        botDiv.className = 'query-bot-msg bot loading';
+        botDiv.textContent = 'Thinking…';
+        msgs.appendChild(botDiv);
+        msgs.scrollTop = msgs.scrollHeight;
+
+        input.value = '';
+        input.disabled = true;
+        btn.disabled = true;
+        btn.textContent = 'Asking…';
+
+        try {
+            const res = await api('/api/query-bot/ask', {
+                method: 'POST',
+                json: {
+                    extracted_data: qbAllExtractedData,
+                    question,
+                    doc_id: 'all extracted documents'
+                }
+            });
+            botDiv.className = 'query-bot-msg bot';
+            botDiv.textContent = res.answer || 'No answer returned.';
+        } catch (err) {
+            botDiv.className = 'query-bot-msg bot error';
+            botDiv.textContent = 'Error: ' + (err.message || String(err));
+        } finally {
+            input.disabled = false;
+            btn.disabled = false;
+            btn.textContent = 'Ask Bot';
+            input.focus();
+            msgs.scrollTop = msgs.scrollHeight;
+        }
+    }
+
+    if ($('tab_qb_btn')) $('tab_qb_btn').addEventListener('click', askTabQueryBot);
+    if ($('tab_qb_input')) {
+        $('tab_qb_input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); askTabQueryBot(); }
+        });
+    }
+    if ($('qbClearBtn')) {
+        $('qbClearBtn').addEventListener('click', () => {
+            const msgs = $('tab_qb_msgs');
+            if (msgs) {
+                msgs.innerHTML = '<div class="query-bot-msg bot">Hi! Ask me anything about the extracted document data.</div>';
             }
         });
     }

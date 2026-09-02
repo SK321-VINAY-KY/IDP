@@ -75,6 +75,10 @@ class Settings(BaseSettings):
                 data["extraction_backend"] = os.getenv("IDP_EXTRACTION_BACKEND") or os.getenv("EXTRACTION_BACKEND") or "sarvam"
             if not data.get("llm_provider"):
                 data["llm_provider"] = os.getenv("IDP_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "sarvam"
+            if not data.get("database_url") or data.get("database_url") == "postgresql://postgres:password@localhost:5432/idp":
+                env_db = os.getenv("IDP_DATABASE_URL") or os.getenv("DATABASE_URL")
+                if env_db:
+                    data["database_url"] = env_db
         return data
 
     # --- PaddleOCR engine settings ---

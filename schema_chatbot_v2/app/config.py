@@ -42,6 +42,7 @@ class Settings:
 
     # --- Storage ---
     session_store: str = os.getenv("SESSION_STORE", "memory")  # memory | dynamodb (future)
+    database_url: str = os.getenv("IDP_DATABASE_URL", os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/idp"))
 
     # --- Auth ---
     jwt_secret: str = os.getenv("JWT_SECRET", "idp-schema-pipeline-dev-secret-key-change-me")

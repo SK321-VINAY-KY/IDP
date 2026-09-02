@@ -133,3 +133,33 @@ def test_pdf_job_download_endpoint(admin_token):
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/pdf"
     assert resp.content.startswith(b"%PDF")
+
+
+def test_query_bot_endpoint(admin_token):
+    """Verify POST /api/query-bot/ask endpoint."""
+    from unittest.mock import MagicMock, patch
+    client = TestClient(app)
+    mock_llm_reply = "The total amount is $1500 for patient John Doe."
+
+    with patch("httpx.post") as mock_post:
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": mock_llm_reply}}]
+        }
+        mock_post.return_value = mock_resp
+
+        resp = client.post(
+            "/api/query-bot/ask",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "extracted_data": {"patient_name": "John Doe", "amount": 1500},
+                "question": "What is the total amount?",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+        assert "1500" in data["answer"]
+
