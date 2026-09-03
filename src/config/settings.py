@@ -8,11 +8,13 @@ Deps: pydantic-settings
 import os
 from pathlib import Path
 from typing import Any, Optional
+import dotenv
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ROOT_DIR = Path(__file__).resolve().parents[2]
 _ROOT_ENV = _ROOT_DIR / ".env"
+dotenv.load_dotenv(_ROOT_ENV, override=True)
 
 
 class Settings(BaseSettings):
@@ -79,6 +81,9 @@ class Settings(BaseSettings):
                 env_db = os.getenv("IDP_DATABASE_URL") or os.getenv("DATABASE_URL")
                 if env_db:
                     data["database_url"] = env_db
+            env_routing = os.getenv("IDP_ROUTING_MODE") or os.getenv("ROUTING_MODE")
+            if env_routing:
+                data["routing_mode"] = env_routing.strip()
         return data
 
     # --- PaddleOCR engine settings ---

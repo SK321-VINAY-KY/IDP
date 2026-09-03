@@ -151,16 +151,21 @@ class SarvamAdapter(LLMAdapter):
         user_prompt = build_extraction_user_prompt(state, user_message, context)
         sys_prompt = (
             EXTRACTION_SYSTEM_PROMPT
-            + "\n\nCRITICAL: Respond with ONLY the raw valid JSON object matching the ExtractionResult schema. No prose or explanations."
+            + "\n\nCRITICAL: Keep internal reasoning brief. Respond with ONLY the raw valid JSON object matching the ExtractionResult schema. No prose or explanations."
         )
         try:
             raw = self._chat(
                 system=sys_prompt,
                 user=user_prompt,
                 temperature=0.1,
-                max_tokens=4096,
+                reasoning_effort=None,
+                max_tokens=8192,
             )
             parsed = self._parse_json(raw)
+        except TruncatedCompletionError as exc:
+            logger.warning("Sarvam extraction truncated by max_tokens: %s", exc)
+            return ExtractionResult(extraction_failed=True, needs_clarification=True,
+                                     clarification_reason="model output truncated (hit max_tokens)")
         except Exception:
             logger.exception("Sarvam extraction call failed")
             return ExtractionResult(extraction_failed=True, needs_clarification=True,

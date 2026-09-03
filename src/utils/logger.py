@@ -171,6 +171,16 @@ class PipelineLogger:
                 extra={"error": str(exc)},
             )
 
+        # In-memory web admin system logs buffer (if running in web app)
+        try:
+            try:
+                from app.core.log_buffer import attach_buf_handler
+            except ImportError:
+                from schema_chatbot_v2.app.core.log_buffer import attach_buf_handler
+            attach_buf_handler(self.logger)
+        except Exception:
+            pass
+
     # --------------------------------------------------------
     # Internal dispatch
     # --------------------------------------------------------
