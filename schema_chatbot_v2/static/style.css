@@ -79,8 +79,16 @@
     box-sizing: border-box;
 }
 
+html {
+    height: 100%;
+}
+
 body {
     margin: 0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     background: var(--bg);
     color: var(--fg);
@@ -274,9 +282,10 @@ h2 {
 /* ========================= Content / Cards ========================= */
 
 .content {
-    padding: 24px;
-    max-width: 1400px;
-    margin: 0 auto;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 24px max(24px, calc((100% - 1400px) / 2));
 }
 
 .tab-panel {
@@ -522,6 +531,8 @@ h2 {
     grid-template-columns: 1.2fr 1fr;
     gap: 20px;
     align-items: stretch;
+    max-width: 1400px;
+    margin: 0 auto;
 }
 
 @media (max-width: 960px) {
@@ -536,11 +547,20 @@ h2 {
     height: 100%;
 }
 
+.chat-col:first-child {
+    position: relative;
+    height: 100%;
+    min-height: 0;
+}
+
 .chat-col:first-child .chat-card {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
     display: flex;
     flex-direction: column;
-    height: 100%;
-    min-height: 660px;
     margin-bottom: 0;
 }
 
@@ -559,6 +579,7 @@ h2 {
 
 .chat-log {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     padding: 16px;
     background: var(--input-bg);
@@ -568,7 +589,21 @@ h2 {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    min-height: 250px;
+}
+
+@media (max-width: 960px) {
+    .chat-col:first-child {
+        position: static;
+        height: auto;
+    }
+    .chat-col:first-child .chat-card {
+        position: static;
+        height: auto;
+    }
+    .chat-log {
+        min-height: 250px;
+        max-height: 480px;
+    }
 }
 
 .chat-msg {
@@ -606,6 +641,7 @@ h2 {
 .chat-input-row {
     display: flex;
     gap: 8px;
+    flex-shrink: 0;
 }
 
 .chat-input-row input {

@@ -476,8 +476,6 @@
     }
     function hideStatus(id) { const s = $(id); if (s) s.classList.add('hidden'); }
 
-    // ======================= Chatbot Tab =======================
-
     function addChatMsg(who, text) {
         const log = $('chatLog');
         if (!log) return;
