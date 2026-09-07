@@ -29,19 +29,21 @@ def get_token_for(client, username, password, role=Role.USER):
 
 
 def test_admin_create_user(client):
+    import uuid
+    new_user = f"newuser_{uuid.uuid4().hex[:6]}"
     admin_token = get_token_for(client, "admin", "changeme", role=Role.ADMIN)
     resp = client.post(
         "/admin/users",
-        json={"username": "newuser", "password": "newpassword", "role": "user"},
+        json={"username": new_user, "password": "newpassword", "role": "user"},
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert resp.status_code == 201
     data = resp.json()
-    assert data["username"] == "newuser"
+    assert data["username"] == new_user
     assert data["role"] == "user"
 
     # User can now login
-    login_resp = client.post("/auth/login", data={"username": "newuser", "password": "newpassword"})
+    login_resp = client.post("/auth/login", data={"username": new_user, "password": "newpassword"})
     assert login_resp.status_code == 200
 
 

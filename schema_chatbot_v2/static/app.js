@@ -1,1958 +1,1141 @@
-(function () {
-    'use strict';
+// ================= STATE MANAGEMENT =================
+const STORAGE_KEY = 'idp_studio_conversations';
+const ACTIVE_CHAT_KEY = 'idp_studio_active_chat';
+const AUTH_TOKEN_KEY = 'idp_access_token';
+const AUTH_USER_KEY = 'idp_user';
+const AUTH_ROLE_KEY = 'idp_role';
+const AUTH_FULLNAME_KEY = 'idp_fullname';
+const AUTH_EMAIL_KEY = 'idp_email';
+const THEME_KEY = 'idp_theme';
 
-    const API_BASE = window.location.origin;
-    const TOKEN_KEY = 'idp_auth_token';
-    const ROLE_KEY = 'idp_auth_role';
+let conversations = [];
+let currentChatId = null;
+let isProcessing = false;
+let isAnswering = false;
+let actionMenuTargetChatId = null;
+let currentUser = null;
 
-    let state = {
-        token: localStorage.getItem(TOKEN_KEY) || null,
-        role: localStorage.getItem(ROLE_KEY) || null,
-        username: null,
-        sessionId: null,
-        docs: [],
-        userDocs: [],
-        schemas: [],
-        currentSchema: null,
-        currentErrors: [],
-        currentState: 'idle',
-        completed: false,
-        jobs: [],
-        userJobs: [],
-        selectedJobId: null,
-        pipelineAvailable: false,
-        lastConfirmedSchemaId: null,
-    };
+// DOM Elements - Navigation & Theme
+const sidebar = document.getElementById('sidebar');
+const sidebarExpandBtn = document.getElementById('sidebar-expand-btn');
+const conversationsList = document.getElementById('conversations-list');
+const backendStatusPill = document.getElementById('backend-status-pill');
+const backendStatusText = document.getElementById('backend-status-text');
+const statusDot = document.getElementById('status-dot');
 
-    const $ = (id) => document.getElementById(id);
-    const el = (tag, cls, html) => {
-        const d = document.createElement(tag);
-        if (cls) d.className = cls;
-        if (html != null) d.innerHTML = html;
-        return d;
-    };
+const themeToggleBtn = document.getElementById('theme-toggle-btn');
+const themeIcon = document.getElementById('theme-icon');
+const themeLabel = document.getElementById('theme-label');
 
-    function fmtSize(bytes) {
-        if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-        return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+const llmModelBadge = document.getElementById('llm-model-badge');
+const llmModelText = document.getElementById('llm-model-text');
+
+// DOM Elements - User & Admin Header
+const adminNavBtn = document.getElementById('admin-nav-btn');
+const userMenuContainer = document.getElementById('user-menu-container');
+const userMenuBtn = document.getElementById('user-menu-btn');
+const userAvatarCircle = document.getElementById('user-avatar-circle');
+const userHeaderName = document.getElementById('user-header-name');
+const userDropdownMenu = document.getElementById('user-dropdown-menu');
+const userMenuAvatarLarge = document.getElementById('user-menu-avatar-large');
+const userMenuFullname = document.getElementById('user-menu-fullname');
+const userMenuEmail = document.getElementById('user-menu-email');
+const userMenuRoleBadge = document.getElementById('user-menu-role-badge');
+const adminDropdownSection = document.getElementById('admin-dropdown-section');
+
+// DOM Elements - Auth Cards & Modals
+const authContainer = document.getElementById('auth-container');
+const loginCard = document.getElementById('login-card');
+const signupCard = document.getElementById('signup-card');
+const loginForm = document.getElementById('login-form');
+const loginIdentifier = document.getElementById('login-identifier');
+const loginPassword = document.getElementById('login-password');
+const loginErrorMsg = document.getElementById('login-error-msg');
+const loginBtn = document.getElementById('login-btn');
+
+const signupForm = document.getElementById('signup-form');
+const signupFullname = document.getElementById('signup-fullname');
+const signupEmail = document.getElementById('signup-email');
+const signupPassword = document.getElementById('signup-password');
+const signupConfirmPassword = document.getElementById('signup-confirm-password');
+const signupErrorMsg = document.getElementById('signup-error-msg');
+const signupBtn = document.getElementById('signup-btn');
+
+const forgotPasswordModal = document.getElementById('forgot-password-modal');
+const forgotEmailInput = document.getElementById('forgot-email-input');
+
+const adminDashboardModal = document.getElementById('admin-dashboard-modal');
+const adminModalUsername = document.getElementById('admin-modal-username');
+
+// DOM Elements - Chat
+const topDocBadge = document.getElementById('top-doc-badge');
+const topDocName = document.getElementById('top-doc-name');
+const chatThreadContainer = document.getElementById('chat-thread-container');
+const emptyStateHero = document.getElementById('empty-state-hero');
+const messagesList = document.getElementById('messages-list');
+const attachedDocChip = document.getElementById('attached-doc-chip');
+const chipFilename = document.getElementById('chip-filename');
+const chipStatusText = document.getElementById('chip-status-text');
+const chipSpinner = document.getElementById('chip-spinner');
+const chipCheckIcon = document.getElementById('chip-check-icon');
+const plusMenuBtn = document.getElementById('plus-menu-btn');
+const nativeFileInput = document.getElementById('native-file-input');
+const chatInput = document.getElementById('chat-input');
+const sendBtn = document.getElementById('send-btn');
+const chatActionsMenu = document.getElementById('chat-actions-menu');
+const toast = document.getElementById('toast');
+
+// ================= INITIALIZATION =================
+
+window.addEventListener('DOMContentLoaded', () => {
+  initTheme();
+  checkAuth();
+  loadConversations();
+  checkBackendHealth();
+  setInterval(checkBackendHealth, 10000);
+
+  // Keyboard shortcut Ctrl+K / Cmd+K for new chat
+  window.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+      e.preventDefault();
+      createNewChat();
     }
+  });
 
-    function escapeHtml(str) {
-        if (str === null || str === undefined) return '';
-        return String(str)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+  // Close menus on click outside
+  document.addEventListener('click', (e) => {
+    if (chatActionsMenu && !chatActionsMenu.contains(e.target) && !e.target.closest('.actions-btn')) {
+      closeChatActionsMenu();
     }
-
-    async function api(path, opts = {}) {
-        const url = path.startsWith('http') ? path : API_BASE + path;
-        const headers = opts.headers ? { ...opts.headers } : {};
-
-        if (opts.json) {
-            headers['Content-Type'] = 'application/json';
-        }
-        if (state.token) {
-            headers['Authorization'] = 'Bearer ' + state.token;
-        }
-
-        const resp = await fetch(url, {
-            ...opts,
-            headers,
-            body: opts.json ? JSON.stringify(opts.json) : opts.body,
-        });
-
-        if (resp.status === 401) {
-            // Token expired or invalid
-            logout();
-            throw new Error('Session expired or unauthorized. Please log in again.');
-        }
-
-        const ct = resp.headers.get('content-type') || '';
-        const body = ct.includes('application/json') ? await resp.json() : await resp.text();
-        if (!resp.ok) {
-            const msg = typeof body === 'object' ? (body.detail || resp.statusText) : String(body || resp.statusText);
-            throw new Error(msg);
-        }
-        return body;
+    if (userMenuContainer && !userMenuContainer.contains(e.target)) {
+      closeUserDropdown();
     }
+  });
+});
 
-    // ======================= Auth & Role Management =======================
+// ================= THEME TOGGLE =================
 
-    function showLoginModal() {
-        const overlay = $('loginOverlay');
-        if (overlay) overlay.classList.remove('hidden');
-        const userHeader = $('userHeaderSection');
-        if (userHeader) userHeader.classList.add('hidden');
-    }
+function initTheme() {
+  const savedTheme = localStorage.getItem(THEME_KEY) || 'dark';
+  applyTheme(savedTheme);
+}
 
-    function hideLoginModal() {
-        const overlay = $('loginOverlay');
-        if (overlay) overlay.classList.add('hidden');
-    }
+function toggleTheme() {
+  const isLight = document.body.classList.contains('light-theme');
+  const newTheme = isLight ? 'dark' : 'light';
+  applyTheme(newTheme);
+  localStorage.setItem(THEME_KEY, newTheme);
+}
 
-    function logout() {
-        state.token = null;
-        state.role = null;
-        state.username = null;
-        state.sessionId = null;
-        localStorage.removeItem(TOKEN_KEY);
-        localStorage.removeItem(ROLE_KEY);
-        showLoginModal();
-    }
+function applyTheme(theme) {
+  if (theme === 'light') {
+    document.body.classList.add('light-theme');
+    if (themeIcon) themeIcon.textContent = '🌙';
+    if (themeLabel) themeLabel.textContent = 'Dark Mode';
+  } else {
+    document.body.classList.remove('light-theme');
+    if (themeIcon) themeIcon.textContent = '☀️';
+    if (themeLabel) themeLabel.textContent = 'Light Mode';
+  }
+}
 
-    async function handleLoginSubmit(e) {
-        e.preventDefault();
-        const username = $('loginUsername').value.trim();
-        const password = $('loginPassword').value;
-        const errorBox = $('loginError');
-        const submitBtn = $('loginSubmitBtn');
+// ================= AUTHENTICATION & RBAC =================
 
-        if (!username || !password) return;
+async function checkAuth() {
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
+  if (!token) {
+    showAuthContainer();
+    switchAuthView('login');
+    return;
+  }
 
-        submitBtn.disabled = true;
-        submitBtn.textContent = 'Signing in...';
-        hideStatus('loginError');
-
-        try {
-            const fd = new URLSearchParams();
-            fd.append('username', username);
-            fd.append('password', password);
-
-            const resp = await fetch(API_BASE + '/auth/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: fd.toString(),
-            });
-
-            const data = await resp.json();
-            if (!resp.ok) {
-                throw new Error(data.detail || 'Login failed');
-            }
-
-            state.token = data.access_token;
-            state.role = data.role;
-            localStorage.setItem(TOKEN_KEY, state.token);
-            localStorage.setItem(ROLE_KEY, state.role);
-
-            hideLoginModal();
-            await initAuthenticatedSession();
-        } catch (err) {
-            showStatus('loginError', err.message, 'error');
-        } finally {
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Sign In';
-        }
-    }
-
-    async function initAuthenticatedSession() {
-        try {
-            const me = await api('/auth/me');
-            state.username = me.username;
-            state.role = me.role;
-
-            const userHeader = $('userHeaderSection');
-            if (userHeader) userHeader.classList.remove('hidden');
-            const userBadge = $('userBadge');
-            if (userBadge) {
-                userBadge.textContent = `${state.username} (${state.role})`;
-                userBadge.className = 'badge ' + (state.role === 'admin' ? 'badge-primary' : 'badge-info');
-            }
-
-            applyRoleVisibility();
-
-            if (state.role === 'admin') {
-                loadDocuments();
-                loadSchemas();
-                loadPipelineStatus();
-                loadJobs();
-            } else {
-                loadUserDocuments();
-                loadUserJobs();
-            }
-
-            if (!state.sessionId) {
-                newSession(false);
-            }
-        } catch (err) {
-            console.warn('initAuthenticatedSession failed', err);
-            showLoginModal();
-        }
-    }
-
-    function applyRoleVisibility() {
-        const isAdmin = state.role === 'admin';
-
-        document.querySelectorAll('.admin-only').forEach(el => {
-            if (isAdmin) el.classList.remove('hidden');
-            else el.classList.add('hidden');
-        });
-
-        document.querySelectorAll('.user-only').forEach(el => {
-            if (!isAdmin) el.classList.remove('hidden');
-            else el.classList.add('hidden');
-        });
-    }
-
-    // ======================= Theme Toggle =======================
-    const THEME_KEY = 'idp_console_theme';
-
-    function initTheme() {
-        const saved = localStorage.getItem(THEME_KEY) || 'dark';
-        applyTheme(saved);
-
-        const btn = $('themeToggleBtn');
-        if (btn) {
-            btn.addEventListener('click', () => {
-                const current = document.documentElement.getAttribute('data-theme') || 'dark';
-                const next = current === 'dark' ? 'light' : 'dark';
-                applyTheme(next);
-            });
-        }
-    }
-
-    function applyTheme(theme) {
-        document.documentElement.setAttribute('data-theme', theme);
-        localStorage.setItem(THEME_KEY, theme);
-        const icon = $('themeIcon');
-        const label = $('themeLabel');
-        if (icon) icon.textContent = theme === 'dark' ? '☀️' : '🌙';
-        if (label) label.textContent = theme === 'dark' ? 'Light Mode' : 'Dark Mode';
-    }
-
-    // ======================= Tabs =======================
-
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-            btn.classList.add('active');
-            const targetPanel = $('tab-' + btn.dataset.tab);
-            if (targetPanel) targetPanel.classList.add('active');
-
-            if (btn.dataset.tab === 'chatbot') {
-                if (state.role === 'admin') {
-                    loadSchemas();
-                    loadPipelineStatus();
-                    loadJobs();
-                    if (state.docs.length === 0) loadDocuments();
-                    else renderDocChecklist();
-                } else {
-                    loadUserJobs();
-                }
-            } else if (btn.dataset.tab === 'documents') {
-                loadDocuments();
-            } else if (btn.dataset.tab === 'user-documents') {
-                loadUserDocuments();
-            } else if (btn.dataset.tab === 'logs') {
-                loadUserActivityLogs();
-            } else if (btn.dataset.tab === 'users') {
-                loadUsersList();
-            } else if (btn.dataset.tab === 'querybot') {
-                loadAllExtractedData();
-            }
-        });
+  try {
+    const res = await fetch('/auth/me', {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
     });
 
-    // ======================= Health / Boot =======================
-
-    async function checkHealth() {
-        try {
-            const data = await api('/health');
-            $('healthBadge').textContent = 'online';
-            $('healthBadge').className = 'badge badge-success';
-            $('llmBadge').textContent = 'LLM: ' + (data.llm_provider || 'unknown');
-        } catch (e) {
-            $('healthBadge').textContent = 'offline';
-            $('healthBadge').className = 'badge badge-danger';
-            $('llmBadge').textContent = '--';
-        }
-    }
-
-    // ======================= Admin Documents Tab =======================
-
-    async function loadDocuments() {
-        if (state.role !== 'admin') return;
-        try {
-            const data = await api('/documents');
-            state.docs = data.documents || [];
-            const outs = data.outputs || [];
-            if ($('docCount')) $('docCount').textContent = state.docs.length;
-            if ($('outCount')) $('outCount').textContent = outs.length;
-            renderDocList(state.docs, outs);
-            renderDocChecklist();
-        } catch (e) {
-            if ($('docList')) $('docList').innerHTML = `<p class="muted">Failed to load: ${e.message}</p>`;
-        }
-    }
-
-    function renderDocList(docs, outs) {
-        const docList = $('docList');
-        if (!docList) return;
-        if (!docs.length) {
-            docList.innerHTML = '<p class="muted">No documents yet. Upload PDFs above.</p>';
-        } else {
-            docList.innerHTML = '';
-            docs.forEach(d => {
-                const row = el('div', 'doc-item');
-                const info = el('div', 'doc-item-info');
-                info.innerHTML = `
-                    <span class="doc-icon">📄</span>
-                    <div>
-                        <div class="doc-name">${escapeHtml(d.name)}</div>
-                        <div class="doc-meta">${fmtSize(d.size)} • ${new Date(d.modified).toLocaleString()}</div>
-                    </div>
-                `;
-                const badge = d.has_output
-                    ? '<span class="badge doc-badge badge-success">processed</span>'
-                    : '<span class="badge doc-badge badge-mute">pending</span>';
-                const actions = el('div');
-                actions.innerHTML = badge;
-                row.appendChild(info);
-                row.appendChild(actions);
-                docList.appendChild(row);
-            });
-        }
-
-        const outList = $('outList');
-        if (!outList) return;
-        if (!outs.length) {
-            outList.innerHTML = '<p class="muted">No processed outputs yet. Run the pipeline.</p>';
-        } else {
-            outList.innerHTML = '';
-            outs.forEach(o => {
-                const row = el('div', 'doc-item');
-                const info = el('div', 'doc-item-info');
-                const schema = o.schema_ref ? ` • schema: <code>${escapeHtml(o.schema_ref.schema_id || '--')}</code>` : '';
-                info.innerHTML = `
-                    <span class="doc-icon">📝</span>
-                    <div>
-                        <div class="doc-name">${escapeHtml(o.name)}</div>
-                        <div class="doc-meta">${fmtSize(o.size)} • ${new Date(o.modified).toLocaleString()}${schema}</div>
-                    </div>
-                `;
-                row.appendChild(info);
-                outList.appendChild(row);
-            });
-        }
-    }
-
-    // ======================= User Documents Tab =======================
-
-    async function loadUserDocuments() {
-        try {
-            const data = await api('/me/documents');
-            state.userDocs = data.documents || [];
-            if ($('userDocCount')) $('userDocCount').textContent = state.userDocs.length;
-            renderUserDocList(state.userDocs);
-        } catch (e) {
-            if ($('userDocList')) $('userDocList').innerHTML = `<p class="muted">Failed to load: ${e.message}</p>`;
-        }
-    }
-
-    function renderUserDocList(docs) {
-        const host = $('userDocList');
-        if (!host) return;
-        if (!docs.length) {
-            host.innerHTML = '<p class="muted">No private documents yet. Upload PDFs above.</p>';
-        } else {
-            host.innerHTML = '';
-            docs.forEach(d => {
-                const row = el('div', 'doc-item');
-                const info = el('div', 'doc-item-info');
-                info.innerHTML = `
-                    <span class="doc-icon">📄</span>
-                    <div>
-                        <div class="doc-name">${escapeHtml(d.name)}</div>
-                        <div class="doc-meta">${fmtSize(d.size)} • ${new Date(d.modified).toLocaleString()}</div>
-                    </div>
-                `;
-                row.appendChild(info);
-                host.appendChild(row);
-            });
-        }
-    }
-
-    // ======================= Upload Handlers =======================
-
-    (function setupUploads() {
-        // Admin upload
-        const zone = $('uploadZone');
-        const input = $('fileInput');
-        const browse = $('browseBtn');
-
-        if (zone && input && browse) {
-            function handleFiles(files) {
-                const pdfs = Array.from(files).filter(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
-                if (!pdfs.length) return;
-                uploadAdminFiles(pdfs);
-            }
-
-            zone.addEventListener('click', (e) => {
-                if (e.target.tagName !== 'A') { input.click(); e.preventDefault(); }
-            });
-            browse.addEventListener('click', (e) => { input.click(); e.preventDefault(); });
-            input.addEventListener('change', (e) => handleFiles(e.target.files));
-            zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('dragover'); });
-            zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
-            zone.addEventListener('drop', (e) => {
-                e.preventDefault();
-                zone.classList.remove('dragover');
-                handleFiles(e.dataTransfer.files);
-            });
-
-            async function uploadAdminFiles(files) {
-                const fd = new FormData();
-                files.forEach(f => fd.append('files', f, f.name));
-                showStatus('uploadStatus', `Uploading ${files.length} file(s)...`);
-                try {
-                    const res = await api('/documents/upload', { method: 'POST', body: fd });
-                    showStatus('uploadStatus', `Saved ${res.count} file(s): ${res.saved.join(', ')}`, 'success');
-                    loadDocuments();
-                } catch (e) {
-                    showStatus('uploadStatus', 'Upload failed: ' + e.message, 'error');
-                }
-                setTimeout(() => hideStatus('uploadStatus'), 4000);
-            }
-        }
-
-        // User private upload
-        const uZone = $('userUploadZone');
-        const uInput = $('userFileInput');
-        const uBrowse = $('userBrowseBtn');
-
-        if (uZone && uInput && uBrowse) {
-            function handleUserFiles(files) {
-                const pdfs = Array.from(files).filter(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
-                if (!pdfs.length) return;
-                uploadUserFiles(pdfs);
-            }
-
-            uZone.addEventListener('click', (e) => {
-                if (e.target.tagName !== 'A') { uInput.click(); e.preventDefault(); }
-            });
-            uBrowse.addEventListener('click', (e) => { uInput.click(); e.preventDefault(); });
-            uInput.addEventListener('change', (e) => handleUserFiles(e.target.files));
-            uZone.addEventListener('dragover', (e) => { e.preventDefault(); uZone.classList.add('dragover'); });
-            uZone.addEventListener('dragleave', () => uZone.classList.remove('dragover'));
-            uZone.addEventListener('drop', (e) => {
-                e.preventDefault();
-                uZone.classList.remove('dragover');
-                handleUserFiles(e.dataTransfer.files);
-            });
-
-            async function uploadUserFiles(files) {
-                const fd = new FormData();
-                files.forEach(f => fd.append('files', f, f.name));
-                showStatus('userUploadStatus', `Uploading ${files.length} private file(s)...`);
-                try {
-                    const res = await api('/me/documents', { method: 'POST', body: fd });
-                    showStatus('userUploadStatus', `Saved ${res.count} file(s): ${res.saved.join(', ')}`, 'success');
-                    loadUserDocuments();
-                } catch (e) {
-                    showStatus('userUploadStatus', 'Upload failed: ' + e.message, 'error');
-                }
-                setTimeout(() => hideStatus('userUploadStatus'), 4000);
-            }
-        }
-    })();
-
-    if ($('refreshDocsBtn')) $('refreshDocsBtn').addEventListener('click', loadDocuments);
-    if ($('refreshUserDocsBtn')) $('refreshUserDocsBtn').addEventListener('click', loadUserDocuments);
-
-    function showStatus(id, html, kind) {
-        const s = $(id);
-        if (!s) return;
-        s.className = 'status-box' + (kind ? ' ' + kind : '');
-        s.innerHTML = html;
-        s.classList.remove('hidden');
-    }
-    function hideStatus(id) { const s = $(id); if (s) s.classList.add('hidden'); }
-
-    // ======================= Chatbot Tab =======================
-
-    function addChatMsg(who, text) {
-        const log = $('chatLog');
-        if (!log) return;
-        const wrap = el('div', 'chat-msg ' + who);
-        const b = el('div', 'msg-bubble');
-        b.textContent = text;
-        wrap.appendChild(b);
-        log.appendChild(wrap);
-        log.scrollTop = log.scrollHeight;
-    }
-
-    function setStateBadge(s, s2) {
-        const b = $('stateBadge');
-        if (!b) return;
-        const map = {
-            START: 'badge-info', REVIEW: 'badge-warn', COMPLETED: 'badge-success',
-        };
-        b.className = 'badge ' + (map[s] || 'badge-mute');
-        b.textContent = s.toLowerCase() + (s2 ? ' • ' + s2 : '');
-    }
-
-    let schemaSyncTimer = null;
-
-    function collectSchemaFromInputs() {
-        if (!state.currentSchema) {
-            state.currentSchema = { document_type: '', fields: [] };
-        }
-        const docTypeInput = $('editDocType');
-        if (docTypeInput) {
-            state.currentSchema.document_type = docTypeInput.value.trim().toLowerCase().replace(/\s+/g, '_');
-        }
-
-        const rows = document.querySelectorAll('#schemaPanel table.schema-table tbody tr');
-        const fields = [];
-        rows.forEach(tr => {
-            const nameInput = tr.querySelector('.field-name-input');
-            const typeSelect = tr.querySelector('.field-type-select');
-            const reqBtn = tr.querySelector('.req-toggle');
-            const descInput = tr.querySelector('.field-desc-input');
-
-            const name = nameInput ? nameInput.value.trim().toLowerCase().replace(/[\s-]+/g, '_') : '';
-            if (!name) return;
-
-            let rawType = typeSelect ? typeSelect.value : 'string';
-            let itemType = null;
-            if (rawType.startsWith('array[')) {
-                itemType = rawType.substring(6, rawType.length - 1);
-                rawType = 'array';
-            }
-
-            fields.push({
-                name: name,
-                type: rawType,
-                item_type: itemType,
-                required: reqBtn ? reqBtn.classList.contains('is-req') : true,
-                description: descInput ? descInput.value.trim() : ''
-            });
-        });
-
-        state.currentSchema.fields = fields;
-        const jsonView = $('schemaJsonView');
-        if (jsonView) {
-            jsonView.textContent = JSON.stringify(state.currentSchema, null, 2);
-        }
-        return state.currentSchema;
-    }
-
-    function validateAndRefreshUI() {
-        const schema = state.currentSchema;
-        const errs = $('schemaErrors');
-        if (!schema) {
-            if (errs) errs.classList.add('hidden');
-            if ($('confirmBtn')) $('confirmBtn').disabled = true;
-            return;
-        }
-
-        const errors = [];
-        if (!schema.document_type) errors.push('document_type is not set');
-        if (!schema.fields || !schema.fields.length) errors.push('schema has no fields');
-        const seen = new Set();
-        (schema.fields || []).forEach(f => {
-            if (!f.name) errors.push('field name cannot be blank');
-            else if (seen.has(f.name)) errors.push(`duplicate field name: ${f.name}`);
-            seen.add(f.name);
-            if (f.type === 'array' && !f.item_type) errors.push(`field '${f.name}' is an array but has no item_type`);
-        });
-
-        state.currentErrors = errors;
-        if (errors.length) {
-            if (errs) {
-                errs.innerHTML = '<strong>⚠️ Schema issues:</strong><ul>' + errors.map(e => '<li>' + escapeHtml(e) + '</li>').join('') + '</ul>';
-                errs.classList.remove('hidden');
-            }
-        } else {
-            if (errs) errs.classList.add('hidden');
-        }
-
-        const canConfirm = (state.currentState === 'REVIEW' || state.currentState === 'START') && !errors.length && (schema.fields || []).length > 0 && !!schema.document_type;
-        if ($('confirmBtn')) $('confirmBtn').disabled = state.completed || !canConfirm;
-    }
-
-    async function syncSchemaToServer() {
-        if (!state.sessionId || state.completed) return;
-        const syncStatus = $('schemaSyncStatus');
-        if (syncStatus) syncStatus.textContent = '⏳ Saving...';
-        try {
-            const data = await api('/session/' + state.sessionId + '/schema', {
-                method: 'POST',
-                json: {
-                    document_type: state.currentSchema.document_type,
-                    fields: state.currentSchema.fields
-                }
-            });
-            state.currentState = data.state;
-            state.currentErrors = data.errors || [];
-            validateAndRefreshUI();
-            if (syncStatus) syncStatus.textContent = '✓ Saved';
-            setTimeout(() => { if (syncStatus) syncStatus.textContent = '✓ Interactive Editor'; }, 1500);
-        } catch (e) {
-            if (syncStatus) syncStatus.textContent = '⚠️ Sync error';
-        }
-    }
-
-    function scheduleSchemaSync() {
-        collectSchemaFromInputs();
-        validateAndRefreshUI();
-        clearTimeout(schemaSyncTimer);
-        schemaSyncTimer = setTimeout(syncSchemaToServer, 500);
-    }
-
-    function addNewSchemaField() {
-        if (!state.currentSchema) {
-            state.currentSchema = { document_type: 'document', fields: [] };
-        }
-        const count = (state.currentSchema.fields || []).length + 1;
-        state.currentSchema.fields.push({
-            name: 'field_' + count,
-            type: 'string',
-            required: true,
-            description: ''
-        });
-        renderSchemaPanel();
-        scheduleSchemaSync();
-        setTimeout(() => {
-            const inputs = document.querySelectorAll('.field-name-input');
-            if (inputs.length) {
-                inputs[inputs.length - 1].focus({ preventScroll: true });
-                inputs[inputs.length - 1].select();
-            }
-        }, 50);
-    }
-
-    function renderSchemaPanel() {
-        const schema = state.currentSchema;
-        const panel = $('schemaPanel');
-        const errs = $('schemaErrors');
-        const addBtn = $('addSchemaFieldBtn');
-
-        if (!panel) return;
-
-        if (!schema) {
-            panel.innerHTML = '<p class="muted">No schema yet. Start a session, upload samples, or click "+ Add Field".</p>';
-            if (errs) errs.classList.add('hidden');
-            if ($('copySchemaBtn')) $('copySchemaBtn').disabled = true;
-            if ($('printSchemaBtn')) $('printSchemaBtn').disabled = true;
-            if ($('downloadSchemaPdfHeaderBtn')) $('downloadSchemaPdfHeaderBtn').disabled = true;
-            if ($('downloadSchemaJsonHeaderBtn')) $('downloadSchemaJsonHeaderBtn').disabled = true;
-            if ($('confirmBtn')) $('confirmBtn').disabled = true;
-            if (addBtn) addBtn.disabled = !state.sessionId;
-            return;
-        }
-
-        if ($('copySchemaBtn')) $('copySchemaBtn').disabled = false;
-        if ($('printSchemaBtn')) $('printSchemaBtn').disabled = false;
-        const canDownloadSchema = !!(state.completed || state.lastConfirmedSchemaId);
-        if ($('downloadSchemaPdfHeaderBtn')) $('downloadSchemaPdfHeaderBtn').disabled = !canDownloadSchema;
-        if ($('downloadSchemaJsonHeaderBtn')) $('downloadSchemaJsonHeaderBtn').disabled = !canDownloadSchema;
-        if (addBtn) addBtn.disabled = state.completed;
-
-        const docType = schema.document_type || '';
-        const fields = schema.fields || [];
-
-        const typeOptions = [
-            'string', 'number', 'integer', 'boolean', 'date',
-            'array[string]', 'array[object]', 'object'
-        ];
-
-        let html = `
-            <div class="doc-type-edit-row">
-                <label for="editDocType">Document Type:</label>
-                <input id="editDocType" class="doc-type-input" type="text" value="${escapeHtml(docType)}" placeholder="e.g. resume, invoice, insurance_claim" ${state.completed ? 'disabled' : ''}>
-            </div>
-        `;
-
-        if (!fields.length) {
-            html += `
-                <div style="padding: 16px; text-align: center;">
-                    <p class="muted small">No fields defined yet.</p>
-                    <button type="button" class="btn btn-outline btn-sm" id="addFieldInlineBtn" ${state.completed ? 'disabled' : ''}>➕ Add First Field</button>
-                </div>
-            `;
-        } else {
-            html += `
-                <table class="schema-table">
-                    <thead>
-                        <tr>
-                            <th style="width: 28%;">Field Name</th>
-                            <th style="width: 26%;">Type</th>
-                            <th style="width: 14%; text-align: center;">Req</th>
-                            <th style="width: 26%;">Description</th>
-                            <th style="width: 6%; text-align: center;"></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-            `;
-
-            fields.forEach((f, idx) => {
-                const curType = f.type === 'array' ? (f.item_type ? `array[${f.item_type}]` : 'array[string]') : (f.type || 'string');
-                const isReq = !!f.required;
-                const opts = typeOptions.map(t => `<option value="${t}" ${t === curType ? 'selected' : ''}>${t}</option>`).join('');
-
-                html += `
-                    <tr data-idx="${idx}">
-                        <td>
-                            <input type="text" class="schema-input field-name-input" data-field="name" value="${escapeHtml(f.name || '')}" placeholder="field_name" ${state.completed ? 'disabled' : ''}>
-                        </td>
-                        <td>
-                            <select class="schema-select field-type-select" data-field="type" ${state.completed ? 'disabled' : ''}>
-                                ${opts}
-                            </select>
-                        </td>
-                        <td style="text-align: center;">
-                            <button type="button" class="req-toggle ${isReq ? 'is-req' : 'is-opt'}" data-idx="${idx}" ${state.completed ? 'disabled' : ''}>
-                                ${isReq ? 'YES' : 'NO'}
-                            </button>
-                        </td>
-                        <td>
-                            <input type="text" class="schema-input field-desc-input" data-field="description" value="${escapeHtml(f.description || '')}" placeholder="Description..." ${state.completed ? 'disabled' : ''}>
-                        </td>
-                        <td style="text-align: center;">
-                            <button type="button" class="btn-del-field" data-idx="${idx}" title="Delete field" ${state.completed ? 'disabled' : ''}>✕</button>
-                        </td>
-                    </tr>
-                `;
-            });
-
-            html += `
-                    </tbody>
-                </table>
-                <div class="schema-bottom-actions">
-                    <button type="button" class="btn btn-ghost btn-sm" id="addFieldInlineBtn" ${state.completed ? 'disabled' : ''}>➕ Add Field</button>
-                    <span id="schemaSyncStatus" class="sync-badge">✓ Interactive Editor</span>
-                </div>
-            `;
-        }
-
-        html += `<details style="margin-top:12px"><summary class="muted small" style="cursor:pointer">View Full JSON Schema</summary><pre id="schemaJsonView">${escapeHtml(JSON.stringify(schema, null, 2))}</pre></details>`;
-        panel.innerHTML = html;
-
-        validateAndRefreshUI();
-    }
-
-    function handleChatResponse(data) {
-        state.sessionId = data.session_id;
-        state.currentState = data.state;
-        state.currentSchema = data.schema;
-        state.currentErrors = data.errors || [];
-        state.completed = !!data.completed;
-        if (data.completed && data.schema_id) {
-            state.lastConfirmedSchemaId = data.schema_id;
-        }
-        if (data.message) addChatMsg('bot', data.message);
-        setStateBadge(data.state, data.completed ? 'confirmed' : '');
-        renderSchemaPanel();
-        if ($('chatInput')) $('chatInput').disabled = false;
-        if ($('sendBtn')) $('sendBtn').disabled = false;
-        if (data.completed) {
-            showStatus('confirmStatus', `🎉 Schema confirmed! schema_id = <code>${escapeHtml(data.schema_id)}</code>. Saved to schema_registry/.`, 'success');
-            if ($('postConfirmBox')) {
-                $('postConfirmBox').classList.remove('hidden');
-                $('quickRunPipelineBtn').disabled = false;
-            }
-            if (state.role === 'admin') {
-                setTimeout(() => {
-                    loadSchemas();
-                    loadPipelineStatus();
-                }, 300);
-            }
-        } else {
-            if ($('postConfirmBox')) $('postConfirmBox').classList.add('hidden');
-        }
-    }
-
-    async function newSession(shouldFocus = true) {
-        try {
-            state.lastConfirmedSchemaId = null;
-            if ($('postConfirmBox')) $('postConfirmBox').classList.add('hidden');
-            hideStatus('confirmStatus');
-            const data = await api('/chat', { method: 'POST', json: { session_id: null, message: null } });
-            state.sessionId = data.session_id;
-            if ($('chatLog')) $('chatLog').innerHTML = '';
-            handleChatResponse(data);
-            if (shouldFocus && $('chatInput')) {
-                $('chatInput').focus({ preventScroll: true });
-            }
-        } catch (e) {
-            addChatMsg('bot', 'Failed to start session: ' + e.message);
-        }
-    }
-
-    if ($('newSessionBtn')) $('newSessionBtn').addEventListener('click', () => newSession(true));
-
-    async function sendChat() {
-        const input = $('chatInput');
-        const msg = input ? input.value.trim() : '';
-        if (!msg || !state.sessionId) return;
-        input.value = '';
-        addChatMsg('user', msg);
-        input.disabled = true;
-        if ($('sendBtn')) $('sendBtn').disabled = true;
-        try {
-            const data = await api('/chat', {
-                method: 'POST',
-                json: { session_id: state.sessionId, message: msg }
-            });
-            handleChatResponse(data);
-        } catch (e) {
-            addChatMsg('bot', 'Error: ' + e.message);
-            if (input) input.disabled = false;
-            if ($('sendBtn')) $('sendBtn').disabled = false;
-        }
-    }
-
-    if ($('sendBtn')) $('sendBtn').addEventListener('click', sendChat);
-    if ($('chatInput')) {
-        $('chatInput').addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') sendChat();
-        });
-    }
-
-    if ($('printSchemaBtn')) {
-        $('printSchemaBtn').addEventListener('click', async () => {
-            if (!state.sessionId) return;
-            try {
-                const data = await api('/session/' + state.sessionId);
-                state.currentSchema = data.schema;
-                state.currentState = data.state;
-                state.completed = data.completed;
-                renderSchemaPanel();
-            } catch (e) {
-                addChatMsg('bot', 'Error re-print schema: ' + e.message);
-            }
-        });
-    }
-
-    if ($('copySchemaBtn')) {
-        $('copySchemaBtn').addEventListener('click', async () => {
-            if (!state.currentSchema) return;
-            try {
-                await navigator.clipboard.writeText(JSON.stringify(state.currentSchema, null, 2));
-                const old = $('copySchemaBtn').textContent;
-                $('copySchemaBtn').textContent = '✓ Copied!';
-                setTimeout(() => { $('copySchemaBtn').textContent = old; }, 1500);
-            } catch (e) {
-                addChatMsg('bot', 'Copy failed: ' + e.message);
-            }
-        });
-    }
-
-    if ($('confirmBtn')) {
-        $('confirmBtn').addEventListener('click', async () => {
-            if (!state.sessionId || state.completed) return;
-            if ($('chatInput')) $('chatInput').value = '/confirm';
-            sendChat();
-        });
-    }
-
-    if ($('downloadSchemaPdfHeaderBtn')) {
-        $('downloadSchemaPdfHeaderBtn').addEventListener('click', () => downloadSchemaPdf());
-    }
-    if ($('downloadSchemaJsonHeaderBtn')) {
-        $('downloadSchemaJsonHeaderBtn').addEventListener('click', () => downloadSchemaJson());
-    }
-    if ($('downloadSchemaPdfBtn')) {
-        $('downloadSchemaPdfBtn').addEventListener('click', () => downloadSchemaPdf());
-    }
-    if ($('downloadSchemaJsonBtn')) {
-        $('downloadSchemaJsonBtn').addEventListener('click', () => downloadSchemaJson());
-    }
-
-    if ($('addSchemaFieldBtn')) {
-        $('addSchemaFieldBtn').addEventListener('click', addNewSchemaField);
-    }
-
-    if ($('schemaPanel')) {
-        $('schemaPanel').addEventListener('input', (e) => {
-            if (e.target.matches('#editDocType, .field-name-input, .field-desc-input')) {
-                scheduleSchemaSync();
-            }
-        });
-
-        $('schemaPanel').addEventListener('change', (e) => {
-            if (e.target.matches('.field-type-select')) {
-                scheduleSchemaSync();
-            }
-        });
-
-        $('schemaPanel').addEventListener('click', (e) => {
-            const toggleBtn = e.target.closest('.req-toggle');
-            if (toggleBtn) {
-                const isReq = toggleBtn.classList.contains('is-req');
-                toggleBtn.classList.toggle('is-req', !isReq);
-                toggleBtn.classList.toggle('is-opt', isReq);
-                toggleBtn.textContent = !isReq ? 'YES' : 'NO';
-                scheduleSchemaSync();
-                return;
-            }
-
-            const delBtn = e.target.closest('.btn-del-field');
-            if (delBtn) {
-                const idx = parseInt(delBtn.getAttribute('data-idx'), 10);
-                if (!isNaN(idx) && state.currentSchema && state.currentSchema.fields) {
-                    state.currentSchema.fields.splice(idx, 1);
-                    renderSchemaPanel();
-                    scheduleSchemaSync();
-                }
-                return;
-            }
-
-            if (e.target.matches('#addFieldInlineBtn')) {
-                addNewSchemaField();
-            }
-        });
-    }
-
-    // Sample inference upload
-    (function setupInferUpload() {
-        const input = $('inferInput');
-        const browse = $('inferBrowseBtn');
-        const sel = $('inferSelected');
-        const run = $('inferBtn');
-        let files = [];
-
-        if (!input || !browse || !run) return;
-
-        browse.addEventListener('click', () => input.click());
-        input.addEventListener('change', (e) => {
-            files = Array.from(e.target.files).filter(f =>
-                f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
-            sel.textContent = files.length ? `${files.length} file(s): ${files.map(f => f.name).join(', ')}` : 'no files';
-            run.disabled = !(files.length >= 2 && files.length <= 5);
-        });
-
-        run.addEventListener('click', async () => {
-            if (!(files.length >= 2 && files.length <= 5)) return;
-            const fd = new FormData();
-            files.forEach(f => fd.append('files', f, f.name));
-            if (state.sessionId) fd.append('session_id', state.sessionId);
-
-            showStatus('inferStatus', 'Running Sarvam Doc AI + schema inference... expect 60-180s for 2 PDFs. Please be patient.', 'warn');
-            run.disabled = true;
-            const t0 = Date.now();
-            try {
-                const data = await api('/schema/infer', { method: 'POST', body: fd, timeout: 0 });
-                const secs = (Date.now() - t0) / 1000;
-                if ($('chatLog') && !$('chatLog').children.length) {
-                    $('chatLog').innerHTML = '';
-                }
-                addChatMsg('bot', `[Inference returned in ${secs.toFixed(1)}s]`);
-                handleChatResponse(data);
-                showStatus('inferStatus', `Inference complete (${secs.toFixed(1)}s).`, 'success');
-                setTimeout(() => hideStatus('inferStatus'), 5000);
-            } catch (e) {
-                showStatus('inferStatus', 'Inference failed: ' + e.message, 'error');
-            } finally {
-                run.disabled = !(files.length >= 2 && files.length <= 5);
-            }
-        });
-    })();
-
-    // ======================= Admin Pipeline Section =======================
-
-    function renderDocChecklist() {
-        const host = $('docChecklist');
-        const allBtn = $('selAllBtn');
-        const noneBtn = $('selNoneBtn');
-        if (!host) return;
-        if (!state.docs.length) {
-            host.innerHTML = '<p class="muted small">Load documents from the Documents tab first.</p>';
-            if (allBtn) allBtn.disabled = true;
-            if (noneBtn) noneBtn.disabled = true;
-            return;
-        }
-        if (allBtn) allBtn.disabled = false;
-        if (noneBtn) noneBtn.disabled = false;
-        host.innerHTML = '';
-        state.docs.forEach(d => {
-            const row = el('label', 'check-item');
-            row.innerHTML = `
-                <input type="checkbox" class="doc-check" value="${escapeHtml(d.name)}" checked>
-                <span class="cname">${escapeHtml(d.name)}</span>
-                <span class="cmeta">${fmtSize(d.size)}</span>
-                <span class="cmeta">${d.has_output ? 're-run' : 'pending'}</span>
-            `;
-            host.appendChild(row);
-        });
-        updateRunBtn();
-    }
-
-    if ($('selAllBtn')) {
-        $('selAllBtn').addEventListener('click', () => {
-            document.querySelectorAll('.doc-check').forEach(c => c.checked = true);
-            updateRunBtn();
-        });
-    }
-    if ($('selNoneBtn')) {
-        $('selNoneBtn').addEventListener('click', () => {
-            document.querySelectorAll('.doc-check').forEach(c => c.checked = false);
-            updateRunBtn();
-        });
-    }
-
-    function updateRunBtn() {
-        const runBtn = $('runPipelineBtn');
-        if (!runBtn) return;
-        const anyChecked = document.querySelectorAll('.doc-check:checked').length > 0;
-        const sel = $('schemaSelect');
-        runBtn.disabled = !(anyChecked && state.pipelineAvailable && sel && !!sel.value);
-    }
-
-    if ($('docChecklist')) $('docChecklist').addEventListener('change', updateRunBtn);
-
-    async function loadSchemas() {
-        if (state.role !== 'admin') return;
-        try {
-            const data = await api('/schemas');
-            state.schemas = data.schemas || [];
-            const sel = $('schemaSelect');
-            if (!sel) return;
-            if (!state.schemas.length) {
-                sel.innerHTML = '<option value="">-- no confirmed schemas --</option>';
-                sel.disabled = true;
-            } else {
-                sel.innerHTML = '<option value="">-- select a schema --</option>' +
-                    state.schemas.map(s => `<option value="${escapeHtml(s.schema_id)}">
-                        ${escapeHtml(s.document_type || 'untitled')} • ${s.field_count} fields • ${escapeHtml(s.schema_id.slice(0, 12))}
-                    </option>`).join('');
-                sel.disabled = false;
-            }
-            sel.removeEventListener('change', updateRunBtn);
-            sel.addEventListener('change', updateRunBtn);
-            updateRunBtn();
-        } catch (e) {
-            console.warn('loadSchemas failed', e);
-        }
-    }
-
-    if ($('refreshSchemasBtn')) $('refreshSchemasBtn').addEventListener('click', loadSchemas);
-
-    async function loadPipelineStatus() {
-        if (state.role !== 'admin') return;
-        try {
-            const data = await api('/pipeline/status');
-            state.pipelineAvailable = !!data.available;
-            const badge = $('pipelineAvail');
-            if (badge) {
-                if (data.available) {
-                    badge.textContent = '✓ available • ' + (data.routing_mode || '');
-                    badge.className = 'badge badge-success';
-                } else {
-                    badge.textContent = '✕ unavailable';
-                    badge.className = 'badge badge-danger';
-                }
-            }
-            updateRunBtn();
-        } catch (e) {
-            console.warn('pipeline status failed', e);
-        }
-    }
-
-    function jobStatusBadgeClass(s) {
-        return {
-            queued: 'badge-warn',
-            running: 'badge-info',
-            paused: 'badge-warn',
-            killed: 'badge-danger',
-            completed: 'badge-success'
-        }[s] || 'badge-mute';
-    }
-
-    async function pauseJob(jobId, e) {
-        if (e) e.stopPropagation();
-        try {
-            await api(`/pipeline/jobs/${jobId}/pause`, { method: 'POST' });
-            loadJobs();
-            if (state.selectedJobId === jobId) loadJobDetail(jobId);
-        } catch (err) {
-            alert('Failed to pause job: ' + err.message);
-        }
-    }
-
-    async function resumeJob(jobId, e) {
-        if (e) e.stopPropagation();
-        try {
-            await api(`/pipeline/jobs/${jobId}/resume`, { method: 'POST' });
-            loadJobs();
-            if (state.selectedJobId === jobId) loadJobDetail(jobId);
-        } catch (err) {
-            alert('Failed to resume job: ' + err.message);
-        }
-    }
-
-    async function killJob(jobId, e) {
-        if (e) e.stopPropagation();
-        if (!confirm(`Are you sure you want to kill / cancel job ${jobId}?`)) return;
-        try {
-            await api(`/pipeline/jobs/${jobId}/kill`, { method: 'POST' });
-            loadJobs();
-            if (state.selectedJobId === jobId) loadJobDetail(jobId);
-        } catch (err) {
-            alert('Failed to kill job: ' + err.message);
-        }
-    }
-
-    async function loadJobs() {
-        if (state.role !== 'admin') return;
-        try {
-            const data = await api('/pipeline/status');
-            const jobs = Object.values(data.jobs || {});
-            state.jobs = jobs;
-            const host = $('jobList');
-            if (!host) return;
-            if (!jobs.length) {
-                host.innerHTML = '<p class="muted">No jobs yet.</p>';
-                return;
-            }
-            host.innerHTML = '';
-            jobs.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
-            jobs.forEach(j => {
-                const done = j.completed || 0;
-                const total = j.total || 0;
-                const pct = total ? Math.round(100 * done / total) : 0;
-                const row = el('div', 'job-item');
-
-                let actionButtons = '';
-                if (j.status === 'running' || j.status === 'queued') {
-                    actionButtons = `
-                        <button class="btn btn-ghost btn-sm" title="Pause job" data-action="pause" data-job="${escapeHtml(j.job_id)}">⏸</button>
-                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}">✕</button>
-                    `;
-                } else if (j.status === 'paused') {
-                    actionButtons = `
-                        <button class="btn btn-ghost btn-sm" title="Resume job" style="color:#6ee7b7" data-action="resume" data-job="${escapeHtml(j.job_id)}">▶</button>
-                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}">✕</button>
-                    `;
-                }
-
-                row.innerHTML = `
-                    <div class="job-item-left">
-                        <div class="job-id">${escapeHtml(j.job_id)}</div>
-                        <div class="job-meta">${escapeHtml(j.created_at || '')} • schema: ${escapeHtml(j.schema_id || '--')} • ${done}/${total} docs</div>
-                    </div>
-                    <div class="job-item-right">
-                        <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
-                        <span class="badge ${jobStatusBadgeClass(j.status)}">${escapeHtml(j.status)}</span>
-                        <div class="job-item-actions">${actionButtons}</div>
-                    </div>
-                `;
-                row.addEventListener('click', (e) => {
-                    const btn = e.target.closest('button[data-action]');
-                    if (btn) {
-                        e.stopPropagation();
-                        const act = btn.dataset.action;
-                        const jid = btn.dataset.job;
-                        if (act === 'pause') pauseJob(jid, e);
-                        else if (act === 'resume') resumeJob(jid, e);
-                        else if (act === 'kill') killJob(jid, e);
-                        return;
-                    }
-                    loadJobDetail(j.job_id, true);
-                });
-                host.appendChild(row);
-            });
-            if (state.selectedJobId) loadJobDetail(state.selectedJobId, false);
-        } catch (e) {
-            console.warn('loadJobs failed', e);
-        }
-    }
-
-    async function pauseUserJob(jobId, e) {
-        if (e) e.stopPropagation();
-        try {
-            await api(`/me/pipeline/jobs/${jobId}/pause`, { method: 'POST' });
-            loadUserJobs();
-            loadJobDetail(jobId);
-        } catch (err) {
-            alert('Pause failed: ' + err.message);
-        }
-    }
-
-    async function resumeUserJob(jobId, e) {
-        if (e) e.stopPropagation();
-        try {
-            await api(`/me/pipeline/jobs/${jobId}/resume`, { method: 'POST' });
-            loadUserJobs();
-            loadJobDetail(jobId);
-        } catch (err) {
-            alert('Resume failed: ' + err.message);
-        }
-    }
-
-    async function killUserJob(jobId, e) {
-        if (e) e.stopPropagation();
-        if (!confirm(`Cancel job ${jobId}?`)) return;
-        try {
-            await api(`/me/pipeline/jobs/${jobId}/kill`, { method: 'POST' });
-            loadUserJobs();
-            loadJobDetail(jobId);
-        } catch (err) {
-            alert('Kill failed: ' + err.message);
-        }
-    }
-
-    async function loadJobDetail(jobId, shouldScroll = false) {
-        if (!jobId || jobId === 'undefined') return;
-        state.selectedJobId = jobId;
-        try {
-            const apiPath = state.role === 'user' ? ('/me/pipeline/jobs/' + jobId) : ('/pipeline/jobs/' + jobId);
-            const j = await api(apiPath);
-            window.__currentJobDetail = j;
-
-            const isUser = state.role === 'user';
-            const card = isUser ? ($('userJobDetailCard') || $('jobDetailCard')) : $('jobDetailCard');
-            if (card) {
-                card.classList.remove('hidden');
-                if (shouldScroll) {
-                    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                }
-            }
-            const idSpan = isUser ? ($('userDetailJobId') || $('detailJobId')) : $('detailJobId');
-            if (idSpan) idSpan.textContent = jobId;
-            const st = isUser ? ($('userDetailStatus') || $('detailStatus')) : $('detailStatus');
-            if (st) {
-                st.textContent = j.status;
-                st.className = 'badge ' + jobStatusBadgeClass(j.status);
-            }
-
-            const pauseBtn = isUser ? ($('userJobPauseBtn') || $('jobPauseBtn')) : $('jobPauseBtn');
-            const resumeBtn = isUser ? ($('userJobResumeBtn') || $('jobResumeBtn')) : $('jobResumeBtn');
-            const killBtn = isUser ? ($('userJobKillBtn') || $('jobKillBtn')) : $('jobKillBtn');
-
-            if (pauseBtn && resumeBtn && killBtn) {
-                if (j.status === 'running' || j.status === 'queued') {
-                    pauseBtn.classList.remove('hidden');
-                    resumeBtn.classList.add('hidden');
-                    killBtn.classList.remove('hidden');
-                } else if (j.status === 'paused') {
-                    pauseBtn.classList.add('hidden');
-                    resumeBtn.classList.remove('hidden');
-                    killBtn.classList.remove('hidden');
-                } else {
-                    pauseBtn.classList.add('hidden');
-                    resumeBtn.classList.add('hidden');
-                    killBtn.classList.add('hidden');
-                }
-
-                pauseBtn.onclick = (e) => isUser ? pauseUserJob(jobId, e) : pauseJob(jobId, e);
-                resumeBtn.onclick = (e) => isUser ? resumeUserJob(jobId, e) : resumeJob(jobId, e);
-                killBtn.onclick = (e) => isUser ? killUserJob(jobId, e) : killJob(jobId, e);
-            }
-
-            const host = isUser ? ($('userJobDetail') || $('jobDetail')) : $('jobDetail');
-            if (!host) return;
-
-            const newJsonStr = JSON.stringify(j);
-            // Skip full DOM rebuild if this job's data is identical to what's already rendered
-            if (window.__renderedJobId === j.job_id && window.__renderedJobJson === newJsonStr && host.children.length > 0) {
-                return;
-            }
-
-            // Capture current scroll positions before replacing innerHTML
-            const fullJsonEl = document.getElementById('fullJsonView');
-            const preScrollTop = fullJsonEl ? fullJsonEl.scrollTop : 0;
-            const preScrollLeft = fullJsonEl ? fullJsonEl.scrollLeft : 0;
-            const hostScrollTop = host.scrollTop;
-
-            const wall = j.wall_time_s ? `${j.wall_time_s.toFixed(1)}s` : '--';
-            const sucs = j.successes || [];
-            const fails = j.failures || [];
-
-            host.innerHTML = `
-                <div class="job-summary-grid">
-                    <div class="summary-box"><div class="lbl">Status</div><div class="val">${escapeHtml(j.status)}</div></div>
-                    <div class="summary-box"><div class="lbl">Docs</div><div class="val">${sucs.length + fails.length} / ${(j.targets || []).length || 0}</div></div>
-                    <div class="summary-box"><div class="lbl">Success</div><div class="val" style="color:#6ee7b7">${sucs.length}</div></div>
-                    <div class="summary-box"><div class="lbl">Failed</div><div class="val" style="color:#fca5a5">${fails.length}</div></div>
-                    <div class="summary-box"><div class="lbl">Wall time</div><div class="val">${wall}</div></div>
-                </div>
-                ${sucs.length ? `
-                <div class="job-section">
-                    <h3>✓ Successful (${sucs.length})</h3>
-                    ${sucs.map((s, idx) => `
-                        <div class="result-row ok" style="flex-direction: column; align-items: stretch; gap: 8px;">
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <div>
-                                    <span class="result-name">${escapeHtml(s.pdf)}</span>
-                                    <div class="result-meta">pages: ${s.pages} • conf: ${(s.avg_conf || 0).toFixed(3)} • Layer 1+2: ${s.elapsed_s}s ${s.extract_elapsed_s ? `• Layer 3 (Sarvam 105B): ${s.extract_elapsed_s}s` : ''}</div>
-                                </div>
-                                <div style="display: flex; gap: 6px; align-items: center;">
-                                    ${s.db_run_id ? `<span class="badge badge-success">PostgreSQL: Run #${s.db_run_id}</span>` : ''}
-                                    <span class="result-meta"><code>${escapeHtml(s.md)}</code></span>
-                                </div>
-                            </div>
-                            ${s.extracted_data ? `
-                            <div class="extracted-json-box">
-                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                                    <strong class="extracted-json-title">⚡ Layer 3 Extracted JSON (${escapeHtml(s.extracted_json || 'record.json')})</strong>
-                                    <button class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(JSON.stringify(${escapeHtml(JSON.stringify(s.extracted_data))}, null, 2)); this.textContent='✓ Copied!'; setTimeout(()=>this.textContent='Copy JSON', 1500)">Copy JSON</button>
-                                </div>
-                                <pre class="extracted-json-pre">${escapeHtml(JSON.stringify(s.extracted_data, null, 2))}</pre>
-                            </div>
-                            ` : ''}
-                        </div>
-                    `).join('')}
-                </div>
-                ` : ''}
-                ${fails.length ? `
-                <div class="job-section">
-                    <h3>✕ Failed (${fails.length})</h3>
-                    ${fails.map(f => `
-                        <div class="result-row fail">
-                            <div>
-                                <span class="result-name">${escapeHtml(f.pdf)}</span>
-                                <div class="result-error">${escapeHtml(f.error_type)}: ${escapeHtml(f.error)}</div>
-                            </div>
-                            <div class="result-meta">${f.elapsed_s}s</div>
-                        </div>
-                    `).join('')}
-                </div>
-                ` : ''}
-
-                <div class="job-section">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
-                        <h3 style="margin:0;">Full JSON</h3>
-                        <div style="display:flex; gap:8px; align-items:center;">
-                            <button class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(JSON.stringify(window.__currentJobDetail, null, 2)); this.textContent='✓ Copied!'; setTimeout(()=>this.textContent='📋 Copy JSON', 1500)">📋 Copy JSON</button>
-                            <button class="btn btn-sm btn-outline" onclick="downloadJobJson()">📥 Download JSON</button>
-                            <button class="btn btn-sm btn-primary" onclick="downloadJobPdf('${j.job_id}')">📄 Download PDF</button>
-                        </div>
-                    </div>
-                    <pre id="fullJsonView" class="job-full-json-pre">${escapeHtml(JSON.stringify(j, null, 2))}</pre>
-                </div>
-            `;
-
-            // Restore scroll positions after rebuilding
-            const restoredPre = document.getElementById('fullJsonView');
-            if (restoredPre && (preScrollTop || preScrollLeft)) {
-                restoredPre.scrollTop = preScrollTop;
-                restoredPre.scrollLeft = preScrollLeft;
-            }
-            if (host && hostScrollTop) {
-                host.scrollTop = hostScrollTop;
-            }
-
-            window.__renderedJobId = j.job_id;
-            window.__renderedJobJson = newJsonStr;
-        } catch (e) {
-            console.warn('job detail failed', e);
-        }
-    }
-
-    if ($('refreshJobsBtn')) $('refreshJobsBtn').addEventListener('click', () => { loadJobs(); });
-
-    if ($('runPipelineBtn')) {
-        $('runPipelineBtn').addEventListener('click', async () => {
-            const schema_id = $('schemaSelect').value;
-            if (!schema_id) return;
-            const selected = Array.from(document.querySelectorAll('.doc-check:checked')).map(c => c.value);
-            if (!selected.length) return;
-
-            const btn = $('runPipelineBtn');
-            btn.disabled = true;
-            const oldText = btn.textContent;
-            btn.textContent = 'Starting...';
-            try {
-                const fd = new FormData();
-                fd.append('schema_id', schema_id);
-                fd.append('documents', JSON.stringify(selected));
-                const res = await api('/pipeline/run', { method: 'POST', body: fd });
-                btn.textContent = 'Running (job ' + res.job_id + ')...';
-                state.selectedJobId = res.job_id;
-                loadJobs();
-
-                let polls = 0;
-                const interval = setInterval(async () => {
-                    polls++;
-                    try {
-                        const j = await api('/pipeline/jobs/' + res.job_id);
-                        loadJobs();
-                        if (j.status === 'completed' || j.status === 'killed' || polls > 300) {
-                            clearInterval(interval);
-                            btn.textContent = oldText;
-                            btn.disabled = false;
-                            updateRunBtn();
-                        }
-                    } catch (e) {
-                        clearInterval(interval);
-                        btn.textContent = oldText;
-                        btn.disabled = false;
-                    }
-                }, 2000);
-            } catch (e) {
-                btn.textContent = oldText;
-                btn.disabled = false;
-                alert('Pipeline start failed: ' + e.message);
-            }
-        });
-    }
-
-    // ======================= User Pipeline & Jobs =======================
-
-    async function runUserPipeline() {
-        const btn = $('userAutoRunPipelineBtn') || $('quickRunPipelineBtn');
-        if (btn) btn.disabled = true;
-        showStatus('userAutoRunStatus', 'Starting extraction pipeline for your workspace...', 'info');
-
-        try {
-            const res = await api('/me/pipeline/run', { method: 'POST' });
-            showStatus('userAutoRunStatus', `✓ Job ${res.job_id} queued for ${res.targets} document(s).`, 'success');
-            loadUserJobs();
-        } catch (e) {
-            showStatus('userAutoRunStatus', 'Failed to run pipeline: ' + e.message, 'error');
-        } finally {
-            if (btn) btn.disabled = false;
-        }
-    }
-
-    if ($('userAutoRunPipelineBtn')) $('userAutoRunPipelineBtn').addEventListener('click', runUserPipeline);
-    if ($('quickRunPipelineBtn')) {
-        $('quickRunPipelineBtn').addEventListener('click', () => {
-            if (state.role === 'user') {
-                runUserPipeline();
-            } else {
-                // Admin quick run: scroll down and pre-select
-                const pipeSection = $('adminPipelineSection');
-                if (pipeSection) pipeSection.scrollIntoView({ behavior: 'smooth' });
-            }
-        });
-    }
-
-    async function loadUserJobs() {
-        if (state.role !== 'user') return;
-        try {
-            const data = await api('/me/pipeline/status');
-            const jobs = data.jobs || [];
-            state.userJobs = jobs;
-            const host = $('userJobList');
-            if (!host) return;
-
-            if (!jobs.length) {
-                host.innerHTML = '<p class="muted">No jobs yet. Click "Run Pipeline" above once you confirm a schema.</p>';
-                return;
-            }
-
-            host.innerHTML = '';
-            jobs.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
-            jobs.forEach(j => {
-                const total = j.total || 0;
-                const done = (j.succeeded || 0) + (j.failed || 0);
-                const pct = total ? Math.round(100 * done / total) : 0;
-                const row = el('div', 'user-job-row');
-
-                let actionButtons = '';
-                if (j.status === 'running' || j.status === 'queued') {
-                    actionButtons = `
-                        <button class="btn btn-ghost btn-sm" title="Pause job" data-action="pause" data-job="${escapeHtml(j.job_id)}">⏸ Pause</button>
-                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}">✕ Kill</button>
-                    `;
-                } else if (j.status === 'paused') {
-                    actionButtons = `
-                        <button class="btn btn-ghost btn-sm" title="Resume job" style="color:#6ee7b7" data-action="resume" data-job="${escapeHtml(j.job_id)}">▶ Resume</button>
-                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}">✕ Kill</button>
-                    `;
-                } else if (j.status === 'completed' || j.succeeded > 0) {
-                    actionButtons = `
-                        <button class="btn btn-outline btn-sm" title="Download JSON report" data-action="download-json" data-job="${escapeHtml(j.job_id)}">📥 JSON</button>
-                        <button class="btn btn-primary btn-sm" title="Download PDF report" data-action="download-pdf" data-job="${escapeHtml(j.job_id)}">📄 PDF</button>
-                    `;
-                }
-
-                const currentDoc = j.currently_processing ? ` • processing: <code>${escapeHtml(j.currently_processing)}</code>` : '';
-
-                row.innerHTML = `
-                    <div class="user-job-row-left">
-                        <div class="job-id">${escapeHtml(j.job_id)} <span class="badge ${jobStatusBadgeClass(j.status)}">${escapeHtml(j.status)}</span></div>
-                        <div class="job-meta">
-                            Success: <strong style="color:#6ee7b7">${j.succeeded}</strong> •
-                            Failed: <strong style="color:#fca5a5">${j.failed}</strong> •
-                            Remaining: ${j.remaining} / ${total}${currentDoc}
-                        </div>
-                    </div>
-                    <div class="user-job-row-right">
-                        <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
-                        <div class="job-item-actions">${actionButtons}</div>
-                    </div>
-                `;
-
-                row.addEventListener('click', async (e) => {
-                    const btn = e.target.closest('button[data-action]');
-                    if (btn) {
-                        e.stopPropagation();
-                        const act = btn.dataset.action;
-                        const jid = btn.dataset.job;
-                        try {
-                            if (act === 'download-json') {
-                                const jobDetail = await api(`/me/pipeline/jobs/${jid}`);
-                                const jsonStr = JSON.stringify(jobDetail, null, 2);
-                                const blob = new Blob([jsonStr], { type: 'application/json' });
-                                const url = URL.createObjectURL(blob);
-                                const a = document.createElement('a');
-                                a.href = url;
-                                a.download = `${jid}.json`;
-                                document.body.appendChild(a);
-                                a.click();
-                                document.body.removeChild(a);
-                                URL.revokeObjectURL(url);
-                                return;
-                            }
-                            if (act === 'download-pdf') {
-                                downloadJobPdf(jid);
-                                return;
-                            }
-                            if (act === 'pause') await api(`/me/pipeline/jobs/${jid}/pause`, { method: 'POST' });
-                            else if (act === 'resume') await api(`/me/pipeline/jobs/${jid}/resume`, { method: 'POST' });
-                            else if (act === 'kill') {
-                                if (!confirm(`Cancel job ${jid}?`)) return;
-                                await api(`/me/pipeline/jobs/${jid}/kill`, { method: 'POST' });
-                            }
-                            loadUserJobs();
-                        } catch (err) {
-                            alert(`Action ${act} failed: ${err.message}`);
-                        }
-                        return;
-                    }
-                    loadJobDetail(j.job_id, true);
-                });
-
-                host.appendChild(row);
-            });
-            if (state.selectedJobId && state.role === 'user') loadJobDetail(state.selectedJobId, false);
-        } catch (e) {
-            console.warn('loadUserJobs failed', e);
-        }
-    }
-
-    if ($('refreshUserJobsBtn')) $('refreshUserJobsBtn').addEventListener('click', loadUserJobs);
-
-    // ======================= Admin Logs Viewer =======================
-
-    async function loadUserActivityLogs() {
-        if (state.role !== 'admin') return;
-        const host = $('userLogsList');
-        if (!host) return;
-        const filterUser = $('logFilterUsername') ? $('logFilterUsername').value.trim() : '';
-
-        try {
-            const path = '/admin/logs/users' + (filterUser ? `?username=${encodeURIComponent(filterUser)}` : '');
-            const data = await api(path);
-            const logs = data.logs || [];
-
-            if (!logs.length) {
-                host.innerHTML = '<p class="muted">No user activity recorded yet.</p>';
-                return;
-            }
-
-            let html = `
-                <table class="log-table">
-                    <thead>
-                        <tr>
-                            <th style="width: 22%;">Timestamp</th>
-                            <th style="width: 18%;">User</th>
-                            <th style="width: 22%;">Action</th>
-                            <th style="width: 38%;">Detail</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-            `;
-
-            logs.slice().reverse().forEach(l => {
-                html += `
-                    <tr>
-                        <td class="muted small">${escapeHtml(l.timestamp)}</td>
-                        <td><strong>${escapeHtml(l.username)}</strong></td>
-                        <td><span class="badge badge-info">${escapeHtml(l.action)}</span></td>
-                        <td><code style="font-size:11px;">${escapeHtml(JSON.stringify(l.detail))}</code></td>
-                    </tr>
-                `;
-            });
-
-            html += '</tbody></table>';
-            host.innerHTML = html;
-        } catch (e) {
-            host.innerHTML = `<p class="muted">Error loading user logs: ${e.message}</p>`;
-        }
-    }
-
-    async function loadSystemLogs() {
-        if (state.role !== 'admin') return;
-        const host = $('systemLogsList');
-        if (!host) return;
-
-        try {
-            const data = await api('/admin/logs/system?limit=300');
-            const lines = data.lines || [];
-            if (!lines.length) {
-                host.textContent = 'No system logs recorded yet.';
-            } else {
-                host.textContent = lines.join('\n');
-                host.scrollTop = host.scrollHeight;
-            }
-        } catch (e) {
-            host.textContent = 'Error loading system logs: ' + e.message;
-        }
-    }
-
-    if ($('logSubTabUsersBtn') && $('logSubTabSystemBtn')) {
-        $('logSubTabUsersBtn').addEventListener('click', () => {
-            $('logSubTabUsersBtn').className = 'btn btn-primary btn-sm';
-            $('logSubTabSystemBtn').className = 'btn btn-outline btn-sm';
-            $('userLogsPanel').classList.remove('hidden');
-            $('systemLogsPanel').classList.add('hidden');
-            loadUserActivityLogs();
-        });
-
-        $('logSubTabSystemBtn').addEventListener('click', () => {
-            $('logSubTabSystemBtn').className = 'btn btn-primary btn-sm';
-            $('logSubTabUsersBtn').className = 'btn btn-outline btn-sm';
-            $('systemLogsPanel').classList.remove('hidden');
-            $('userLogsPanel').classList.add('hidden');
-            loadSystemLogs();
-        });
-    }
-
-    if ($('applyLogFilterBtn')) $('applyLogFilterBtn').addEventListener('click', loadUserActivityLogs);
-    if ($('clearLogFilterBtn')) {
-        $('clearLogFilterBtn').addEventListener('click', () => {
-            if ($('logFilterUsername')) $('logFilterUsername').value = '';
-            loadUserActivityLogs();
-        });
-    }
-    if ($('refreshLogsBtn')) {
-        $('refreshLogsBtn').addEventListener('click', () => {
-            if ($('systemLogsPanel') && !$('systemLogsPanel').classList.contains('hidden')) {
-                loadSystemLogs();
-            } else {
-                loadUserActivityLogs();
-            }
-        });
-    }
-
-    // ======================= Admin User Management =======================
-
-    async function loadUsersList() {
-        if (state.role !== 'admin') return;
-        const host = $('usersListTable');
-        if (!host) return;
-
-        try {
-            const users = await api('/admin/users');
-            if (!users.length) {
-                host.innerHTML = '<p class="muted">No users found.</p>';
-                return;
-            }
-
-            let html = `
-                <table class="log-table">
-                    <thead>
-                        <tr>
-                            <th>User ID</th>
-                            <th>Username</th>
-                            <th>Role</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-            `;
-            users.forEach(u => {
-                html += `
-                    <tr>
-                        <td class="muted small">${escapeHtml(u.user_id)}</td>
-                        <td><strong>${escapeHtml(u.username)}</strong></td>
-                        <td><span class="badge ${u.role === 'admin' ? 'badge-primary' : 'badge-info'}">${escapeHtml(u.role)}</span></td>
-                    </tr>
-                `;
-            });
-            html += '</tbody></table>';
-            host.innerHTML = html;
-        } catch (e) {
-            host.innerHTML = `<p class="muted">Error loading users: ${e.message}</p>`;
-        }
-    }
-
-    if ($('refreshUsersListBtn')) $('refreshUsersListBtn').addEventListener('click', loadUsersList);
-
-    if ($('createUserForm')) {
-        $('createUserForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const username = $('newUsername').value.trim();
-            const password = $('newPassword').value;
-            const role = $('newRole').value;
-            const btn = $('createUserBtn');
-
-            if (!username || !password) return;
-
-            btn.disabled = true;
-            showStatus('createUserStatus', 'Creating account...', 'info');
-
-            try {
-                const res = await api('/admin/users', {
-                    method: 'POST',
-                    json: { username, password, role },
-                });
-                showStatus('createUserStatus', `✓ User '${res.username}' created successfully with role '${res.role}'!`, 'success');
-                $('newUsername').value = '';
-                $('newPassword').value = '';
-                loadUsersList();
-            } catch (err) {
-                showStatus('createUserStatus', 'Failed to create user: ' + err.message, 'error');
-            } finally {
-                btn.disabled = false;
-            }
-        });
-    }
-
-    // ======================= Query Bot Tab =======================
-
-    // Holds all extracted data merged from every completed job
-    let qbAllExtractedData = null;
-    // Conversation history for multi-turn memory
-    let qbChatHistory = [];
-
-    async function loadAllExtractedData() {
-        try {
-            const data = await api('/pipeline/status');
-            const jobs = Object.values(data.jobs || {});
-            const completed = jobs.filter(j => j.status === 'completed');
-
-            if (!completed.length) {
-                qbAllExtractedData = null;
-                return;
-            }
-
-            const details = await Promise.all(
-                completed.map(j => api('/pipeline/jobs/' + j.job_id).catch(() => null))
-            );
-
-            const merged = {};
-            details.forEach(j => {
-                if (!j) return;
-                const sucs = j.successes || [];
-                sucs.forEach(s => {
-                    if (s.extracted_data) {
-                        const key = s.extracted_json || s.pdf || s.doc_id || 'document';
-                        merged[key] = s.extracted_data;
-                    }
-                });
-                if (!sucs.length && j.extracted_data) {
-                    merged[j.job_id] = j.extracted_data;
-                }
-            });
-
-            qbAllExtractedData = Object.keys(merged).length ? merged : null;
-        } catch (e) {
-            qbAllExtractedData = null;
-            console.warn('loadAllExtractedData error', e);
-        }
-    }
-
-    async function askTabQueryBot() {
-        const input = $('tab_qb_input');
-        const btn = $('tab_qb_btn');
-        const msgs = $('tab_qb_msgs');
-        if (!input || !btn || !msgs) return;
-
-        const question = input.value.trim();
-        if (!question) { input.focus(); return; }
-
-        if (!qbAllExtractedData) {
-            const errDiv = document.createElement('div');
-            errDiv.className = 'query-bot-msg bot error';
-            errDiv.textContent = 'No extracted data available yet. Run a pipeline job first.';
-            msgs.appendChild(errDiv);
-            msgs.scrollTop = msgs.scrollHeight;
-            return;
-        }
-
-        const userDiv = document.createElement('div');
-        userDiv.className = 'query-bot-msg user';
-        userDiv.textContent = question;
-        msgs.appendChild(userDiv);
-
-        const botDiv = document.createElement('div');
-        botDiv.className = 'query-bot-msg bot loading';
-        botDiv.textContent = 'Thinking…';
-        msgs.appendChild(botDiv);
-        msgs.scrollTop = msgs.scrollHeight;
-
-        input.value = '';
-        input.disabled = true;
-        btn.disabled = true;
-        btn.textContent = 'Asking…';
-
-        try {
-            const res = await api('/api/query-bot/ask', {
-                method: 'POST',
-                json: {
-                    extracted_data: qbAllExtractedData,
-                    question,
-                    history: qbChatHistory,
-                    doc_id: 'all extracted documents'
-                }
-            });
-            const answer = res.answer || 'No answer returned.';
-            botDiv.className = 'query-bot-msg bot';
-            botDiv.textContent = answer;
-            // Append to history only on success
-            qbChatHistory.push({ role: 'user', content: question });
-            qbChatHistory.push({ role: 'assistant', content: answer });
-        } catch (err) {
-            botDiv.className = 'query-bot-msg bot error';
-            botDiv.textContent = 'Error: ' + (err.message || String(err));
-        } finally {
-            input.disabled = false;
-            btn.disabled = false;
-            btn.textContent = 'Ask Bot';
-            input.focus();
-            msgs.scrollTop = msgs.scrollHeight;
-        }
-    }
-
-    if ($('tab_qb_btn')) $('tab_qb_btn').addEventListener('click', askTabQueryBot);
-    if ($('tab_qb_input')) {
-        $('tab_qb_input').addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') { e.preventDefault(); askTabQueryBot(); }
-        });
-    }
-    if ($('qbClearBtn')) {
-        $('qbClearBtn').addEventListener('click', () => {
-            const msgs = $('tab_qb_msgs');
-            if (msgs) {
-                msgs.innerHTML = '<div class="query-bot-msg bot">Hi! Ask me anything about the extracted document data.</div>';
-            }
-            qbChatHistory = [];
-        });
-    }
-
-    // ======================= Downloads (Jobs & Schemas) =======================
-    window.downloadJobJson = function() {
-        if (!window.__currentJobDetail) return;
-        const jsonStr = JSON.stringify(window.__currentJobDetail, null, 2);
-        const blob = new Blob([jsonStr], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${window.__currentJobDetail.job_id || 'pipeline_job'}.json`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-    };
-
-    window.downloadJobPdf = async function(jobId) {
-        if (!jobId && window.__currentJobDetail) jobId = window.__currentJobDetail.job_id;
-        if (!jobId) return;
-        try {
-            const apiPath = state.role === 'user' ? (`${API_BASE}/me/pipeline/jobs/${jobId}/pdf`) : (`${API_BASE}/pipeline/jobs/${jobId}/pdf`);
-            const resp = await fetch(apiPath, {
-                headers: state.token ? { 'Authorization': 'Bearer ' + state.token } : {}
-            });
-            if (!resp.ok) {
-                const errText = await resp.text();
-                throw new Error(errText || 'Failed to download PDF');
-            }
-            const blob = await resp.blob();
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${jobId}_report.pdf`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        } catch (e) {
-            alert('PDF download failed: ' + e.message);
-        }
-    };
-
-    window.downloadSchemaPdf = async function(schemaId) {
-        schemaId = schemaId || state.lastConfirmedSchemaId;
-        if (!schemaId) {
-            alert('No confirmed schema available to download.');
-            return;
-        }
-        try {
-            const resp = await fetch(`${API_BASE}/schema/${schemaId}/pdf`, {
-                headers: state.token ? { 'Authorization': 'Bearer ' + state.token } : {}
-            });
-            if (!resp.ok) {
-                const errText = await resp.text();
-                throw new Error(errText || 'Failed to download schema PDF');
-            }
-            const blob = await resp.blob();
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${schemaId}.pdf`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        } catch (e) {
-            alert('Schema PDF download failed: ' + e.message);
-        }
-    };
-
-    window.downloadSchemaJson = async function(schemaId) {
-        schemaId = schemaId || state.lastConfirmedSchemaId;
-        if (!schemaId) {
-            alert('No confirmed schema available to download.');
-            return;
-        }
-        try {
-            const resp = await fetch(`${API_BASE}/schema/${schemaId}/json`, {
-                headers: state.token ? { 'Authorization': 'Bearer ' + state.token } : {}
-            });
-            if (!resp.ok) {
-                const errText = await resp.text();
-                throw new Error(errText || 'Failed to download schema JSON');
-            }
-            const blob = await resp.blob();
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${schemaId}.json`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        } catch (e) {
-            alert('Schema JSON download failed: ' + e.message);
-        }
-    };
-
-    // ======================= Init & Bootstrap =======================
-
-    if ('scrollRestoration' in history) {
-        history.scrollRestoration = 'manual';
-    }
-    window.scrollTo(0, 0);
-
-    initTheme();
-    checkHealth();
-
-    if ($('loginForm')) $('loginForm').addEventListener('submit', handleLoginSubmit);
-    if ($('logoutBtn')) $('logoutBtn').addEventListener('click', logout);
-
-    if (state.token) {
-        initAuthenticatedSession();
+    if (res.ok) {
+      const user = await res.json();
+      currentUser = user;
+      localStorage.setItem(AUTH_USER_KEY, user.username || '');
+      localStorage.setItem(AUTH_ROLE_KEY, user.role || 'user');
+      localStorage.setItem(AUTH_FULLNAME_KEY, user.full_name || user.username || '');
+      localStorage.setItem(AUTH_EMAIL_KEY, user.email || '');
+      updateUserUI(user);
+      hideAuthContainer();
     } else {
-        showLoginModal();
+      // Token invalid or expired
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+      showAuthContainer();
+      switchAuthView('login');
+    }
+  } catch (e) {
+    // If network fails, use cached user credentials
+    const cachedUser = localStorage.getItem(AUTH_USER_KEY);
+    const cachedRole = localStorage.getItem(AUTH_ROLE_KEY) || 'user';
+    const cachedFullname = localStorage.getItem(AUTH_FULLNAME_KEY) || cachedUser || 'User';
+    const cachedEmail = localStorage.getItem(AUTH_EMAIL_KEY) || '';
+
+    if (cachedUser) {
+      currentUser = { username: cachedUser, role: cachedRole, full_name: cachedFullname, email: cachedEmail };
+      updateUserUI(currentUser);
+      hideAuthContainer();
+    } else {
+      showAuthContainer();
+      switchAuthView('login');
+    }
+  }
+}
+
+function showAuthContainer() {
+  if (authContainer) authContainer.classList.remove('hidden');
+}
+
+function hideAuthContainer() {
+  if (authContainer) authContainer.classList.add('hidden');
+}
+
+function switchAuthView(view) {
+  if (loginErrorMsg) loginErrorMsg.classList.add('hidden');
+  if (signupErrorMsg) signupErrorMsg.classList.add('hidden');
+
+  if (view === 'signup') {
+    if (loginCard) loginCard.classList.add('hidden');
+    if (signupCard) signupCard.classList.remove('hidden');
+    if (signupFullname) signupFullname.focus();
+  } else {
+    if (signupCard) signupCard.classList.add('hidden');
+    if (loginCard) loginCard.classList.remove('hidden');
+    if (loginIdentifier) loginIdentifier.focus();
+  }
+}
+
+function getInitials(name) {
+  if (!name) return 'U';
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) {
+    return parts[0].substring(0, 2).toUpperCase();
+  }
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function updateUserUI(user) {
+  if (!user) return;
+  const displayName = user.full_name || user.username || 'User';
+  const role = (user.role || 'user').toLowerCase();
+  const initials = getInitials(displayName);
+
+  // Avatar & Header Name
+  if (userAvatarCircle) userAvatarCircle.textContent = initials;
+  if (userMenuAvatarLarge) userMenuAvatarLarge.textContent = initials;
+  if (userHeaderName) userHeaderName.textContent = displayName;
+  if (userMenuFullname) userMenuFullname.textContent = displayName;
+  if (userMenuEmail) userMenuEmail.textContent = user.email || `${user.username}@example.com`;
+
+  // Role Badge in Menu
+  if (userMenuRoleBadge) {
+    userMenuRoleBadge.textContent = role.toUpperCase();
+    if (role === 'admin') {
+      userMenuRoleBadge.className = 'inline-flex items-center text-[10px] font-bold uppercase tracking-wider font-mono px-1.5 py-0.5 rounded bg-purple-500/20 border border-purple-500/30 text-purple-300';
+    } else {
+      userMenuRoleBadge.className = 'inline-flex items-center text-[10px] font-bold uppercase tracking-wider font-mono px-1.5 py-0.5 rounded bg-blue-500/20 border border-blue-500/30 text-blue-300';
+    }
+  }
+
+  // Admin Nav Tab & Admin Menu Option
+  if (role === 'admin') {
+    if (adminNavBtn) {
+      adminNavBtn.classList.remove('hidden');
+      adminNavBtn.classList.add('flex');
+    }
+    if (adminDropdownSection) {
+      adminDropdownSection.classList.remove('hidden');
+    }
+  } else {
+    if (adminNavBtn) {
+      adminNavBtn.classList.add('hidden');
+      adminNavBtn.classList.remove('flex');
+    }
+    if (adminDropdownSection) {
+      adminDropdownSection.classList.add('hidden');
+    }
+  }
+}
+
+function togglePasswordVisibility(inputId, buttonId) {
+  const input = document.getElementById(inputId);
+  const button = document.getElementById(buttonId);
+  if (!input || !button) return;
+
+  if (input.type === 'password') {
+    input.type = 'text';
+    button.innerHTML = `
+      <svg class="w-4 h-4 text-indigo-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+        <line x1="1" y1="1" x2="23" y2="23"></line>
+      </svg>
+    `;
+  } else {
+    input.type = 'password';
+    button.innerHTML = `
+      <svg class="w-4 h-4 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+        <circle cx="12" cy="12" r="3"></circle>
+      </svg>
+    `;
+  }
+}
+
+async function handleLoginSubmit(e) {
+  if (e) e.preventDefault();
+  const identifier = loginIdentifier.value.trim();
+  const password = loginPassword.value.trim();
+
+  if (!identifier || !password) {
+    loginErrorMsg.textContent = 'Please fill in both identifier and password';
+    loginErrorMsg.classList.remove('hidden');
+    return;
+  }
+
+  loginBtn.disabled = true;
+  loginBtn.innerHTML = '<span class="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></span> Authenticating...';
+  loginErrorMsg.classList.add('hidden');
+
+  try {
+    const res = await fetch('/auth/login', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ identifier, password }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Incorrect email/username or password' }));
+      throw new Error(err.detail || 'Incorrect email/username or password');
     }
 
-    setInterval(checkHealth, 15000);
-    setInterval(() => {
-        if (state.token) {
-            if (state.role === 'admin') loadJobs();
-            else if (state.role === 'user') loadUserJobs();
-        }
-    }, 4000);
+    const data = await res.json();
+    localStorage.setItem(AUTH_TOKEN_KEY, data.access_token);
+    localStorage.setItem(AUTH_USER_KEY, data.username || identifier);
+    localStorage.setItem(AUTH_ROLE_KEY, data.role || 'user');
+    localStorage.setItem(AUTH_FULLNAME_KEY, data.full_name || data.username || identifier);
+    localStorage.setItem(AUTH_EMAIL_KEY, data.email || '');
 
-})();
+    currentUser = {
+      username: data.username || identifier,
+      role: data.role || 'user',
+      full_name: data.full_name || data.username || identifier,
+      email: data.email || '',
+    };
 
+    updateUserUI(currentUser);
+    hideAuthContainer();
+    showToast(`Welcome back, ${currentUser.full_name}!`);
+  } catch (err) {
+    loginErrorMsg.textContent = err.message;
+    loginErrorMsg.classList.remove('hidden');
+  } finally {
+    loginBtn.disabled = false;
+    loginBtn.textContent = 'Log In';
+  }
+}
 
+async function handleSignupSubmit(e) {
+  if (e) e.preventDefault();
+  const fullName = signupFullname.value.trim();
+  const email = signupEmail.value.trim().toLowerCase();
+  const password = signupPassword.value;
+  const confirmPassword = signupConfirmPassword.value;
+
+  if (!fullName || !email || !password) {
+    signupErrorMsg.textContent = 'Please fill in all required fields';
+    signupErrorMsg.classList.remove('hidden');
+    return;
+  }
+
+  if (password.length < 8) {
+    signupErrorMsg.textContent = 'Password must be at least 8 characters long';
+    signupErrorMsg.classList.remove('hidden');
+    return;
+  }
+
+  if (password !== confirmPassword) {
+    signupErrorMsg.textContent = 'Passwords do not match';
+    signupErrorMsg.classList.remove('hidden');
+    return;
+  }
+
+  signupBtn.disabled = true;
+  signupBtn.innerHTML = '<span class="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></span> Creating Account...';
+  signupErrorMsg.classList.add('hidden');
+
+  try {
+    const res = await fetch('/auth/signup', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        full_name: fullName,
+        email: email,
+        password: password,
+        confirm_password: confirmPassword,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Registration failed' }));
+      throw new Error(err.detail || 'Registration failed');
+    }
+
+    const data = await res.json();
+    localStorage.setItem(AUTH_TOKEN_KEY, data.access_token);
+    localStorage.setItem(AUTH_USER_KEY, data.username || email.split('@')[0]);
+    localStorage.setItem(AUTH_ROLE_KEY, data.role || 'user');
+    localStorage.setItem(AUTH_FULLNAME_KEY, data.full_name || fullName);
+    localStorage.setItem(AUTH_EMAIL_KEY, data.email || email);
+
+    currentUser = {
+      username: data.username || email.split('@')[0],
+      role: data.role || 'user',
+      full_name: data.full_name || fullName,
+      email: data.email || email,
+    };
+
+    updateUserUI(currentUser);
+    hideAuthContainer();
+    showToast(`Account created! Welcome, ${currentUser.full_name}`);
+  } catch (err) {
+    signupErrorMsg.textContent = err.message;
+    signupErrorMsg.classList.remove('hidden');
+  } finally {
+    signupBtn.disabled = false;
+    signupBtn.textContent = 'Create Account';
+  }
+}
+
+async function handleLogout() {
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
+  if (token) {
+    try {
+      await fetch('/auth/logout', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+    } catch (e) {
+      // Ignore network errors on logout
+    }
+  }
+
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(AUTH_USER_KEY);
+  localStorage.removeItem(AUTH_ROLE_KEY);
+  localStorage.removeItem(AUTH_FULLNAME_KEY);
+  localStorage.removeItem(AUTH_EMAIL_KEY);
+  currentUser = null;
+
+  showAuthContainer();
+  switchAuthView('login');
+  showToast('Signed out successfully');
+}
+
+// User Menu Dropdown Controls
+function toggleUserDropdown(e) {
+  if (e) e.stopPropagation();
+  if (!userDropdownMenu) return;
+  userDropdownMenu.classList.toggle('hidden');
+}
+
+function closeUserDropdown() {
+  if (userDropdownMenu) userDropdownMenu.classList.add('hidden');
+}
+
+// Forgot Password Modal
+function openForgotPasswordModal() {
+  if (forgotPasswordModal) forgotPasswordModal.classList.remove('hidden');
+  if (forgotEmailInput) {
+    forgotEmailInput.value = loginIdentifier ? loginIdentifier.value.trim() : '';
+    forgotEmailInput.focus();
+  }
+}
+
+function closeForgotPasswordModal() {
+  if (forgotPasswordModal) forgotPasswordModal.classList.add('hidden');
+}
+
+function handleSendPasswordReset() {
+  const email = forgotEmailInput ? forgotEmailInput.value.trim() : '';
+  closeForgotPasswordModal();
+  showToast(email ? `Password reset link sent to ${email}` : 'Password reset instructions sent');
+}
+
+// Admin Dashboard Modal
+function openAdminDashboardModal() {
+  if (adminDashboardModal) adminDashboardModal.classList.remove('hidden');
+  if (adminModalUsername && currentUser) {
+    adminModalUsername.textContent = `${currentUser.full_name || currentUser.username} (${currentUser.email || currentUser.role})`;
+  }
+}
+
+function closeAdminDashboardModal() {
+  if (adminDashboardModal) adminDashboardModal.classList.add('hidden');
+}
+
+// ================= BACKEND HEALTH & LLM BADGE =================
+
+async function checkBackendHealth() {
+  try {
+    const res = await fetch('/health');
+    if (res.ok) {
+      const data = await res.json();
+      backendStatusPill.className = 'flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs font-medium text-emerald-400';
+      statusDot.className = 'w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/50 animate-pulse';
+      backendStatusText.textContent = 'Connected';
+
+      // Update LLM Model Badge
+      if (llmModelText) {
+        const provider = data.llm_provider || 'sarvam';
+        llmModelText.textContent = provider === 'sarvam' ? 'sarvam-105b' : provider;
+      }
+    } else {
+      setBackendDisconnected();
+    }
+  } catch (e) {
+    setBackendDisconnected();
+  }
+}
+
+function setBackendDisconnected() {
+  backendStatusPill.className = 'flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-xs font-medium text-rose-400';
+  statusDot.className = 'w-2 h-2 rounded-full bg-rose-500 shadow-sm shadow-rose-500/50';
+  backendStatusText.textContent = 'Disconnected';
+}
+
+// ================= SIDEBAR & CONVERSATIONS =================
+
+function toggleSidebar() {
+  sidebar.classList.toggle('collapsed');
+  if (sidebar.classList.contains('collapsed')) {
+    sidebarExpandBtn.classList.remove('hidden');
+  } else {
+    sidebarExpandBtn.classList.add('hidden');
+  }
+}
+
+function loadConversations() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    conversations = saved ? JSON.parse(saved) : [];
+  } catch (e) {
+    conversations = [];
+  }
+
+  const savedActive = localStorage.getItem(ACTIVE_CHAT_KEY);
+  if (savedActive && conversations.some(c => c.id === savedActive)) {
+    currentChatId = savedActive;
+  } else if (conversations.length > 0) {
+    currentChatId = conversations[0].id;
+  } else {
+    createNewChat();
+    return;
+  }
+
+  renderConversationsSidebar();
+  renderActiveChat();
+}
+
+function saveConversations() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
+  if (currentChatId) {
+    localStorage.setItem(ACTIVE_CHAT_KEY, currentChatId);
+  }
+  renderConversationsSidebar();
+}
+
+function getActiveChat() {
+  return conversations.find(c => c.id === currentChatId);
+}
+
+function createNewChat() {
+  const newChat = {
+    id: `chat_${Date.now()}`,
+    title: 'New Chat',
+    createdAt: new Date().toISOString(),
+    document: null,
+    messages: [],
+  };
+
+  conversations.unshift(newChat);
+  currentChatId = newChat.id;
+  saveConversations();
+  renderActiveChat();
+  chatInput.focus();
+}
+
+function selectConversation(chatId) {
+  currentChatId = chatId;
+  saveConversations();
+  renderActiveChat();
+}
+
+function renderConversationsSidebar() {
+  conversationsList.innerHTML = '';
+  if (conversations.length === 0) {
+    conversationsList.innerHTML = '<div class="px-2 py-4 text-xs text-slate-500 text-center">No recent chats</div>';
+    return;
+  }
+
+  conversations.forEach((conv) => {
+    const isActive = conv.id === currentChatId;
+    const item = document.createElement('div');
+    item.className = `conversation-item ${isActive ? 'active' : ''} group`;
+    item.onclick = () => selectConversation(conv.id);
+
+    item.innerHTML = `
+      <div class="flex items-center gap-2 truncate pr-2">
+        <svg class="w-3.5 h-3.5 ${isActive ? 'text-indigo-400' : 'text-slate-400'} flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <span class="truncate">${escapeHtml(conv.title || 'Untitled Chat')}</span>
+      </div>
+      <button 
+        class="actions-btn p-1 hover:text-white text-slate-400 rounded transition" 
+        onclick="openChatActionsMenu(event, '${conv.id}')"
+        title="Chat actions"
+      >
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="1"></circle>
+          <circle cx="19" cy="12" r="1"></circle>
+          <circle cx="5" cy="12" r="1"></circle>
+        </svg>
+      </button>
+    `;
+    conversationsList.appendChild(item);
+  });
+}
+
+function openChatActionsMenu(e, chatId) {
+  e.stopPropagation();
+  actionMenuTargetChatId = chatId;
+  const rect = e.currentTarget.getBoundingClientRect();
+  
+  chatActionsMenu.style.top = `${rect.bottom + 4}px`;
+  chatActionsMenu.style.left = `${Math.min(window.innerWidth - 180, rect.left)}px`;
+  chatActionsMenu.classList.remove('hidden');
+}
+
+function closeChatActionsMenu() {
+  chatActionsMenu.classList.add('hidden');
+  actionMenuTargetChatId = null;
+}
+
+function handleShareCurrentChat() {
+  const target = conversations.find(c => c.id === (actionMenuTargetChatId || currentChatId));
+  closeChatActionsMenu();
+  if (!target) return;
+
+  const transcript = target.messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n');
+  navigator.clipboard.writeText(`=== IDP Studio Chat: ${target.title} ===\n\n${transcript}`);
+  showToast('Chat transcript copied to clipboard!');
+}
+
+function handleDownloadCurrentChat() {
+  const target = conversations.find(c => c.id === (actionMenuTargetChatId || currentChatId));
+  closeChatActionsMenu();
+  if (!target) return;
+
+  const content = `# IDP Intelligence Studio — ${target.title}\n\n` +
+    (target.document ? `**Document:** ${target.document.doc_id} (${target.document.page_count || 1} pages)\n\n` : '') +
+    target.messages.map(m => `### ${m.role === 'user' ? 'User' : 'Assistant'}\n${m.content}\n`).join('\n');
+
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${(target.title || 'chat').replace(/[^a-z0-9]/gi, '_').toLowerCase()}.md`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('Chat downloaded successfully');
+}
+
+function handleDeleteCurrentChat() {
+  const targetId = actionMenuTargetChatId || currentChatId;
+  closeChatActionsMenu();
+  if (!targetId) return;
+
+  conversations = conversations.filter(c => c.id !== targetId);
+  if (currentChatId === targetId) {
+    currentChatId = conversations.length > 0 ? conversations[0].id : null;
+  }
+
+  if (!currentChatId) {
+    createNewChat();
+  } else {
+    saveConversations();
+    renderActiveChat();
+  }
+  showToast('Chat deleted');
+}
+
+// ================= RENDER ACTIVE CHAT =================
+
+function renderActiveChat() {
+  const chat = getActiveChat();
+  if (!chat) return;
+
+  // Update Top Document Badge
+  if (chat.document) {
+    topDocName.textContent = chat.document.doc_id;
+    topDocBadge.classList.remove('hidden');
+    topDocBadge.classList.add('flex');
+  } else {
+    topDocBadge.classList.add('hidden');
+    topDocBadge.classList.remove('flex');
+  }
+
+  // Render Messages
+  if (!chat.document && chat.messages.length === 0) {
+    emptyStateHero.style.display = 'flex';
+    messagesList.innerHTML = '';
+  } else {
+    emptyStateHero.style.display = 'none';
+    messagesList.innerHTML = '';
+
+    chat.messages.forEach((msg) => {
+      renderMessageItem(msg);
+    });
+  }
+
+  scrollChatToBottom();
+}
+
+function renderMessageItem(msg) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'w-full animate-fadeIn';
+
+  if (msg.role === 'user') {
+    wrapper.innerHTML = `
+      <div class="flex items-start justify-end gap-3 max-w-2xl ml-auto">
+        <div class="p-3.5 px-4 bg-gradient-to-tr from-indigo-600 to-blue-600 rounded-2xl rounded-tr-sm text-sm text-white shadow-md leading-relaxed">
+          ${escapeHtml(msg.content)}
+        </div>
+      </div>
+    `;
+  } else {
+    // Assistant message (ChatGPT style)
+    let extraDocHtml = '';
+    if (msg.docCard) {
+      extraDocHtml = `
+        <div class="doc-ready-card">
+          <div class="check-circle">✓</div>
+          <div class="text-xs font-semibold text-slate-100">${escapeHtml(msg.docCard.filename)}</div>
+          <span class="text-[11px] text-slate-400 font-normal">(${msg.docCard.pageCount || 1} ${msg.docCard.pageCount === 1 ? 'page' : 'pages'})</span>
+        </div>
+      `;
+    }
+
+    wrapper.innerHTML = `
+      <div class="flex items-start gap-3.5 max-w-3xl">
+        <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-indigo-600/30 to-purple-600/30 border border-indigo-500/30 flex items-center justify-center text-sm flex-shrink-0 mt-0.5 shadow-sm">
+          🤖
+        </div>
+        <div class="flex-1 space-y-2">
+          ${extraDocHtml}
+          <div class="p-4 bg-cardbg border border-borderSubtle rounded-2xl rounded-tl-sm text-sm text-slate-200 shadow-sm chat-markdown">
+            ${formatMarkdownAndCitations(msg.content)}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  messagesList.appendChild(wrapper);
+}
+
+// ================= FILE UPLOAD CONTROLS =================
+
+function triggerFileInput() {
+  if (nativeFileInput) nativeFileInput.click();
+}
+
+function handleNativeFileSelected(e) {
+  if (e.target.files && e.target.files.length > 0) {
+    processDocumentAttachment({ file: e.target.files[0] });
+  }
+  nativeFileInput.value = '';
+}
+
+async function processDocumentAttachment({ file, sampleName }) {
+  if (isProcessing) return;
+
+  const chat = getActiveChat();
+  if (!chat) return;
+
+  isProcessing = true;
+  sendBtn.disabled = true;
+
+  const docName = file ? file.name : `${sampleName}.pdf`;
+
+  // Show Attached Document Chip above input
+  attachedDocChip.classList.remove('hidden');
+  attachedDocChip.classList.add('flex');
+  chipFilename.textContent = docName;
+  chipStatusText.textContent = 'Processing OCR & extraction...';
+  chipSpinner.classList.remove('hidden');
+  chipCheckIcon.classList.add('hidden');
+
+  const formData = new FormData();
+  let endpoint = '/api/pipeline/process-upload';
+
+  if (file) {
+    formData.append('file', file);
+  } else if (sampleName) {
+    formData.append('sample_name', sampleName);
+    formData.append('md_name', `${sampleName}.md`);
+  }
+
+  try {
+    let resp = await fetch(endpoint, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!resp.ok) {
+      // Fallback to extract/from-output if process-upload is not defined in backend
+      const fallbackForm = new FormData();
+      fallbackForm.append('md_name', `${sampleName || 'sdg_goals_output'}.md`);
+      resp = await fetch('/pipeline/extract/from-output', {
+        method: 'POST',
+        body: fallbackForm,
+      });
+    }
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: 'Document processing failed' }));
+      throw new Error(err.detail || 'Document processing failed');
+    }
+
+    const data = await resp.json();
+
+    // Update Chat state
+    chat.document = data;
+    if (chat.title === 'New Chat' || !chat.title) {
+      chat.title = `${data.doc_id.replace(/\.[^/.]+$/, '')} Q&A`;
+    }
+
+    // Hide empty state hero
+    emptyStateHero.style.display = 'none';
+
+    // Append Assistant Document Ready Message
+    const readyMessage = {
+      id: `msg_${Date.now()}`,
+      role: 'assistant',
+      content: 'Your document is ready. What would you like to know?',
+      docCard: {
+        filename: data.doc_id,
+        pageCount: data.page_count,
+      },
+      timestamp: new Date().toISOString(),
+    };
+
+    chat.messages.push(readyMessage);
+    saveConversations();
+    renderActiveChat();
+
+    // Update Attached Chip to Done
+    chipStatusText.textContent = 'Document ready';
+    chipSpinner.classList.add('hidden');
+    chipCheckIcon.classList.remove('hidden');
+
+    setTimeout(() => {
+      attachedDocChip.classList.add('hidden');
+      attachedDocChip.classList.remove('flex');
+    }, 2000);
+
+  } catch (err) {
+    chipStatusText.textContent = 'Error processing';
+    chipSpinner.classList.add('hidden');
+    
+    emptyStateHero.style.display = 'none';
+    chat.messages.push({
+      id: `msg_${Date.now()}`,
+      role: 'assistant',
+      content: `❌ Could not process **${docName}**: ${err.message}. Please try again with a valid PDF, scan, or markdown document.`,
+      timestamp: new Date().toISOString(),
+    });
+    saveConversations();
+    renderActiveChat();
+  } finally {
+    isProcessing = false;
+    sendBtn.disabled = false;
+  }
+}
+
+function handleRemoveDocument() {
+  const chat = getActiveChat();
+  if (!chat) return;
+
+  chat.document = null;
+  attachedDocChip.classList.add('hidden');
+  attachedDocChip.classList.remove('flex');
+  saveConversations();
+  renderActiveChat();
+  showToast('Document detached from current chat');
+}
+
+// ================= SEND MESSAGE & Q&A =================
+
+async function handleSendMessage(e) {
+  if (e) e.preventDefault();
+  const query = chatInput.value.trim();
+  if (!query || isAnswering) return;
+
+  const chat = getActiveChat();
+  if (!chat) return;
+
+  chatInput.value = '';
+
+  // 1. Add User Message
+  const userMsg = {
+    id: `msg_${Date.now()}`,
+    role: 'user',
+    content: query,
+    timestamp: new Date().toISOString(),
+  };
+
+  emptyStateHero.style.display = 'none';
+  chat.messages.push(userMsg);
+  
+  if (chat.title === 'New Chat') {
+    chat.title = query.slice(0, 30);
+  }
+
+  saveConversations();
+  renderActiveChat();
+
+  // 2. Check if Document is Attached
+  if (!chat.document) {
+    setTimeout(() => {
+      const botGuideMsg = {
+        id: `msg_${Date.now()}`,
+        role: 'assistant',
+        content: 'Please upload a document using the **+** button to get started. Once uploaded, I will provide grounded answers with exact page citations.',
+        timestamp: new Date().toISOString(),
+      };
+      chat.messages.push(botGuideMsg);
+      saveConversations();
+      renderActiveChat();
+    }, 300);
+    return;
+  }
+
+  // 3. Execute Q&A Query
+  isAnswering = true;
+  sendBtn.disabled = true;
+
+  const thinkingId = appendThinkingRow();
+
+  try {
+    const historyPayload = chat.messages
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .slice(-6)
+      .map(m => ({ role: m.role, content: m.content }));
+
+    const payload = {
+      question: query,
+      doc_id: chat.document.doc_id,
+      history: historyPayload,
+      extracted_data: chat.document.extracted_data || chat.document,
+    };
+
+    let resp = await fetch('/api/query-bot/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!resp.ok) {
+      resp = await fetch('/api/pipeline/qa-query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    }
+
+    removeElement(thinkingId);
+
+    if (!resp.ok) {
+      throw new Error('Failed to retrieve answer from server');
+    }
+
+    const data = await resp.json();
+    let rawAnswer = data.answer || 'I could not find information about that in the uploaded document.';
+
+    // Format citations cleanly if present in cited_pages
+    if (data.cited_pages && data.cited_pages.length > 0 && !rawAnswer.includes('Source:')) {
+      const pageTags = data.cited_pages.map(p => `Page ${p}`).join(', ');
+      rawAnswer += `\n\nSource: ${pageTags}`;
+    }
+
+    // Stream response
+    await streamAssistantResponse(rawAnswer);
+
+    // Save final message
+    chat.messages.push({
+      id: `msg_${Date.now()}`,
+      role: 'assistant',
+      content: rawAnswer,
+      timestamp: new Date().toISOString(),
+    });
+    saveConversations();
+
+  } catch (err) {
+    removeElement(thinkingId);
+    chat.messages.push({
+      id: `msg_${Date.now()}`,
+      role: 'assistant',
+      content: `❌ Error answering question: ${err.message}`,
+      timestamp: new Date().toISOString(),
+    });
+    saveConversations();
+    renderActiveChat();
+  } finally {
+    isAnswering = false;
+    sendBtn.disabled = false;
+  }
+}
+
+function appendThinkingRow() {
+  const id = `thinking-${Date.now()}`;
+  const wrapper = document.createElement('div');
+  wrapper.id = id;
+  wrapper.className = 'w-full animate-fadeIn';
+  wrapper.innerHTML = `
+    <div class="flex items-start gap-3.5 max-w-3xl">
+      <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-indigo-600/30 to-purple-600/30 border border-indigo-500/30 flex items-center justify-center text-sm flex-shrink-0 mt-0.5">
+        🤖
+      </div>
+      <div class="p-3.5 bg-cardbg border border-borderSubtle rounded-2xl rounded-tl-sm text-xs text-indigo-300 flex items-center gap-2">
+        <div class="flex items-center gap-1">
+          <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style="animation-delay: 0ms"></span>
+          <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style="animation-delay: 150ms"></span>
+          <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style="animation-delay: 300ms"></span>
+        </div>
+        <span class="text-[12px] opacity-90">Analyzing document facts...</span>
+      </div>
+    </div>
+  `;
+  messagesList.appendChild(wrapper);
+  scrollChatToBottom();
+  return id;
+}
+
+async function streamAssistantResponse(fullText) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'w-full animate-fadeIn';
+  
+  const bubble = document.createElement('div');
+  bubble.className = 'p-4 bg-cardbg border border-borderSubtle rounded-2xl rounded-tl-sm text-sm text-slate-200 shadow-sm chat-markdown typing-caret';
+
+  wrapper.innerHTML = `
+    <div class="flex items-start gap-3.5 max-w-3xl">
+      <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-indigo-600/30 to-purple-600/30 border border-indigo-500/30 flex items-center justify-center text-sm flex-shrink-0 mt-0.5 shadow-sm">
+        🤖
+      </div>
+      <div class="flex-1"></div>
+    </div>
+  `;
+
+  wrapper.querySelector('.flex-1').appendChild(bubble);
+  messagesList.appendChild(wrapper);
+
+  const step = Math.max(1, Math.floor(fullText.length / 25));
+  let currentPos = 0;
+
+  while (currentPos < fullText.length) {
+    currentPos = Math.min(fullText.length, currentPos + step);
+    const chunk = fullText.slice(0, currentPos);
+    bubble.innerHTML = formatMarkdownAndCitations(chunk);
+    scrollChatToBottom();
+    await new Promise((r) => setTimeout(r, 15));
+  }
+
+  bubble.className = 'p-4 bg-cardbg border border-borderSubtle rounded-2xl rounded-tl-sm text-sm text-slate-200 shadow-sm chat-markdown';
+  bubble.innerHTML = formatMarkdownAndCitations(fullText);
+  scrollChatToBottom();
+}
+
+// ================= FORMATTING & UTILITIES =================
+
+function formatMarkdownAndCitations(text) {
+  if (!text) return '';
+
+  // Clean reasoning tokens
+  let clean = text.replace(/<think>[\s\S]*?<\/think>/gi, '')
+                  .replace(/<end of thinking>/gi, '')
+                  .trim();
+
+  // Highlight Source: Page X
+  clean = clean.replace(/(Source:\s*Page\s*\d+(?:,\s*Page\s*\d+)*)/gi, '<span class="citation-badge">$1</span>');
+  clean = clean.replace(/\[Page\s*(\d+)\]/gi, '<span class="citation-badge">Source: Page $1</span>');
+
+  // Markdown bold
+  clean = clean.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
+  // Bullet points
+  const lines = clean.split('\n');
+  let inList = false;
+  let html = '';
+
+  for (let line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+      if (!inList) {
+        html += '<ul>';
+        inList = true;
+      }
+      html += `<li>${trimmed.substring(2)}</li>`;
+    } else {
+      if (inList) {
+        html += '</ul>';
+        inList = false;
+      }
+      if (trimmed.length > 0) {
+        html += `<p>${line}</p>`;
+      }
+    }
+  }
+  if (inList) html += '</ul>';
+
+  return html || clean;
+}
+
+function showToast(msg) {
+  toast.textContent = msg;
+  toast.classList.remove('hidden');
+  setTimeout(() => {
+    toast.classList.add('hidden');
+  }, 2200);
+}
+
+function removeElement(id) {
+  const el = document.getElementById(id);
+  if (el) el.remove();
+}
+
+function scrollChatToBottom() {
+  chatThreadContainer.scrollTop = chatThreadContainer.scrollHeight;
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}

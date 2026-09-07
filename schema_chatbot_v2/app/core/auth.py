@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Union
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -23,12 +23,14 @@ ACCESS_TOKEN_EXPIRE_MINUTES = settings.jwt_expire_minutes
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
-def authenticate_user(username: str, password: str) -> Optional[User]:
+def authenticate_user(identifier: str, password: str) -> Optional[User]:
     """
-    Authenticates a user by username and password. Returns the User if valid, None otherwise.
+    Authenticates a user by email or username and password. Returns the User if valid, None otherwise.
     """
+    if not identifier or not password:
+        return None
     store = get_user_store()
-    user = store.get_by_username(username)
+    user = store.get_by_email_or_username(identifier)
     if not user:
         return None
     if not verify_password(password, user.hashed_password):
@@ -38,7 +40,7 @@ def authenticate_user(username: str, password: str) -> Optional[User]:
 
 def create_access_token(user: User, expires_delta: Optional[timedelta] = None) -> str:
     """
-    Generates a JWT access token containing 'sub' (username), 'role' (role name), and 'exp'.
+    Generates a JWT access token containing 'sub' (username), 'email', 'full_name', 'role', 'user_id', and 'exp'.
     """
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
@@ -47,6 +49,9 @@ def create_access_token(user: User, expires_delta: Optional[timedelta] = None) -
 
     to_encode = {
         "sub": user.username,
+        "user_id": user.user_id,
+        "email": user.email,
+        "full_name": user.full_name,
         "role": user.role.value,
         "exp": expire,
     }
@@ -74,17 +79,33 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
     store = get_user_store()
     user = store.get_by_username(username)
     if user is None:
+        user = store.get_by_email_or_username(username)
+    if user is None:
         raise credentials_exception
     return user
 
 
-def require_admin(user: User = Depends(get_current_user)) -> User:
+def require_role(*allowed_roles: Union[Role, str]):
     """
-    Ensures the authenticated user has the ADMIN role. Raises 403 Forbidden if not.
+    Reusable role-based permission guard factory.
+    Returns a FastAPI dependency that checks if the authenticated user has one of the allowed roles.
+    Example:
+        @router.get("/admin-only", dependencies=[Depends(require_role(Role.ADMIN))])
     """
-    if user.role != Role.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required",
-        )
-    return user
+    valid_roles = {r.value if isinstance(r, Role) else str(r) for r in allowed_roles}
+
+    def _role_checker(current_user: User = Depends(get_current_user)) -> User:
+        if current_user.role.value not in valid_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: User role '{current_user.role.value}' lacks required permission.",
+            )
+        return current_user
+
+    return _role_checker
+
+
+# Predefined RBAC dependencies for convenience and backward compatibility
+require_admin = require_role(Role.ADMIN)
+require_user = require_role(Role.ADMIN, Role.USER)
+

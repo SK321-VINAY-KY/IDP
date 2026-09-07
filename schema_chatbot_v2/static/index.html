@@ -1,421 +1,664 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-    <meta http-equiv="Pragma" content="no-cache">
-    <meta http-equiv="Expires" content="0">
-    <title>IDP — Extraction Pipeline Console</title>
-    <link rel="stylesheet" href="style.css?v=18">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IDP Intelligence Studio — Document Assistant</title>
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            sidebar: 'var(--bg-sidebar)',
+            chatbg: 'var(--bg-main)',
+            cardbg: 'var(--bg-card)',
+            cardHover: 'var(--bg-card-hover)',
+            borderSubtle: 'var(--border-subtle)',
+            primary: '#6366f1',
+            primaryHover: '#4f46e5',
+            accent: '#8b5cf6',
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Custom Styles -->
+  <link rel="stylesheet" href="style.css">
 </head>
-<body>
-    <!-- =========================== LOGIN OVERLAY =========================== -->
-    <div id="loginOverlay" class="login-overlay hidden">
-        <div class="login-card">
-            <div class="login-header">
-                <h2>🔐 IDP Console Login</h2>
-                <p class="muted small">Sign in with your admin or user credentials.</p>
-            </div>
-            <form id="loginForm" class="login-form">
-                <div class="form-row">
-                    <label for="loginUsername">Username</label>
-                    <input type="text" id="loginUsername" placeholder="e.g. admin or username" required autocomplete="username">
-                </div>
-                <div class="form-row">
-                    <label for="loginPassword">Password</label>
-                    <input type="password" id="loginPassword" placeholder="••••••••" required autocomplete="current-password">
-                </div>
-                <div id="loginError" class="status-box error hidden"></div>
-                <button type="submit" id="loginSubmitBtn" class="btn btn-primary btn-full btn-lg mt-2">Sign In</button>
-                <p class="muted small mt-2" style="text-align: center;">Default Admin: <code>admin</code> / <code>changeme</code></p>
-            </form>
-        </div>
+<body class="bg-chatbg text-slate-100 font-sans antialiased h-screen overflow-hidden flex transition-colors duration-200">
+
+  <!-- ================= FULL-SCREEN AUTHENTICATION LAYER ================= -->
+  <div id="auth-container" class="fixed inset-0 z-50 bg-[#090d13] flex items-center justify-center p-4 overflow-y-auto">
+    
+    <!-- Background Ambient Glow -->
+    <div class="fixed inset-0 pointer-events-none flex items-center justify-center">
+      <div class="w-[500px] h-[500px] bg-gradient-to-tr from-indigo-600/15 via-purple-600/10 to-blue-600/15 rounded-full blur-3xl opacity-60"></div>
     </div>
 
-    <!-- =========================== APP HEADER =========================== -->
-    <header class="app-header">
-        <div class="header-left">
-            <h1>IDP Console</h1>
-            <span class="subtitle">Schema Discovery &middot; Document Extraction Pipeline</span>
+    <!-- 1. LOGIN CARD -->
+    <div id="login-card" class="relative bg-[#161b22]/95 backdrop-blur-xl border border-white/10 rounded-2xl max-w-md w-full p-8 space-y-6 shadow-2xl animate-fadeIn auth-card z-10">
+      <div class="text-center space-y-2">
+        <div class="w-14 h-14 mx-auto rounded-2xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-blue-500 flex items-center justify-center text-2xl text-white shadow-xl shadow-indigo-500/25 ring-1 ring-white/20">
+          <svg class="w-7 h-7 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+          </svg>
         </div>
-        <div class="header-right">
-            <button id="themeToggleBtn" class="theme-toggle-btn" type="button" title="Toggle Light/Dark Theme">
-                <span class="theme-toggle-icon" id="themeIcon">☀️</span>
-                <span id="themeLabel">Light Mode</span>
+        <h2 class="text-xl font-bold text-white tracking-tight login-title">IDP Intelligence Studio</h2>
+        <p class="text-xs text-slate-400 login-sub">Zero-Schema Pipeline & Interactive Document Assistant</p>
+      </div>
+
+      <form id="login-form" onsubmit="handleLoginSubmit(event)" class="space-y-4">
+        <div class="space-y-1.5 text-left">
+          <label class="text-xs font-semibold text-slate-300">Email or Username</label>
+          <input 
+            type="text" 
+            id="login-identifier" 
+            placeholder="name@example.com or admin" 
+            required 
+            autocomplete="username" 
+            class="w-full h-11 px-4 bg-slate-900/80 border border-white/10 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/40 transition"
+          />
+        </div>
+
+        <div class="space-y-1.5 text-left">
+          <div class="flex items-center justify-between">
+            <label class="text-xs font-semibold text-slate-300">Password</label>
+            <button type="button" onclick="openForgotPasswordModal()" class="text-xs text-indigo-400 hover:text-indigo-300 transition">
+              Forgot password?
             </button>
-            <span id="healthBadge" class="badge badge-info">connecting…</span>
-            <span id="llmBadge" class="badge badge-mute">—</span>
-            <div id="userHeaderSection" class="user-header-section hidden">
-                <span id="userBadge" class="badge badge-primary">user</span>
-                <button id="logoutBtn" class="btn btn-ghost btn-sm" title="Log out">Logout</button>
-            </div>
+          </div>
+          <div class="relative">
+            <input 
+              type="password" 
+              id="login-password" 
+              placeholder="••••••••" 
+              required 
+              autocomplete="current-password" 
+              class="w-full h-11 pl-4 pr-11 bg-slate-900/80 border border-white/10 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/40 transition"
+            />
+            <button 
+              type="button" 
+              id="toggle-login-password-btn" 
+              onclick="togglePasswordVisibility('login-password', 'toggle-login-password-btn')"
+              class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 p-1" 
+              title="Show/hide password"
+            >
+              <svg class="w-4 h-4 eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                <circle cx="12" cy="12" r="3"></circle>
+              </svg>
+            </button>
+          </div>
         </div>
+
+        <div id="login-error-msg" class="hidden p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-xs text-red-300 text-center font-medium"></div>
+
+        <button 
+          type="submit" 
+          id="login-btn" 
+          class="w-full h-11 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-sm font-semibold text-white shadow-lg shadow-indigo-500/25 transition flex items-center justify-center cursor-pointer disabled:opacity-50"
+        >
+          Log In
+        </button>
+
+        <div class="pt-3 text-center border-t border-white/5 space-y-2">
+          <p class="text-xs text-slate-400">
+            Don't have an account? 
+            <button type="button" onclick="switchAuthView('signup')" class="text-indigo-400 hover:text-indigo-300 font-semibold transition ml-1">
+              Sign up
+            </button>
+          </p>
+          <div class="text-[11px] text-slate-500">
+            Default Admin: <code class="bg-black/40 px-1.5 py-0.5 rounded text-indigo-300">admin@example.com</code> / <code class="bg-black/40 px-1.5 py-0.5 rounded text-indigo-300">changeme</code>
+          </div>
+        </div>
+      </form>
+    </div>
+
+    <!-- 2. SIGNUP CARD -->
+    <div id="signup-card" class="hidden relative bg-[#161b22]/95 backdrop-blur-xl border border-white/10 rounded-2xl max-w-md w-full p-8 space-y-6 shadow-2xl animate-fadeIn auth-card z-10">
+      <div class="text-center space-y-2">
+        <div class="w-14 h-14 mx-auto rounded-2xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-blue-500 flex items-center justify-center text-2xl text-white shadow-xl shadow-indigo-500/25 ring-1 ring-white/20">
+          <svg class="w-7 h-7 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+            <circle cx="8.5" cy="7.5" r="4"></circle>
+            <line x1="20" y1="8" x2="20" y2="14"></line>
+            <line x1="23" y1="11" x2="17" y2="11"></line>
+          </svg>
+        </div>
+        <h2 class="text-xl font-bold text-white tracking-tight login-title">Create an Account</h2>
+        <p class="text-xs text-slate-400 login-sub">Get started with IDP Intelligence Studio</p>
+      </div>
+
+      <form id="signup-form" onsubmit="handleSignupSubmit(event)" class="space-y-3.5">
+        <div class="space-y-1.5 text-left">
+          <label class="text-xs font-semibold text-slate-300">Full Name</label>
+          <input 
+            type="text" 
+            id="signup-fullname" 
+            placeholder="e.g. Jane Doe" 
+            required 
+            autocomplete="name" 
+            class="w-full h-10 px-4 bg-slate-900/80 border border-white/10 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/40 transition"
+          />
+        </div>
+
+        <div class="space-y-1.5 text-left">
+          <label class="text-xs font-semibold text-slate-300">Email Address</label>
+          <input 
+            type="email" 
+            id="signup-email" 
+            placeholder="name@example.com" 
+            required 
+            autocomplete="email" 
+            class="w-full h-10 px-4 bg-slate-900/80 border border-white/10 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/40 transition"
+          />
+        </div>
+
+        <div class="space-y-1.5 text-left">
+          <label class="text-xs font-semibold text-slate-300">Password (min 8 characters)</label>
+          <div class="relative">
+            <input 
+              type="password" 
+              id="signup-password" 
+              placeholder="••••••••" 
+              required 
+              minlength="8"
+              autocomplete="new-password" 
+              class="w-full h-10 pl-4 pr-11 bg-slate-900/80 border border-white/10 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/40 transition"
+            />
+            <button 
+              type="button" 
+              id="toggle-signup-password-btn" 
+              onclick="togglePasswordVisibility('signup-password', 'toggle-signup-password-btn')"
+              class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 p-1" 
+              title="Show/hide password"
+            >
+              <svg class="w-4 h-4 eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                <circle cx="12" cy="12" r="3"></circle>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="space-y-1.5 text-left">
+          <label class="text-xs font-semibold text-slate-300">Confirm Password</label>
+          <div class="relative">
+            <input 
+              type="password" 
+              id="signup-confirm-password" 
+              placeholder="••••••••" 
+              required 
+              minlength="8"
+              autocomplete="new-password" 
+              class="w-full h-10 pl-4 pr-11 bg-slate-900/80 border border-white/10 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/40 transition"
+            />
+            <button 
+              type="button" 
+              id="toggle-signup-confirm-btn" 
+              onclick="togglePasswordVisibility('signup-confirm-password', 'toggle-signup-confirm-btn')"
+              class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 p-1" 
+              title="Show/hide password"
+            >
+              <svg class="w-4 h-4 eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                <circle cx="12" cy="12" r="3"></circle>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div id="signup-error-msg" class="hidden p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-xs text-red-300 text-center font-medium"></div>
+
+        <button 
+          type="submit" 
+          id="signup-btn" 
+          class="w-full h-11 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-sm font-semibold text-white shadow-lg shadow-indigo-500/25 transition flex items-center justify-center cursor-pointer disabled:opacity-50"
+        >
+          Create Account
+        </button>
+
+        <div class="pt-3 text-center border-t border-white/5">
+          <p class="text-xs text-slate-400">
+            Already have an account? 
+            <button type="button" onclick="switchAuthView('login')" class="text-indigo-400 hover:text-indigo-300 font-semibold transition ml-1">
+              Log in
+            </button>
+          </p>
+        </div>
+      </form>
+    </div>
+
+  </div>
+
+  <!-- ================= FORGOT PASSWORD MODAL ================= -->
+  <div id="forgot-password-modal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="bg-[#161b22] border border-white/10 rounded-2xl max-w-sm w-full p-6 space-y-4 shadow-2xl animate-fadeIn auth-card">
+      <div class="flex items-center justify-between border-b border-white/5 pb-3">
+        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+          <span>🔑</span> Reset Password
+        </h3>
+        <button onclick="closeForgotPasswordModal()" class="text-slate-400 hover:text-white transition">✕</button>
+      </div>
+      <p class="text-xs text-slate-400 leading-relaxed">
+        Enter your registered email address. Password reset instructions will be sent to your inbox or system administrator.
+      </p>
+      <input 
+        type="email" 
+        id="forgot-email-input" 
+        placeholder="name@example.com" 
+        class="w-full h-10 px-3.5 bg-slate-900/80 border border-white/10 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
+      />
+      <div class="flex gap-2 pt-2">
+        <button onclick="closeForgotPasswordModal()" class="flex-1 h-9 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-semibold text-slate-300 transition">
+          Cancel
+        </button>
+        <button onclick="handleSendPasswordReset()" class="flex-1 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-xs font-semibold text-white shadow-md transition">
+          Send Instructions
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= ADMIN DASHBOARD PLACEHOLDER MODAL ================= -->
+  <div id="admin-dashboard-modal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="bg-[#161b22] border border-white/10 rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl animate-fadeIn auth-card">
+      <div class="flex items-center justify-between border-b border-white/10 pb-4">
+        <div class="flex items-center gap-2.5">
+          <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center text-white shadow-md">
+            🛡️
+          </div>
+          <div>
+            <h3 class="text-base font-bold text-white flex items-center gap-2">
+              Admin Dashboard
+              <span class="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-purple-500/20 border border-purple-500/30 text-purple-300">Admin Only</span>
+            </h3>
+            <p class="text-xs text-slate-400">System Management & Control Plane</p>
+          </div>
+        </div>
+        <button onclick="closeAdminDashboardModal()" class="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-white/5 transition text-sm">✕</button>
+      </div>
+
+      <div class="p-4 rounded-xl bg-slate-900/60 border border-indigo-500/20 space-y-3">
+        <div class="flex items-center gap-2 text-xs font-semibold text-indigo-300">
+          <span class="w-2 h-2 rounded-full bg-indigo-400 animate-pulse"></span>
+          <span>Upcoming Features</span>
+        </div>
+        <p class="text-xs text-slate-300 leading-relaxed">
+          <strong>Coming soon:</strong> User management, role-based access control policies, pipeline job monitors, and document usage analytics.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3 text-xs">
+        <div class="p-3 bg-slate-900/40 border border-white/5 rounded-xl space-y-1">
+          <span class="text-slate-500 text-[11px] uppercase tracking-wider font-semibold">Storage Engine</span>
+          <p class="text-slate-200 font-mono font-medium">PostgreSQL / SQLite</p>
+        </div>
+        <div class="p-3 bg-slate-900/40 border border-white/5 rounded-xl space-y-1">
+          <span class="text-slate-500 text-[11px] uppercase tracking-wider font-semibold">Active Session</span>
+          <p id="admin-modal-username" class="text-slate-200 font-mono font-medium truncate">admin</p>
+        </div>
+      </div>
+
+      <div class="pt-2 flex justify-end">
+        <button onclick="closeAdminDashboardModal()" class="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white shadow-md transition cursor-pointer">
+          Back to Studio
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= LEFT SIDEBAR (COLLAPSIBLE) ================= -->
+  <aside id="sidebar" class="w-72 bg-sidebar border-r border-borderSubtle flex flex-col flex-shrink-0 transition-all duration-300 z-40 relative">
+    
+    <!-- Sidebar Header & New Chat Button -->
+    <div class="p-4 border-b border-borderSubtle flex flex-col gap-3">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-indigo-600 via-purple-600 to-blue-500 flex items-center justify-center shadow-md shadow-indigo-500/20">
+            <svg class="w-4 h-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="16" y1="13" x2="8" y2="13"></line>
+              <line x1="16" y1="17" x2="8" y2="17"></line>
+            </svg>
+          </div>
+          <span class="font-bold text-sm tracking-tight brand-title">IDP Studio</span>
+        </div>
+        
+        <!-- Toggle Sidebar Icon Button -->
+        <button onclick="toggleSidebar()" class="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-white/5 transition" title="Collapse Sidebar">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="9" y1="3" x2="9" y2="21"></line>
+          </svg>
+        </button>
+      </div>
+
+      <!-- + New Chat Button -->
+      <button 
+        onclick="createNewChat()" 
+        class="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold transition shadow-sm hover:border-indigo-500/40 group new-chat-btn"
+      >
+        <div class="flex items-center gap-2">
+          <svg class="w-4 h-4 text-indigo-400 group-hover:rotate-90 transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          <span>New Chat</span>
+        </div>
+        <kbd class="text-[10px] font-mono text-slate-500 bg-black/40 px-1.5 py-0.5 rounded border border-white/5">Ctrl+K</kbd>
+      </button>
+    </div>
+
+    <!-- Recent Chats Section -->
+    <div class="flex-1 overflow-y-auto px-3 py-3 space-y-1">
+      <div class="px-2 py-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+        Recent Chats
+      </div>
+      <div id="conversations-list" class="space-y-1">
+        <!-- Conversation Items dynamically populated by JS -->
+      </div>
+    </div>
+
+    <!-- Sidebar Bottom Footer -->
+    <div class="p-3 border-t border-borderSubtle bg-sidebar/80 flex items-center justify-between">
+      <span class="text-[11px] text-slate-400 font-medium">IDP Intelligence</span>
+      <span class="text-[11px] text-slate-500 font-mono">v2.0</span>
+    </div>
+  </aside>
+
+  <!-- ================= MAIN CHAT AREA ================= -->
+  <main class="flex-1 flex flex-col min-w-0 bg-chatbg relative overflow-hidden">
+    
+    <!-- Top Header Bar -->
+    <header class="h-16 px-6 border-b border-borderSubtle bg-chatbg/90 backdrop-blur-md flex items-center justify-between flex-shrink-0 z-30 app-header">
+      <div class="flex items-center gap-3">
+        <!-- Expand Sidebar button (visible when sidebar collapsed) -->
+        <button id="sidebar-expand-btn" onclick="toggleSidebar()" class="hidden text-slate-400 hover:text-white p-2 rounded-lg hover:bg-white/5 transition" title="Open Sidebar">
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="9" y1="3" x2="9" y2="21"></line>
+          </svg>
+        </button>
+
+        <div>
+          <h1 class="text-base font-bold tracking-tight flex items-center gap-2 header-title">
+            IDP Intelligence Studio
+          </h1>
+          <p class="text-xs text-slate-400 header-subtitle">Ask questions about your document</p>
+        </div>
+      </div>
+
+      <!-- Right Header Actions (Theme Toggle, Badges, Admin Tab & User Menu Dropdown) -->
+      <div class="flex items-center gap-2 sm:gap-2.5">
+        
+        <!-- Active Document Badge (When doc loaded) -->
+        <div id="top-doc-badge" class="hidden items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-800/80 border border-white/10 text-xs text-slate-200">
+          <svg class="w-3.5 h-3.5 text-indigo-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+          </svg>
+          <span id="top-doc-name" class="font-medium truncate max-w-[140px]">document.pdf</span>
+          <button onclick="handleRemoveDocument()" class="hover:text-red-400 text-slate-400 ml-1 transition" title="Remove document">✕</button>
+        </div>
+
+        <!-- ☀️ / 🌙 Light/Dark Theme Toggle Button -->
+        <button 
+          id="theme-toggle-btn" 
+          onclick="toggleTheme()" 
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-medium text-slate-300 hover:text-white transition shadow-sm"
+          title="Toggle Light/Dark Theme"
+        >
+          <span id="theme-icon">☀️</span>
+          <span id="theme-label" class="hidden md:inline">Light Mode</span>
+        </button>
+
+        <!-- Backend Connection Status Badge -->
+        <div id="backend-status-pill" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs font-medium text-emerald-400">
+          <span id="status-dot" class="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/50 animate-pulse"></span>
+          <span id="backend-status-text" class="hidden lg:inline">Connected</span>
+        </div>
+
+        <!-- LLM Model Status Badge -->
+        <div id="llm-model-badge" class="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-xs font-medium text-indigo-300">
+          <span class="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+          <span id="llm-model-text">sarvam-105b</span>
+        </div>
+
+        <!-- Admin Navigation Link/Tab (Visible ONLY when role == "admin") -->
+        <button 
+          id="admin-nav-btn" 
+          onclick="openAdminDashboardModal()" 
+          class="hidden items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-500/15 hover:bg-purple-500/25 border border-purple-500/30 text-xs font-semibold text-purple-200 transition shadow-sm cursor-pointer"
+          title="Open Admin Dashboard"
+        >
+          <span>🛡️</span>
+          <span>Admin</span>
+        </button>
+
+        <!-- User Menu Dropdown Button & Container -->
+        <div class="relative" id="user-menu-container">
+          <button 
+            id="user-menu-btn" 
+            onclick="toggleUserDropdown(event)" 
+            class="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-medium text-slate-200 transition cursor-pointer user-menu-button"
+            title="User profile and menu"
+          >
+            <!-- User Avatar Initials Circle -->
+            <div id="user-avatar-circle" class="w-6 h-6 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center text-[11px] font-bold text-white uppercase shadow-sm">
+              AD
+            </div>
+            <span id="user-header-name" class="font-semibold max-w-[110px] truncate hidden md:inline">Admin</span>
+            <svg class="w-3.5 h-3.5 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </button>
+
+          <!-- User Dropdown Menu Popup -->
+          <div id="user-dropdown-menu" class="hidden absolute right-0 mt-2 w-64 bg-[#161b22]/95 backdrop-blur-xl border border-white/10 rounded-2xl p-3 shadow-2xl z-50 text-xs space-y-2.5 animate-fadeIn">
+            <!-- User Profile Summary -->
+            <div class="flex items-start gap-3 p-2 bg-slate-900/60 rounded-xl border border-white/5">
+              <div id="user-menu-avatar-large" class="w-9 h-9 rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center text-xs font-bold text-white uppercase flex-shrink-0 shadow-md">
+                AD
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center justify-between gap-1">
+                  <span id="user-menu-fullname" class="font-bold text-white truncate">System Administrator</span>
+                </div>
+                <p id="user-menu-email" class="text-[11px] text-slate-400 truncate">admin@example.com</p>
+                <div class="mt-1">
+                  <span id="user-menu-role-badge" class="inline-flex items-center text-[10px] font-bold uppercase tracking-wider font-mono px-1.5 py-0.5 rounded bg-purple-500/20 border border-purple-500/30 text-purple-300">
+                    ADMIN
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Admin Shortcut (if admin) -->
+            <div id="admin-dropdown-section" class="hidden">
+              <button 
+                onclick="closeUserDropdown(); openAdminDashboardModal();" 
+                class="w-full flex items-center gap-2.5 px-3 py-2 text-slate-300 hover:text-white hover:bg-white/5 rounded-xl transition cursor-pointer"
+              >
+                <span>🛡️</span>
+                <span class="font-medium">Admin Dashboard</span>
+              </button>
+            </div>
+
+            <div class="h-px bg-white/5 my-1"></div>
+
+            <!-- Logout Option -->
+            <button 
+              onclick="closeUserDropdown(); handleLogout();" 
+              class="w-full flex items-center gap-2.5 px-3 py-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-xl transition cursor-pointer font-medium"
+            >
+              <svg class="w-4 h-4 text-red-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                <polyline points="16 17 21 12 16 7"></polyline>
+                <line x1="21" y1="12" x2="9" y2="12"></line>
+              </svg>
+              <span>Log Out</span>
+            </button>
+          </div>
+        </div>
+
+      </div>
     </header>
 
-    <!-- =========================== NAVIGATION TABS =========================== -->
-    <nav class="tabs" id="mainTabs">
-        <button class="tab-btn active" data-tab="chatbot" id="tabBtnChatbot">💬 Schema Discovery &amp; Pipeline</button>
-        <button class="tab-btn admin-only" data-tab="documents" id="tabBtnDocuments">📁 Shared Dataset</button>
-        <button class="tab-btn user-only hidden" data-tab="user-documents" id="tabBtnUserDocuments">📁 My Documents</button>
-        <button class="tab-btn admin-only" data-tab="logs" id="tabBtnLogs">📜 Logs</button>
-        <button class="tab-btn admin-only" data-tab="users" id="tabBtnUsers">👥 User Management</button>
-        <button class="tab-btn admin-only" data-tab="querybot" id="tabBtnQueryBot">💬 Query Bot</button>
-    </nav>
+    <!-- Chat Messages Scroll Container -->
+    <div id="chat-thread-container" class="flex-1 overflow-y-auto px-4 py-6 md:px-8 max-w-4xl w-full mx-auto space-y-6">
+      
+      <!-- EMPTY STATE (Shown when no document and no conversation) -->
+      <div id="empty-state-hero" class="h-full flex flex-col items-center justify-center text-center p-8 my-auto space-y-4 animate-fadeIn">
+        <div class="w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-600/20 via-purple-600/20 to-blue-500/20 border border-indigo-500/30 flex items-center justify-center shadow-lg shadow-indigo-500/10 mb-2">
+          <svg class="w-8 h-8 text-indigo-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="12" y1="18" x2="12" y2="12"></line>
+            <line x1="9" y1="15" x2="15" y2="15"></line>
+          </svg>
+        </div>
+        
+        <div class="space-y-2 max-w-md">
+          <h2 class="text-xl font-bold tracking-tight hero-heading">Upload a document to get started</h2>
+          <p class="text-sm text-slate-400 leading-relaxed">
+            Ask questions and get grounded answers with page citations.
+          </p>
+        </div>
+      </div>
 
-    <main class="content">
-        <!-- =========================== TAB: Chatbot & Pipeline =========================== -->
-        <section id="tab-chatbot" class="tab-panel active">
-            <div class="chat-grid">
-                <div class="chat-col">
-                    <div class="card chat-card">
-                        <div class="card-header">
-                            <h2>Schema Discovery Chat</h2>
-                            <div class="card-actions">
-                                <span id="stateBadge" class="badge badge-mute">idle</span>
-                                <button class="btn btn-ghost btn-sm" id="newSessionBtn">+ New Session</button>
-                            </div>
-                        </div>
-                        <div id="chatLog" class="chat-log">
-                            <div class="chat-msg bot">
-                                <div class="msg-bubble">
-                                    Upload 2–5 sample PDFs of the same document type, or start chatting to discover a target extraction schema.
-                                </div>
-                            </div>
-                        </div>
-                        <div class="chat-input-row">
-                            <input type="text" id="chatInput" placeholder="Type a message (e.g. 'Add email field')" disabled>
-                            <button class="btn btn-primary" id="sendBtn" disabled>Send</button>
-                        </div>
-                    </div>
-                </div>
+      <!-- CONVERSATION MESSAGES (Rendered dynamically) -->
+      <div id="messages-list" class="space-y-6"></div>
+    </div>
 
-                <div class="chat-col">
-                    <div class="card">
-                        <div class="card-header">
-                            <h2>Sample Inference Upload</h2>
-                        </div>
-                        <p class="muted small">Upload 2–5 PDFs of the SAME document type (e.g. all resumes) to auto-infer an initial schema.</p>
-                        <div class="mini-upload" id="inferUploadZone">
-                            <input type="file" id="inferInput" multiple accept="application/pdf,.pdf" hidden>
-                            <button class="btn btn-outline" id="inferBrowseBtn">Select PDFs (2–5)</button>
-                            <span id="inferSelected" class="muted small">no files</span>
-                        </div>
-                        <div class="mt-1">
-                            <button class="btn btn-primary btn-full" id="inferBtn" disabled>Run Inference → Chat</button>
-                            <p class="muted small mt-1">⚠ Sarvam Doc AI OCR + LLM proposal: expect <strong>60–180 s</strong> for 2 PDFs.</p>
-                        </div>
-                        <div id="inferStatus" class="status-box hidden"></div>
-                    </div>
-
-                    <div class="card">
-                        <div class="card-header">
-                            <h2>Current Schema</h2>
-                            <div class="card-actions">
-                                <button class="btn btn-outline btn-sm" id="addSchemaFieldBtn" disabled>+ Add Field</button>
-                                <button class="btn btn-ghost btn-sm" id="copySchemaBtn" disabled>Copy</button>
-                                <button class="btn btn-ghost btn-sm" id="printSchemaBtn" disabled>/schema</button>
-                                <button class="btn btn-ghost btn-sm" id="downloadSchemaPdfHeaderBtn" title="Download confirmed schema as PDF" disabled>📄 PDF</button>
-                                <button class="btn btn-ghost btn-sm" id="downloadSchemaJsonHeaderBtn" title="Download confirmed schema as JSON" disabled>📥 JSON</button>
-                            </div>
-                        </div>
-                        <div id="schemaPanel">
-                            <p class="muted">No schema yet.</p>
-                        </div>
-                        <div id="schemaErrors" class="error-list hidden"></div>
-                        <div class="mt-1">
-                            <button class="btn btn-success btn-full" id="confirmBtn" disabled>✓ Confirm Schema</button>
-                            <p class="muted small mt-1">Type <code>/confirm</code> in chat (or press above) once schema looks good. Confirmed schemas are saved to <code>schema_registry/</code>.</p>
-                        </div>
-                        <div id="confirmStatus" class="status-box hidden"></div>
-                        <div id="postConfirmBox" class="mt-1 hidden">
-                            <div class="pipeline-actions">
-                                <button class="btn btn-success btn-lg btn-full" id="quickRunPipelineBtn" disabled>
-                                    ⚡ Run Extraction Pipeline Now
-                                </button>
-                            </div>
-                            <div class="schema-download-actions mt-1" style="display: flex; gap: 8px;">
-                                <button class="btn btn-outline btn-sm btn-full" id="downloadSchemaPdfBtn">
-                                    📄 Download Schema PDF
-                                </button>
-                                <button class="btn btn-outline btn-sm btn-full" id="downloadSchemaJsonBtn">
-                                    📥 Download Schema JSON
-                                </button>
-                            </div>
-                            <p class="muted small mt-1">
-                                Launches extraction for your confirmed schema, or download the schema spec above.
-                            </p>
-                        </div>
-                    </div>
-                </div>
+    <!-- ================= STICKY BOTTOM INPUT BAR ================= -->
+    <div class="p-4 md:p-6 bg-chatbg border-t border-borderSubtle flex-shrink-0 z-30 chat-bottom-bar">
+      <div class="max-w-4xl mx-auto space-y-3">
+        
+        <!-- Attached File Chip / Processing Status Card -->
+        <div id="attached-doc-chip" class="hidden items-center justify-between p-2.5 px-4 bg-slate-900/90 border border-indigo-500/30 rounded-xl text-xs text-indigo-200 shadow-lg animate-fadeIn doc-chip-card">
+          <div class="flex items-center gap-3 truncate">
+            <div id="chip-spinner" class="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin flex-shrink-0"></div>
+            <svg id="chip-check-icon" class="hidden w-4 h-4 text-emerald-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+            <div class="flex items-center gap-2 truncate">
+              <span id="chip-filename" class="font-semibold text-white truncate chip-name">filename.pdf</span>
+              <span id="chip-status-text" class="text-[11px] text-slate-400">Processing document...</span>
             </div>
+          </div>
+          <button onclick="handleRemoveDocument()" class="text-slate-400 hover:text-white p-1 transition" title="Remove">✕</button>
+        </div>
 
-            <!-- =========================== Admin Pipeline Section =========================== -->
-            <div id="adminPipelineSection" class="pipeline-section mt-3 admin-only">
-                <div class="card">
-                    <div class="card-header">
-                        <h2>Run Extraction Pipeline (Admin)</h2>
-                        <span id="pipelineAvail" class="badge badge-mute">checking…</span>
-                    </div>
+        <!-- Chat Input Controls Form -->
+        <form id="chat-input-form" onsubmit="handleSendMessage(event)" class="flex items-center gap-2 relative">
+          
+          <!-- "+" Button to Upload Document Directly -->
+          <button 
+            type="button" 
+            id="plus-menu-btn" 
+            onclick="triggerFileInput()" 
+            class="w-11 h-11 rounded-xl bg-cardbg hover:bg-cardHover text-slate-300 hover:text-white border border-borderSubtle flex items-center justify-center transition shadow-sm hover:border-indigo-500/40 cursor-pointer"
+            title="Upload Document (PDF, Scan, MD, TXT)"
+          >
+            <svg class="w-5 h-5 text-slate-300 hover:text-white plus-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+          </button>
 
-                    <div class="form-row">
-                        <label>
-                            <strong>Target Schema</strong>
-                            <select id="schemaSelect" disabled>
-                                <option value="">— load schemas first —</option>
-                            </select>
-                            <button class="btn btn-ghost btn-sm mt-1" id="refreshSchemasBtn">↻ Refresh Schemas</button>
-                        </label>
-                    </div>
+          <!-- Hidden Native File Input -->
+          <input 
+            type="file" 
+            id="native-file-input" 
+            accept=".pdf,.png,.jpg,.jpeg,.webp,.md,.txt" 
+            class="hidden" 
+            onchange="handleNativeFileSelected(event)"
+          />
 
-                    <div class="form-row">
-                        <label>
-                            <strong>Documents to Process</strong>
-                            <div id="docChecklist" class="checklist">
-                                <p class="muted small">Loading documents from dataset...</p>
-                            </div>
-                        </label>
-                        <div class="row-actions">
-                            <button class="btn btn-ghost btn-sm" id="selAllBtn" disabled>Select All</button>
-                            <button class="btn btn-ghost btn-sm" id="selNoneBtn" disabled>Select None</button>
-                        </div>
-                    </div>
+          <!-- Text Input -->
+          <input 
+            type="text" 
+            id="chat-input" 
+            placeholder="Ask any question about your document..." 
+            autocomplete="off"
+            class="flex-1 h-11 px-4 bg-cardbg border border-borderSubtle rounded-xl text-sm placeholder-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/40 transition shadow-sm chat-text-field"
+          />
 
-                    <div class="pipeline-actions">
-                        <button class="btn btn-primary btn-lg btn-full" id="runPipelineBtn" disabled>
-                            ⚡ Run Extraction Pipeline
-                        </button>
-                    </div>
-                    <p class="muted small mt-1">
-                        Processes each selected document through <strong>Layer 1 (Routing)</strong>, <strong>Layer 2 (Conversion &amp; OCR)</strong>, and continues directly into <strong>Layer 3 (Contextual Field Extraction via Sarvam 105B)</strong> using the selected schema. Results are saved in <code>dataset_output/</code> and recorded in PostgreSQL.
-                    </p>
-                </div>
+          <!-- Send Button -->
+          <button 
+            type="submit" 
+            id="send-btn" 
+            class="w-11 h-11 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white flex items-center justify-center transition shadow-md shadow-indigo-500/20 disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 cursor-pointer"
+          >
+            <svg class="w-4 h-4 translate-x-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+        </form>
 
-                <div class="card">
-                    <div class="card-header">
-                        <h2>Job Output &amp; History (All Users)</h2>
-                        <button class="btn btn-ghost btn-sm" id="refreshJobsBtn">↻ Refresh</button>
-                    </div>
-                    <div id="jobList">
-                        <p class="muted">No jobs yet.</p>
-                    </div>
-                </div>
+        <div class="text-center">
+          <span class="text-[11px] text-slate-500 footer-note">IDP Intelligence Studio provides grounded answers strictly based on your uploaded document with page citations.</span>
+        </div>
+      </div>
+    </div>
+  </main>
 
-                <div id="jobDetailCard" class="card hidden">
-                    <div class="card-header">
-                        <h2>Job Detail: <span id="detailJobId">—</span></h2>
-                        <div class="card-actions">
-                            <span id="detailStatus" class="badge">—</span>
-                            <button class="btn btn-sm btn-warn hidden" id="jobPauseBtn" title="Pause active job">⏸ Pause</button>
-                            <button class="btn btn-sm btn-primary hidden" id="jobResumeBtn" title="Resume paused job">▶ Resume</button>
-                            <button class="btn btn-sm btn-danger hidden" id="jobKillBtn" title="Kill / cancel job">✕ Kill</button>
-                        </div>
-                    </div>
-                    <div id="jobDetail"></div>
-                </div>
-            </div>
+  <!-- Context Menu for Chat Actions (Share, Download, Delete) -->
+  <div id="chat-actions-menu" class="hidden fixed bg-slate-900/95 backdrop-blur-xl border border-white/10 rounded-xl p-1.5 shadow-2xl z-50 w-44 text-xs animate-fadeIn space-y-0.5 chat-actions-popup">
+    <button onclick="handleShareCurrentChat()" class="w-full flex items-center gap-2 px-2.5 py-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition">
+      <svg class="w-3.5 h-3.5 text-indigo-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="18" cy="5" r="3"></circle>
+        <circle cx="6" cy="12" r="3"></circle>
+        <circle cx="18" cy="19" r="3"></circle>
+        <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line>
+        <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>
+      </svg>
+      <span>Share Chat</span>
+    </button>
+    <button onclick="handleDownloadCurrentChat()" class="w-full flex items-center gap-2 px-2.5 py-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition">
+      <svg class="w-3.5 h-3.5 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="7 10 12 15 17 10"></polyline>
+        <line x1="12" y1="15" x2="12" y2="3"></line>
+      </svg>
+      <span>Download Chat</span>
+    </button>
+    <div class="h-px bg-white/10 my-1"></div>
+    <button onclick="handleDeleteCurrentChat()" class="w-full flex items-center gap-2 px-2.5 py-1.5 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition">
+      <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="3 6 5 6 21 6"></polyline>
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+      </svg>
+      <span>Delete Chat</span>
+    </button>
+  </div>
 
-            <!-- =========================== User Pipeline Section =========================== -->
-            <div id="userPipelineSection" class="pipeline-section mt-3 user-only hidden">
-                <div class="card">
-                    <div class="card-header">
-                        <h2>Run My Extraction Pipeline</h2>
-                    </div>
-                    <p class="muted small">
-                        Automatically processes the documents you uploaded with your most recently confirmed schema. No parameters required!
-                    </p>
-                    <div class="pipeline-actions">
-                        <button class="btn btn-primary btn-lg btn-full" id="userAutoRunPipelineBtn">
-                            ⚡ Run Pipeline on My Documents
-                        </button>
-                    </div>
-                    <div id="userAutoRunStatus" class="status-box hidden"></div>
-                </div>
+  <!-- Toast Notification -->
+  <div id="toast" class="hidden fixed bottom-20 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-4 py-2 rounded-xl text-xs font-medium border border-white/10 shadow-2xl z-50 animate-fadeIn">
+    Toast message
+  </div>
 
-                <div class="card">
-                    <div class="card-header">
-                        <h2>My Extraction Jobs</h2>
-                        <button class="btn btn-ghost btn-sm" id="refreshUserJobsBtn">↻ Refresh</button>
-                    </div>
-                    <div id="userJobList">
-                        <p class="muted">No jobs yet.</p>
-                    </div>
-                </div>
-
-                <div id="userJobDetailCard" class="card hidden">
-                    <div class="card-header">
-                        <h2>Job Detail: <span id="userDetailJobId">—</span></h2>
-                        <div class="card-actions">
-                            <span id="userDetailStatus" class="badge">—</span>
-                            <button class="btn btn-sm btn-warn hidden" id="userJobPauseBtn" title="Pause active job">⏸ Pause</button>
-                            <button class="btn btn-sm btn-primary hidden" id="userJobResumeBtn" title="Resume paused job">▶ Resume</button>
-                            <button class="btn btn-sm btn-danger hidden" id="userJobKillBtn" title="Kill / cancel job">✕ Kill</button>
-                        </div>
-                    </div>
-                    <div id="userJobDetail"></div>
-                </div>
-            </div>
-        </section>
-
-        <!-- =========================== TAB: Shared Documents (Admin) =========================== -->
-        <section id="tab-documents" class="tab-panel admin-only">
-            <div class="card">
-                <h2>Upload Shared Documents</h2>
-                <p class="muted">Add PDFs to the dataset folder. Files go into shared <code>dataset/</code> pool.</p>
-                <div class="upload-zone" id="uploadZone">
-                    <input type="file" id="fileInput" multiple accept="application/pdf,.pdf" hidden>
-                    <div class="upload-inner">
-                        <p class="upload-icon">📄</p>
-                        <p><strong>Drag &amp; drop PDFs here</strong> or <a href="#" id="browseBtn">browse</a></p>
-                        <p class="muted small">Multi-select supported. Files go into <code>dataset/</code>.</p>
-                    </div>
-                </div>
-                <div id="uploadStatus" class="status-box hidden"></div>
-            </div>
-
-            <div class="card">
-                <div class="card-header">
-                    <h2>Dataset (<span id="docCount">0</span>)</h2>
-                    <button class="btn btn-ghost" id="refreshDocsBtn">↻ Refresh</button>
-                </div>
-                <div id="docList" class="doc-list">
-                    <p class="muted">Loading…</p>
-                </div>
-            </div>
-
-            <div class="card">
-                <div class="card-header">
-                    <h2>Outputs (<span id="outCount">0</span>)</h2>
-                </div>
-                <div id="outList" class="doc-list">
-                    <p class="muted">Load documents first.</p>
-                </div>
-            </div>
-        </section>
-
-        <!-- =========================== TAB: My Documents (User Only) =========================== -->
-        <section id="tab-user-documents" class="tab-panel user-only hidden">
-            <div class="card">
-                <h2>Upload My Documents</h2>
-                <p class="muted">Add PDFs to your isolated workspace. These documents are private to your account.</p>
-                <div class="upload-zone" id="userUploadZone">
-                    <input type="file" id="userFileInput" multiple accept="application/pdf,.pdf" hidden>
-                    <div class="upload-inner">
-                        <p class="upload-icon">📄</p>
-                        <p><strong>Drag &amp; drop PDFs here</strong> or <a href="#" id="userBrowseBtn">browse</a></p>
-                        <p class="muted small">Multi-select supported. Files are saved in your private workspace.</p>
-                    </div>
-                </div>
-                <div id="userUploadStatus" class="status-box hidden"></div>
-            </div>
-
-            <div class="card">
-                <div class="card-header">
-                    <h2>My Documents (<span id="userDocCount">0</span>)</h2>
-                    <button class="btn btn-ghost" id="refreshUserDocsBtn">↻ Refresh</button>
-                </div>
-                <div id="userDocList" class="doc-list">
-                    <p class="muted">Loading…</p>
-                </div>
-            </div>
-        </section>
-
-        <!-- =========================== TAB: Logs (Admin Only) =========================== -->
-        <section id="tab-logs" class="tab-panel admin-only">
-            <div class="card">
-                <div class="card-header">
-                    <h2>System &amp; User Activity Logs</h2>
-                    <div class="card-actions">
-                        <button class="btn btn-primary btn-sm" id="logSubTabUsersBtn">User Activity</button>
-                        <button class="btn btn-outline btn-sm" id="logSubTabSystemBtn">System Logs</button>
-                        <button class="btn btn-ghost btn-sm" id="refreshLogsBtn">↻ Refresh</button>
-                    </div>
-                </div>
-
-                <!-- User Activity Sub-Panel -->
-                <div id="userLogsPanel">
-                    <div class="form-row" style="display: flex; gap: 8px; align-items: center; max-width: 480px; margin-bottom: 12px;">
-                        <input type="text" id="logFilterUsername" placeholder="Filter by username (e.g. admin)..." style="flex: 1;">
-                        <button class="btn btn-primary btn-sm" id="applyLogFilterBtn">Filter</button>
-                        <button class="btn btn-ghost btn-sm" id="clearLogFilterBtn">Clear</button>
-                    </div>
-                    <div id="userLogsList" class="logs-container">
-                        <p class="muted">Loading user logs...</p>
-                    </div>
-                </div>
-
-                <!-- System Logs Sub-Panel -->
-                <div id="systemLogsPanel" class="hidden">
-                    <div id="systemLogsList" class="logs-container log-terminal">
-                        <p class="muted">Loading system logs...</p>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- =========================== TAB: User Management (Admin Only) =========================== -->
-        <section id="tab-users" class="tab-panel admin-only">
-            <div class="card">
-                <div class="card-header">
-                    <h2>Create User Account</h2>
-                </div>
-                <form id="createUserForm" style="max-width: 480px;">
-                    <div class="form-row">
-                        <label for="newUsername">Username</label>
-                        <input type="text" id="newUsername" placeholder="username" required>
-                    </div>
-                    <div class="form-row">
-                        <label for="newPassword">Password</label>
-                        <input type="password" id="newPassword" placeholder="password" required>
-                    </div>
-                    <div class="form-row">
-                        <label for="newRole">Role</label>
-                        <select id="newRole">
-                            <option value="user" selected>user</option>
-                            <option value="admin">admin</option>
-                        </select>
-                    </div>
-                    <button type="submit" id="createUserBtn" class="btn btn-primary">Create Account</button>
-                    <div id="createUserStatus" class="status-box hidden"></div>
-                </form>
-            </div>
-
-            <div class="card">
-                <div class="card-header">
-                    <h2>System Users</h2>
-                    <button class="btn btn-ghost btn-sm" id="refreshUsersListBtn">↻ Refresh</button>
-                </div>
-                <div id="usersListTable">
-                    <p class="muted">Loading users...</p>
-                </div>
-            </div>
-        </section>
-        <!-- =========================== TAB: Query Bot (Admin Only) =========================== -->
-        <section id="tab-querybot" class="tab-panel admin-only">
-            <div class="card">
-                <div class="card-header">
-                    <h2>Query Bot</h2>
-                    <div class="card-actions">
-                        <button class="btn btn-ghost btn-sm" id="qbClearBtn">🗑 Clear Chat</button>
-                    </div>
-                </div>
-
-                <!-- Chat window -->
-                <div class="query-bot-container">
-                    <div class="query-bot-messages" id="tab_qb_msgs">
-                        <div class="query-bot-msg bot">Hi! Ask me anything about the extracted document data.</div>
-                    </div>
-                    <div class="query-bot-input-row">
-                        <input type="text" class="query-bot-input" id="tab_qb_input"
-                            placeholder="Ask a question about the extracted JSON..."
-                            autocomplete="off">
-                        <button type="button" class="query-bot-send-btn" id="tab_qb_btn">Ask Bot</button>
-                    </div>
-                </div>
-            </div>
-        </section>
-    </main>
-
-    <script src="app.js?v=18"></script>
+  <script src="app.js"></script>
 </body>
 </html>

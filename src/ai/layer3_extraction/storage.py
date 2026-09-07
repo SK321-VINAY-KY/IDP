@@ -149,8 +149,23 @@ class JobPdfRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+# ==============================================================================
+# Table 6: Application Users & RBAC Storage
+# ==============================================================================
+class UserRecord(Base):
+    __tablename__ = "app_users"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    full_name: Mapped[str] = mapped_column(String, nullable=False)
+    email: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    password_hash: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(String, default="user", nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 def init_db():
-    """Create all 5 tables in PostgreSQL / SQLite if they do not exist."""
+    """Create all tables in PostgreSQL / SQLite if they do not exist."""
     global engine, SessionLocal
     try:
         Base.metadata.create_all(engine)

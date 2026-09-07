@@ -53,7 +53,8 @@ def test_acceptance_criteria_complete_suite(client, monkeypatch):
 
     me_admin = client.get("/auth/me", headers=admin_auth)
     assert me_admin.status_code == 200
-    assert me_admin.json() == {"username": "admin", "role": "admin"}
+    assert me_admin.json()["username"] == "admin"
+    assert me_admin.json()["role"] == "admin"
 
     # 2. Admin creates two user-role accounts: user1 and user2
     for u, p in [("user1", "pass1"), ("user2", "pass2")]:
@@ -95,7 +96,8 @@ def test_acceptance_criteria_complete_suite(client, monkeypatch):
     assert "Build and confirm a schema first" in resp_no_schema.json()["detail"]
 
     # User3 with no docs and no schema -> 400 "Upload documents first"
-    store.create(username="user3", password="pass3", role=Role.USER)
+    if not store.get_by_username("user3"):
+        store.create(username="user3", password="pass3", role=Role.USER)
     auth3 = {"Authorization": f"Bearer {login(client, 'user3', 'pass3')}"}
     resp_no_docs = client.post("/me/pipeline/run", headers=auth3)
     assert resp_no_docs.status_code == 400
