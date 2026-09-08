@@ -1,0 +1,14 @@
+You are analyzing a contiguous segment of document pages (pages {{ page_range[0] }} to {{ page_range[1] }}).
+
+Segment text:
+{{ segment_text }}
+
+Task:
+Determine the sub-document type and provide a one-line summary of this segment.
+Preserve key names, dates, amounts, and identifiers exactly as written.
+
+Respond with ONLY valid JSON in this exact structure:
+{
+  "doc_type_hint": "<sub-document type name, e.g. discharge summary, pharmacy bill, ambulance bill, deposit receipt, authorization letter, invoice, lab report>",
+  "one_line_summary": "<one sentence summarizing what this sub-document is, who it is for, key date/amounts, and context>"
+}

@@ -1,18 +1,23 @@
 """
 File: storage.py
-Purpose: PostgreSQL storage schema for IDP System.
+Purpose: PostgreSQL / SQLite storage schema for IDP System.
 
   Tables:
     1. documents:
        Stores uploaded input documents (e.g. PDF binaries, size, hash, metadata).
-    2. schemas:
-       Stores confirmed target schemas (JSONB specification, fields, document type).
-    3. document_markdowns:
+    2. document_markdowns:
        Stores converted Markdown outputs (.md) produced by Layer 1 & 2 conversion.
-    4. extraction_runs:
+    3. extraction_runs:
        Stores structured field extraction results produced by Layer 3.
+    4. job_pdfs:
+       Stores generated PDF report binaries.
 
-Owner: engineer-b@idp-pilot & engineer-a@idp-pilot
+NOTE: The legacy 'schemas' table definition (SchemaRecord) and save_schema_record
+have been removed as schema_chatbot_v2 was deprecated. Existing SQLite/PostgreSQL
+databases will retain an orphaned 'schemas' table since SQLAlchemy does not drop
+existing tables automatically. This is safe to leave as-is.
+
+Owner: engineer-a@idp-pilot
 """
 from __future__ import annotations
 
@@ -84,21 +89,8 @@ class DocumentRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
-# ==============================================================================
-# Table 2: Confirmed Target Schemas
-# ==============================================================================
-class SchemaRecord(Base):
-    __tablename__ = "schemas"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    schema_id: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
-    document_type: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
-    field_count: Mapped[int] = mapped_column(Integer, default=0)
-    schema_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    sample_documents: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
-    session_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+# NOTE: Table 2 (schemas / SchemaRecord) has been removed. Any existing dev/prod
+# database will retain an orphaned 'schemas' table without error.
 
 
 # ==============================================================================
@@ -127,7 +119,7 @@ class ExtractionRun(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     doc_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     page_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    schema_name: Mapped[str] = mapped_column(String, nullable=False)
+    schema_name: Mapped[Optional[str]] = mapped_column(String, nullable=True, default="navigation_ontology")
     result_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     page_details: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     llm_provider: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -201,52 +193,7 @@ def save_document(filename: str, file_bytes: bytes, content_type: str = "applica
         return None
 
 
-def save_schema_record(
-    schema_id: str,
-    document_type: str,
-    schema_json: dict,
-    session_id: Optional[str] = None,
-    sample_documents: Optional[list] = None,
-    confirmed_at: Optional[datetime] = None,
-) -> Optional[int]:
-    """
-    Save or update a target schema in PostgreSQL.
-    """
-    try:
-        init_db()
-        fields = (schema_json.get("schema") or {}).get("fields", []) or schema_json.get("fields", [])
-        field_count = len(fields)
-        session = SessionLocal()
-        try:
-            rec = session.query(SchemaRecord).filter_by(schema_id=schema_id).first()
-            if rec:
-                rec.document_type = document_type
-                rec.field_count = field_count
-                rec.schema_json = schema_json
-                rec.sample_documents = sample_documents or []
-                rec.session_id = session_id
-                if confirmed_at:
-                    rec.confirmed_at = confirmed_at
-            else:
-                rec = SchemaRecord(
-                    schema_id=schema_id,
-                    document_type=document_type,
-                    field_count=field_count,
-                    schema_json=schema_json,
-                    sample_documents=sample_documents or [],
-                    session_id=session_id,
-                    confirmed_at=confirmed_at or datetime.now(timezone.utc),
-                )
-                session.add(rec)
-            session.commit()
-            session.refresh(rec)
-            logger.info("storage.schema_saved", schema_id=schema_id, id=rec.id, field_count=field_count)
-            return rec.id
-        finally:
-            session.close()
-    except Exception as exc:
-        logger.error("storage.save_schema_failed", schema_id=schema_id, error=str(exc))
-        return None
+
 
 
 def save_markdown_record(
@@ -299,12 +246,12 @@ def save_markdown_record(
 def save_extraction_run(
     doc_id: str,
     page_count: int | None,
-    schema_name: str,
     result_json: dict,
-    llm_provider: str | None,
-    model_name: str | None,
-    processing_time_seconds: float | None,
+    llm_provider: str | None = None,
+    model_name: str | None = None,
+    processing_time_seconds: float | None = None,
     page_outputs: list | None = None,
+    schema_name: str = "navigation_ontology",
 ) -> Optional[int]:
     """
     Save one extraction run in PostgreSQL.

@@ -3,8 +3,6 @@ File: page_loader.py
 Purpose: Convert Layer 1/2 PageOutput objects into the list[dict] contract
          that Layer 3's extractor expects.
 
-Owner: engineer-b@idp-pilot
-Created: 2026-08-20 | Updated: 2026-08-28
 """
 import re
 from pathlib import Path

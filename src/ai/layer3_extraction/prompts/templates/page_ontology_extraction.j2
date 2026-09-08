@@ -1,0 +1,83 @@
+You are an expert document extraction engine. Extract all candidate entities (nodes) and intra-page relationships (edges) from Page {{ page_number }} according to the baseline 9-category ontology.
+
+### Baseline Ontology Categories:
+1. Person: Patients, doctors, surgeons, cashiers, card holders, relatives (e.g. "Chander Kochhar", "Dr. Abhay Raut").
+2. Organization: Hospitals, pharmacies/chemists, ambulance services, insurers, banks, diagnostic centers (e.g. "P. D. Hinduja Hospital", "Hayaat Chemist", "ICICI Lombard").
+3. Location: Places, branches, hospital wards, bed numbers, addresses, cities (e.g. "Pali Hill Bandra West", "Khar (W)", "Bed No 12").
+4. Document/Record: Specific sub-document titles or form headings (e.g. "Discharge Summary", "Tax Invoice", "Ambulance Bill", "TPA Undertaking").
+5. Event: Medical or billing events (e.g. "Admission", "Discharge", "Emergency Transport", "Surgery").
+6. Amount: Monetary charges, totals, deposits, deductions (e.g. "INR 1485.75", "Rs 10,000.00").
+7. Identifier: Reference numbers, IDs, codes, phone numbers (e.g. "HS No: 192673", "Phone: 9892462685", "Bill No: 220912", "UHID: 68049").
+8. Date: Dates and timestamps (e.g. "24-02-2025", "22/02/2025").
+9. Item: Line items, medications, consumables, equipment, room rent (e.g. "FIRACOMT LM RESPULES", "Oxygen", "Ambulance Transport").
+10. Other: Any other information you judge important enough to preserve that does not fit the 9 categories above (e.g., medical diagnoses, policy terms, insurance authorization conditions). Always set "subtype" to describe what it is.
+
+### Relationships:
+- CONTAINS: Document/Record contains Item, Identifier, Amount, or Date.
+- MENTIONS: Document/Record mentions Person, Organization, or Location.
+- PERFORMED_BY: Procedure, consultation, or event performed by Person.
+- HAS_AMOUNT: Document, line item, or deposit has Amount.
+- HAS_DATE: Document, admission, or event has Date.
+- RELATES_TO: Relationship between entities on the same page.
+
+{% if extraction_focus %}
+The user has told you the following matters when extracting from this document — weigh it heavily alongside your own judgment:
+{% for hint in extraction_focus %}
+- {{ hint }}
+{% endfor %}
+{% endif %}
+
+### Rules:
+- For every entity you extract — whether it matches one of the listed categories or not — assign an importance level (high/medium/low) and a one-line reason for that judgment. This applies to standard categories like Person, Amount, Identifier, etc. just as much as to anything you flag as Other.
+- Extract strictly from the provided text below.
+- Do NOT hallucinate entities not present on this page.
+- For each node, provide:
+  - "category": One of the 9 baseline categories, or "Other".
+  - "subtype": Optional specific sub-classification (required if category is "Other", e.g. "Medical Diagnosis", "Policy Condition").
+  - "label": Clear extracted label text (e.g. "Phone: 9892462685" for phone numbers, "Dr. Abhay Raut" for persons).
+  - "evidence": The exact verbatim text excerpt where it appears (max 150 chars).
+  - "importance": "high", "medium", or "low", judging the significance of this fact to the overall document.
+  - "importance_reason": Concise sentence explaining why this node is assigned that importance level.
+- Output must be valid JSON only — no conversational preamble, no markdown formatting outside JSON.
+
+--- Page {{ page_number }} Text ---
+{{ page_md }}
+--- End of Page Text ---
+
+Respond with JSON in this format:
+{
+  "nodes": [
+    {
+      "category": "Organization",
+      "subtype": "Pharmacy",
+      "label": "Hayaat Chemist",
+      "evidence": "HAYAAT CHEMIST\nSHOP NO.L. LBURIES HEAVEN BLDE.",
+      "importance": "high",
+      "importance_reason": "Issuing medical provider for pharmacy charges"
+    },
+    {
+      "category": "Identifier",
+      "subtype": "Phone",
+      "label": "Phone: 9892462685",
+      "evidence": "N081LE:9892462685",
+      "importance": "medium",
+      "importance_reason": "Contact number of provider"
+    },
+    {
+      "category": "Other",
+      "subtype": "Medical Diagnosis",
+      "label": "Acute Bronchitis",
+      "evidence": "DIAGNOSIS: Acute Bronchitis with wheeze",
+      "importance": "high",
+      "importance_reason": "Primary diagnosis explaining hospitalization and treatment"
+    }
+  ],
+  "edges": [
+    {
+      "source_label": "Hayaat Chemist",
+      "relationship": "CONTAINS",
+      "target_label": "Phone: 9892462685",
+      "evidence": "Hayaat Chemist pharmacy bill lists contact number"
+    }
+  ]
+}

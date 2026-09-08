@@ -1,0 +1,41 @@
+You are an expert document intelligence engine. Synthesize the top document-level key findings from the document segments and candidate entities extracted below.
+
+### Document Segments:
+{% for seg in segments %}
+- {{ seg.segment_id }} (Pages {{ seg.page_range[0] }}-{{ seg.page_range[1] }}): {{ seg.doc_type_hint }} — {{ seg.one_line_summary }}
+{% endfor %}
+
+### Top Candidate Entities Extracted:
+{% for node in candidate_nodes %}
+- [{{ node.type }}] {{ node.label }} (Page {{ node.source_page }}, Importance: {{ node.importance }}{% if node.subtype %}, Subtype: {{ node.subtype }}{% endif %})
+{% endfor %}
+
+{% if extraction_focus %}
+The user has told you the following matters when extracting from this document — weigh it heavily alongside your own judgment:
+{% for hint in extraction_focus %}
+- {{ hint }}
+{% endfor %}
+{% endif %}
+
+### Instructions:
+1. Synthesize a concise, high-value list of the most critical key findings for this document as a whole.
+2. For each key finding, provide:
+   - "label": Clear title / name of the finding (e.g. "Primary Patient", "Admitting Diagnosis", "Total Hospital Bill", "Authorization Status").
+   - "value": The core value or conclusion (e.g. "Chander Kochhar", "Acute Bronchitis with Bronchospasm", "INR 18,340.00", "Approved for INR 15,000").
+   - "importance": "high", "medium", or "low".
+   - "reason": Why this finding is critical to understanding the document.
+   - "source_pages": List of page numbers supporting this finding.
+3. Return valid JSON only, matching the exact format below.
+
+Respond with JSON in this format:
+{
+  "key_findings": [
+    {
+      "label": "Primary Patient",
+      "value": "Chander Kochhar",
+      "importance": "high",
+      "reason": "Subject of medical record and all associated claims",
+      "source_pages": [1, 2, 4]
+    }
+  ]
+}

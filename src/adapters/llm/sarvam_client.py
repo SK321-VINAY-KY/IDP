@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel
 
 from src.config.settings import settings
@@ -33,6 +33,50 @@ def _strip_fences(raw: str) -> str:
     raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
     raw = re.sub(r"\s*```$", "", raw)
     return raw.strip()
+
+
+import datetime
+import time
+from pathlib import Path
+
+LOGS_DIR = Path("logs")
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+_current_run_log_file: Optional[Path] = None
+
+
+def set_run_log_file(path: Union[str, Path]) -> Path:
+    global _current_run_log_file
+    _current_run_log_file = Path(path)
+    _current_run_log_file.parent.mkdir(parents=True, exist_ok=True)
+    return _current_run_log_file
+
+
+def get_run_log_file() -> Path:
+    global _current_run_log_file
+    if _current_run_log_file is None:
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        _current_run_log_file = LOGS_DIR / f"layer3_run_{ts}.log"
+    return _current_run_log_file
+
+
+def log_sarvam_request(phase: str, prompt: str, response: str, model: str, latency_s: float) -> None:
+    log_file = get_run_log_file()
+    ts_str = datetime.datetime.now().isoformat()
+    entry = (
+        f"\n{'=' * 80}\n"
+        f"TIMESTAMP: {ts_str}\n"
+        f"PHASE: {phase}\n"
+        f"MODEL: {model} | LATENCY: {latency_s:.2f}s\n"
+        f"{'-' * 35} PROMPT SENT {'-' * 35}\n"
+        f"{prompt.strip()}\n"
+        f"{'-' * 35} RESPONSE RECEIVED {'-' * 35}\n"
+        f"{response.strip()}\n"
+        f"{'=' * 80}\n"
+    )
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write(entry)
+        f.flush()
+
 
 
 class SarvamExtractionClient:
@@ -258,3 +302,255 @@ class SarvamExtractionClient:
             if field in valid_names and value not in ("", None):
                 result.append({"field": str(field), "value": str(value)})
         return result
+
+    def summarize_segment(
+        self,
+        segment_text: str,
+        page_range: List[int],
+    ) -> Dict[str, str]:
+        """
+        Summarize a multi-page document segment to extract doc_type_hint and one_line_summary.
+        """
+        prompt = render_prompt(
+            "segment_summary",
+            segment_text=segment_text[:4000],
+            page_range=page_range,
+        )
+        params = prompt_params("segment_summary")
+        t0 = time.time()
+
+        resp = self.raw_client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=params.get("temperature", 0.0),
+            max_tokens=params.get("max_tokens", 2048),
+            extra_body={"reasoning_effort": self.reasoning_effort},
+        )
+        latency = time.time() - t0
+        choice = resp.choices[0]
+        raw = choice.message.content or ""
+        if not raw and hasattr(choice.message, "reasoning_content") and choice.message.reasoning_content:
+            raw = choice.message.reasoning_content
+        log_sarvam_request("segmentation summary", prompt, raw, self.model, latency)
+
+        raw = _strip_fences(raw)
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return {
+                    "doc_type_hint": str(parsed.get("doc_type_hint", "unknown")),
+                    "one_line_summary": str(parsed.get("one_line_summary", "")),
+                }
+        except Exception:
+            logger.warning("sarvam.summarize_segment.parse_failed", raw=raw[:200])
+        return {"doc_type_hint": "unknown", "one_line_summary": raw.strip()[:200]}
+
+    def navigate_category(
+        self,
+        segment_summaries: List[Dict[str, Any]],
+        category: str,
+        category_description: str,
+        category_examples: Optional[List[str]] = None,
+        extraction_focus: Optional[List[str]] = None,
+    ) -> List[str]:
+        """
+        Identify segment_ids that plausibly contain mentions of the specified ontology category.
+        """
+        prompt = render_prompt(
+            "category_navigation",
+            segments=segment_summaries,
+            category=category,
+            category_description=category_description,
+            category_examples=category_examples or [],
+            extraction_focus=extraction_focus,
+        )
+        params = prompt_params("category_navigation")
+        t0 = time.time()
+
+        resp = self.raw_client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=params.get("temperature", 0.0),
+            max_tokens=params.get("max_tokens", 2048),
+            extra_body={"reasoning_effort": self.reasoning_effort},
+        )
+        latency = time.time() - t0
+        choice = resp.choices[0]
+        raw = choice.message.content or ""
+        if not raw and hasattr(choice.message, "reasoning_content") and choice.message.reasoning_content:
+            raw = choice.message.reasoning_content
+        log_sarvam_request("navigation", prompt, raw, self.model, latency)
+
+        raw = _strip_fences(raw)
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict) and "segment_ids" in parsed:
+                return [str(s) for s in parsed["segment_ids"]]
+            if isinstance(parsed, list):
+                return [str(s) for s in parsed]
+        except Exception:
+            # Try regex fallback for segment IDs (e.g. seg_01, seg_04)
+            seg_matches = re.findall(r"seg_\d+", raw)
+            if seg_matches:
+                return list(dict.fromkeys(seg_matches))
+            logger.warning("sarvam.navigate_category.parse_failed", raw=raw[:200])
+        return []
+
+    def extract_page_ontology(
+        self,
+        page_md: str,
+        page_number: int,
+        extraction_focus: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Phase C: Extract candidate ontology nodes and edges from a single page using LLM.
+        """
+        prompt = render_prompt(
+            "page_ontology_extraction",
+            page_md=page_md[:6000],
+            page_number=page_number,
+            extraction_focus=extraction_focus,
+        )
+        params = prompt_params("page_ontology_extraction")
+        t0 = time.time()
+
+        resp = self.raw_client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=params.get("temperature", 0.0),
+            max_tokens=params.get("max_tokens", 3000),
+            extra_body={"reasoning_effort": self.reasoning_effort},
+        )
+        latency = time.time() - t0
+        choice = resp.choices[0]
+        raw = choice.message.content or ""
+        reasoning = getattr(choice.message, "reasoning_content", None)
+        if not raw and reasoning:
+            raw = str(reasoning)
+        log_sarvam_request(f"page_ontology_extraction p{page_number}", prompt, raw, self.model, latency)
+
+        return self._parse_page_ontology_json(raw, page_number)
+
+    def _parse_page_ontology_json(self, raw: str, page_number: int = 0) -> Dict[str, Any]:
+        """
+        Parse page ontology extraction JSON with resilience against model output truncation.
+        """
+        cleaned = _strip_fences(raw)
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                return {
+                    "nodes": parsed.get("nodes", []),
+                    "edges": parsed.get("edges", []),
+                }
+        except Exception:
+            pass
+
+        # Recovery Strategy 1: Truncation repair by cutting back to last complete '}'
+        last_brace = cleaned.rfind("}")
+        if last_brace != -1:
+            truncated = cleaned[:last_brace + 1]
+            for closing in ["]}", "\n  ]\n}", "}\n}", "\n}"]:
+                try:
+                    candidate = truncated + closing
+                    parsed = json.loads(candidate)
+                    if isinstance(parsed, dict):
+                        nodes = parsed.get("nodes", [])
+                        edges = parsed.get("edges", [])
+                        if nodes or edges:
+                            logger.info(
+                                "sarvam.extract_page_ontology.recovered_truncated",
+                                page=page_number,
+                                recovered_nodes=len(nodes),
+                                recovered_edges=len(edges),
+                            )
+                            return {"nodes": nodes, "edges": edges}
+                except Exception:
+                    pass
+
+        # Recovery Strategy 2: Individual JSON object regex extraction
+        nodes: List[Dict[str, Any]] = []
+        edges: List[Dict[str, Any]] = []
+        nodes_part = cleaned.split('"nodes"')[1] if '"nodes"' in cleaned else ""
+        edges_part = nodes_part.split('"edges"')[1] if '"edges"' in nodes_part else ""
+        if '"edges"' in nodes_part:
+            nodes_part = nodes_part.split('"edges"')[0]
+
+        for m in re.finditer(r'\{[^{}]*"category"[^{}]*\}', nodes_part, re.DOTALL):
+            try:
+                node = json.loads(m.group(0))
+                if isinstance(node, dict) and "category" in node and "label" in node:
+                    nodes.append(node)
+            except Exception:
+                pass
+
+        for m in re.finditer(r'\{[^{}]*"source_label"[^{}]*\}', edges_part, re.DOTALL):
+            try:
+                edge = json.loads(m.group(0))
+                if isinstance(edge, dict) and "source_label" in edge and "target_label" in edge:
+                    edges.append(edge)
+            except Exception:
+                pass
+
+        if nodes or edges:
+            logger.info(
+                "sarvam.extract_page_ontology.recovered_regex",
+                page=page_number,
+                recovered_nodes=len(nodes),
+                recovered_edges=len(edges),
+            )
+            return {"nodes": nodes, "edges": edges}
+
+        logger.warning("sarvam.extract_page_ontology.parse_failed", page=page_number, raw=cleaned[:200])
+        return {"nodes": [], "edges": []}
+
+    def extract_key_findings(
+        self,
+        segments: List[Dict[str, Any]],
+        candidate_nodes: List[Dict[str, Any]],
+        extraction_focus: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Synthesize document-level key findings from segments and candidate nodes.
+        """
+        prompt = render_prompt(
+            "document_key_findings",
+            segments=segments,
+            candidate_nodes=candidate_nodes,
+            extraction_focus=extraction_focus,
+        )
+        params = prompt_params("document_key_findings")
+        t0 = time.time()
+
+        resp = self.raw_client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=params.get("temperature", 0.0),
+            max_tokens=params.get("max_tokens", 3000),
+            extra_body={"reasoning_effort": self.reasoning_effort},
+        )
+        latency = time.time() - t0
+        choice = resp.choices[0]
+        raw = choice.message.content or ""
+        if not raw and hasattr(choice.message, "reasoning_content") and choice.message.reasoning_content:
+            raw = choice.message.reasoning_content
+        log_sarvam_request("document_key_findings", prompt, raw, self.model, latency)
+
+        raw = _strip_fences(raw)
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return {"key_findings": parsed.get("key_findings", [])}
+        except Exception:
+            json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if json_match:
+                try:
+                    parsed = json.loads(json_match.group(0))
+                    if isinstance(parsed, dict):
+                        return {"key_findings": parsed.get("key_findings", [])}
+                except Exception:
+                    pass
+            logger.warning("sarvam.extract_key_findings.parse_failed", raw=raw[:200])
+        return {"key_findings": []}
+
+

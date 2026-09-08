@@ -1,0 +1,1074 @@
+{
+  "source_pdf": "Chander Kochhar 01_compressed 2.pdf",
+  "output_md": "Chander Kochhar 01_compressed 2.md",
+  "schema_id": "schema_32415169aa75",
+  "schema_registry_file": "schema_32415169aa75.json",
+  "document_type": "patient_information",
+  "pages": [
+    {
+      "page_number": 1,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9906,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 2422
+    },
+    {
+      "page_number": 2,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9463,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 935
+    },
+    {
+      "page_number": 3,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9773,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1147
+    },
+    {
+      "page_number": 4,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.8735,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 594
+    },
+    {
+      "page_number": 5,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9148,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1507
+    },
+    {
+      "page_number": 6,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9542,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 731
+    },
+    {
+      "page_number": 7,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9891,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1825
+    },
+    {
+      "page_number": 8,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.7436,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 51
+    },
+    {
+      "page_number": 9,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9973,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1685
+    },
+    {
+      "page_number": 10,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9646,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1452
+    },
+    {
+      "page_number": 11,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9417,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 715
+    },
+    {
+      "page_number": 12,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9785,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1542
+    },
+    {
+      "page_number": 13,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.974,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1914
+    },
+    {
+      "page_number": 14,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9845,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1840
+    },
+    {
+      "page_number": 15,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.988,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1917
+    },
+    {
+      "page_number": 16,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.978,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1951
+    },
+    {
+      "page_number": 17,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9828,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1920
+    },
+    {
+      "page_number": 18,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9916,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1125
+    },
+    {
+      "page_number": 19,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9577,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 956
+    },
+    {
+      "page_number": 20,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9711,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 724
+    },
+    {
+      "page_number": 21,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9464,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 792
+    },
+    {
+      "page_number": 22,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9903,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1190
+    },
+    {
+      "page_number": 23,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9435,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1071
+    },
+    {
+      "page_number": 24,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9884,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 557
+    },
+    {
+      "page_number": 25,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9737,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1112
+    },
+    {
+      "page_number": 26,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9804,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1136
+    },
+    {
+      "page_number": 27,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9759,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 947
+    },
+    {
+      "page_number": 28,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9726,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 574
+    },
+    {
+      "page_number": 29,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9738,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1840
+    },
+    {
+      "page_number": 30,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9719,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1560
+    },
+    {
+      "page_number": 31,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9785,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1368
+    },
+    {
+      "page_number": 32,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9868,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1639
+    },
+    {
+      "page_number": 33,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9876,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1733
+    },
+    {
+      "page_number": 34,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9835,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1356
+    },
+    {
+      "page_number": 35,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9171,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1846
+    },
+    {
+      "page_number": 36,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9631,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1115
+    },
+    {
+      "page_number": 37,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9739,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1706
+    },
+    {
+      "page_number": 38,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9694,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1689
+    },
+    {
+      "page_number": 39,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9498,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 687
+    },
+    {
+      "page_number": 40,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9772,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1662
+    },
+    {
+      "page_number": 41,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9684,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1559
+    },
+    {
+      "page_number": 42,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9631,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1294
+    },
+    {
+      "page_number": 43,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9787,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1068
+    },
+    {
+      "page_number": 44,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9735,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1146
+    },
+    {
+      "page_number": 45,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.977,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1269
+    },
+    {
+      "page_number": 46,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9773,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1377
+    },
+    {
+      "page_number": 47,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9786,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 934
+    },
+    {
+      "page_number": 48,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9529,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 959
+    },
+    {
+      "page_number": 49,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9775,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1616
+    },
+    {
+      "page_number": 50,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9629,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1687
+    },
+    {
+      "page_number": 51,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9527,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1225
+    },
+    {
+      "page_number": 52,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9712,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1360
+    },
+    {
+      "page_number": 53,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9811,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1275
+    },
+    {
+      "page_number": 54,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9712,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1365
+    },
+    {
+      "page_number": 55,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9656,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1230
+    },
+    {
+      "page_number": 56,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9483,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1112
+    },
+    {
+      "page_number": 57,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9383,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 3327
+    },
+    {
+      "page_number": 58,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.8559,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 2161
+    },
+    {
+      "page_number": 59,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.8811,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 3896
+    },
+    {
+      "page_number": 60,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.819,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 932
+    },
+    {
+      "page_number": 61,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.8251,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 3630
+    },
+    {
+      "page_number": 62,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.8916,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 2480
+    },
+    {
+      "page_number": 63,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9526,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1466
+    },
+    {
+      "page_number": 64,
+      "engines_used": [
+        "paddleocr_printed",
+        "paddleocr_handwritten"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.5191,
+      "escalated": true,
+      "low_confidence": false,
+      "chars": 1080
+    },
+    {
+      "page_number": 65,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9596,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1705
+    },
+    {
+      "page_number": 66,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9795,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 2360
+    },
+    {
+      "page_number": 67,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9647,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1780
+    },
+    {
+      "page_number": 68,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9567,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1517
+    },
+    {
+      "page_number": 69,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9028,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1037
+    },
+    {
+      "page_number": 70,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9147,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1803
+    },
+    {
+      "page_number": 71,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.869,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 3855
+    },
+    {
+      "page_number": 72,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9893,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 2759
+    },
+    {
+      "page_number": 73,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.993,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 2376
+    },
+    {
+      "page_number": 74,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9768,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 3127
+    },
+    {
+      "page_number": 75,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9782,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 1395
+    },
+    {
+      "page_number": 76,
+      "engines_used": [
+        "paddleocr_printed"
+      ],
+      "capabilities": [
+        "has_printed_scan",
+        "has_handwriting"
+      ],
+      "confidence": 0.9765,
+      "escalated": false,
+      "low_confidence": false,
+      "chars": 659
+    }
+  ]
+}

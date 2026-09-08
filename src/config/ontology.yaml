@@ -1,0 +1,125 @@
+# Baseline Type Ontology for Layer 3 Navigation & Extraction.
+# These 9 categories serve as a baseline floor that the model should always check for,
+# not an exhaustive ceiling. Entities not fitting these categories are captured as
+# type="Other" with a domain-specific subtype and model-judged importance.
+# Loaded once at startup (zero discovery calls).
+
+version: "1.0"
+
+categories:
+  Person:
+    description: "Names of individuals, including patients, treating physicians, surgeons, nurses, hospital staff, cashiers, card holders, guarantors, or relatives."
+    examples:
+      - "Chander Kochhar"
+      - "Dr. Abhay Raut"
+      - "Manu Kochhar"
+      - "Atish Pandurang Ruke"
+
+  Organization:
+    description: "Names of institutions, legal entities, hospitals, clinics, medical centers, pharmacies, chemists, ambulance service providers, insurance companies, banks, or corporate employers."
+    examples:
+      - "P. D. Hinduja Hospital & Medical Research Centre"
+      - "Hayaat Chemist"
+      - "Jeevan Ambulance Service"
+      - "ICICI Lombard General Insurance Company"
+      - "Axis Bank"
+
+  Location:
+    description: "Physical places, postal addresses, hospital wards, department locations, bed numbers, room categories, cities, states, or pin codes."
+    examples:
+      - "724, 11th Road, Khar (West), Mumbai - 400052"
+      - "Pali Naka, Bandra (West), Mumbai - 400050"
+      - "Bed No: 110A"
+      - "Twin Sharing Room"
+
+  Document/Record:
+    description: "Document titles, clinical reports, administrative certificates, or record types."
+    examples:
+      - "Discharge Summary"
+      - "In-Patient Deposit Receipt"
+      - "Pharmacy Bill / Tax Invoice"
+      - "Ambulance Bill"
+      - "Cashless Authorization Letter"
+      - "Inpatient Final Bill"
+
+  Event:
+    description: "Clinical or operational episodes, admissions, surgical procedures, discharges, medical transports, consultations, or diagnostic examinations."
+    examples:
+      - "Hospital Admission"
+      - "Discharge"
+      - "Right bipolar hemiarthroplasty"
+      - "CTPA Pulmonary Angiogram"
+      - "Ambulance Transport"
+
+  Amount:
+    description: "Monetary values, currency charges, bill totals, net amounts, approved cashless guarantees, copays, deductibles, deposits, refunds, or unit rates."
+    examples:
+      - "INR 1,485.75"
+      - "Rs. 4,500"
+      - "Rs. 10,000.00"
+      - "Rs. 80,698"
+      - "INR 1,337.08"
+
+  Identifier:
+    description: "Official alphanumeric reference codes, hospital system numbers, admission numbers, bill numbers, voucher codes, authorization numbers, policy identifiers, tax/GSTIN codes, phone numbers, or UHID."
+    examples:
+      - "Hs No : 192673"
+      - "Adm. No : 68049"
+      - "Bill No : 20570"
+      - "Voucher No : IDE23264/24"
+      - "AL Number : 110100834860-"
+      - "UHID Number : 145304681"
+      - "9819862685"
+
+  Date:
+    description: "Specific calendar dates, admission/discharge dates, bill dates, dates of birth, transaction timestamps, or validity time periods."
+    examples:
+      - "21/02/2025"
+      - "24/02/2025"
+      - "02/12/1933"
+      - "24-FEB-25"
+
+  Item:
+    description: "Particular goods, medications, pharmacy drugs, clinical tests, surgical supplies, equipment, or service charges."
+    examples:
+      - "FIRACONT LM RESPULES"
+      - "TARGOCID"
+      - "ERTAPENEM"
+      - "Apixaban"
+      - "Ambulance ALS charges"
+      - "Ventilator / Oxygen"
+
+edge_types:
+  CONTAINS:
+    description: "A parent entity or document section encompasses a child entity or element."
+  MENTIONS:
+    description: "A record or document mentions an entity or value."
+  REFERS_TO:
+    description: "An anaphoric or cross-page reference pointing to another entity/event."
+  SAME_AS:
+    description: "Identity resolution link: two candidate mentions refer to the identical real-world entity."
+  BELONGS_TO:
+    description: "Ownership or belonging relationship (e.g., policy belongs to patient)."
+  HAS_VALUE:
+    description: "An entity possesses a specific numerical or qualitative value."
+  HAS_DATE:
+    description: "An event, record, or entity has an associated calendar date or timestamp."
+  HAS_AMOUNT:
+    description: "A bill, invoice, receipt, or authorization possesses a specified monetary amount."
+  HAS_ADMISSION:
+    description: "Patient or hospital episode associated with an admission record."
+  HAS_CLAIM:
+    description: "Admission or event associated with an insurance claim."
+  HAS_PROCEDURE:
+    description: "An admission or episode involved a clinical or surgical procedure."
+  PERFORMED_BY:
+    description: "A procedure, examination, or service was conducted by a medical professional."
+  RELATES_TO:
+    description: "General contextual connection between two entities or events."
+  CONTINUES:
+    description: "A record or clinical narrative continues across consecutive pages/sections."
+
+relationship_states:
+  - ASSERTED
+  - INFERRED
+  - UNCERTAIN

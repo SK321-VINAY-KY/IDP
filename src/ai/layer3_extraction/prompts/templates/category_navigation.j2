@@ -1,0 +1,27 @@
+You are navigating a segmented document to locate mentions of a specific ontology category.
+
+Target Category: {{ category }}
+Category Description: {{ category_description }}
+{% if category_examples %}Category Examples: {{ category_examples | join(', ') }}{% endif %}
+
+Segment summaries:
+{% for seg in segments %}
+- {{ seg.segment_id }} (Pages {{ seg.page_range[0] }}-{{ seg.page_range[1] }}): {{ seg.doc_type_hint }} — {{ seg.one_line_summary }}
+{% endfor %}
+
+{% if extraction_focus %}
+The user has told you the following matters when extracting from this document — weigh it heavily alongside your own judgment:
+{% for hint in extraction_focus %}
+- {{ hint }}
+{% endfor %}
+{% endif %}
+
+Instructions:
+Identify ALL segment_ids that plausibly contain mentions or values corresponding to the target category "{{ category }}".
+Do not stop after the first hit. If multiple segments could contain this category (e.g., bills, receipts, summaries, authorizations), return all of them.
+If no segments plausibly contain this category, return an empty list.
+
+Return ONLY valid JSON in this exact format:
+{
+  "segment_ids": ["seg_01", "seg_04"]
+}

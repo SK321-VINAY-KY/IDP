@@ -22,7 +22,7 @@
 The IDP platform operates across three tightly integrated layers:
 - **Layer 1: Routing & Heuristics** — Inspects raw PDF pages with zero-model heuristics, evaluates page layout complexity, and dispatches single or multi-engine extraction plans with VLM escalation.
 - **Layer 2: Conversion & Engine Execution** — Executes the optimal extraction engine (Docling, PaddleOCR printed, or tuned handwritten DBNet), performs line-level normalized deduplication, and generates standardized Markdown with provenance metadata.
-- **Layer 3: Schema Discovery, Extraction & Admin Application** — FastAPI web platform (`schema_chatbot_v2`) providing multi-tenant JWT authentication, interactive schema derivation via Sarvam Document AI and LLM, ReportLab PDF job reporting, PostgreSQL persistence, and interactive JSON Q&A.
+- **Layer 3: Navigation-First Extraction Pipeline** — PageIndex-style segmentation, ontology category navigation, targeted entity & relationship extraction, deterministic recall checks, scoped identity resolution, deterministic identifier matching, and key document findings generation without requiring predefined target schemas.
 
 ```
                                   ┌─────────────────────────────────────────────────────────────┐
@@ -33,17 +33,17 @@ The IDP platform operates across three tightly integrated layers:
       │                                                                                                                     │
       ▼                                                                                                                     ▼
 ┌────────────────────────────────────────────────────────┐                            ┌────────────────────────────────────────────────────────┐
-│               LAYER 1: ROUTING & INSPECTION            │                            │             LAYER 3: SCHEMA DISCOVERY & APP            │
-│  • PyMuPDF heuristic inspection (~10ms / page)         │                            │  • FastAPI 0.111 web server on port 8000               │
-│  • Primary script & complexity score (0..5)            │                            │  • Multi-tenant Auth: RBAC (Admin / User) with JWT     │
-│  • Single-engine or capability-based matching          │                            │  • User Store: JSONFileUserStore (data/users.json)     │
-│  • VLM fallback: Ollama (Qwen2.5-VL) / Gemini          │                            │  • Tab Isolation: Scoped sessionStorage in browser     │
-└──────────────────────────┬─────────────────────────────┘                            │  • Discovery State Machine: COLLECT → INFER → REVIEW   │
-                           │                                                          │  • Sarvam Document AI OCR + Sarvam-105b LLM           │
-                           ▼                                                          │  • ReportLab PDF job report generation                 │
-┌────────────────────────────────────────────────────────┐                            │  • Query Bot: Interactive JSON QA endpoint             │
-│              LAYER 2: CONVERSION ENGINES               │                            │  • Storage: PostgreSQL 18 (with SQLite fallback)       │
-│  • Digital PDF: Docling 2.x (structured tables/text)   │                            └──────────────────────────┬─────────────────────────────┘
+│               LAYER 1: ROUTING & INSPECTION            │                            │         LAYER 3: NAVIGATION-FIRST EXTRACTION           │
+│  • PyMuPDF heuristic inspection (~10ms / page)         │                            │  • Phase A: Boundary detection + Segment Summaries     │
+│  • Primary script & complexity score (0..5)            │                            │  • Phase B: Category Navigation (O(categories) calls)  │
+│  • Single-engine or capability-based matching          │                            │  • Phase C: Targeted Extraction on navigated pages     │
+│  • VLM fallback: Ollama (Qwen2.5-VL) / Gemini          │                            │  • Step 5: Deterministic Recall Check (Ident/Amount)   │
+└──────────────────────────┬─────────────────────────────┘                            │  • Step 6: Scoped Identity Resolution (Person/Org)     │
+                           │                                                          │  • Step 7: Deterministic Identifier Matching           │
+                           ▼                                                          │  • Document-Level Key Findings Generation              │
+┌────────────────────────────────────────────────────────┐                            └──────────────────────────┬─────────────────────────────┘
+│              LAYER 2: CONVERSION ENGINES               │                                                       │
+│  • Digital PDF: Docling 2.x (structured tables/text)   │                                                       │
 │  • Scanned Printed: PP-OCRv6 via PaddleOCR/PaddleX     │                                                       │
 │  • Handwritten: PaddleOCR with det_db_thresh=0.20      │                                                       │
 │  • Escalation Ladder: Digital → Printed → Hand → VLM   │                                                       │
@@ -57,7 +57,6 @@ The IDP platform operates across three tightly integrated layers:
                                               ┌─────────────────────────────────┐
                                               │   POSTGRESQL 18 / RELATIONAL    │
                                               │  • documents (PDF blobs)        │
-                                              │  • schemas (confirmed JSON)     │
                                               │  • document_markdowns (.md)     │
                                               │  • extraction_runs (JSON data)  │
                                               │  • job_pdfs (ReportLab reports) │
@@ -124,11 +123,8 @@ source .venv/bin/activate
 
 ### 3. Install Dependencies
 ```bash
-# Install core pipeline dependencies (PyMuPDF, Docling, PaddleOCR, PyTorch)
+# Install core pipeline dependencies (PyMuPDF, Docling, PaddleOCR, FastAPI, SQLAlchemy, Sarvam)
 pip install -r requirements.txt
-
-# Install Layer 3 Web Application dependencies (FastAPI, Uvicorn, ReportLab, Sarvam SDK)
-pip install -r schema_chatbot_v2/requirements.txt
 ```
 
 ---
@@ -188,23 +184,19 @@ JWT_SECRET=idp-schema-pipeline-dev-secret-key-change-me
 ---
 
 ## ⚡ Execution & Run Instructions
-
-### 1. Run the FastAPI Web Application & Dashboard
-Start the Uvicorn application server:
+ 
+### 1. Run Layer 3 Navigation-First Extraction Pipeline
+Run the full navigation-first extraction pipeline on a markdown document:
 ```bash
-# From schema_chatbot_v2 directory:
-cd schema_chatbot_v2
-..\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+# Process a document (defaults to Chander Kochhar 01_compressed 2.md)
+.venv\Scripts\python.exe run_extraction.py
 
-# Or from workspace root:
-.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir schema_chatbot_v2 --host 127.0.0.1 --port 8000
+# Process a specific document with optional steering hints (extraction focus)
+.venv\Scripts\python.exe run_extraction.py --doc dataset_output/sdg_goals_output.md --focus "extract all goals" "identify milestones"
 ```
-- **Web UI & Admin Dashboard**: Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
-- **Interactive OpenAPI Docs**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-- **Health Check**: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
 
 ### 2. Run Layer 1 & 2 Document Pipeline (Batch Conversion)
-To convert PDFs in `dataset/` to structured Markdown in `dataset_output/`:
+To convert raw PDFs in `dataset/` to structured Markdown in `dataset_output/`:
 ```bash
 # Run resume pipeline conversion demo
 .venv\Scripts\python.exe demo_resume_pipeline.py

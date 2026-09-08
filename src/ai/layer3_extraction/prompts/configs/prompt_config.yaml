@@ -17,3 +17,24 @@ navigation:
   template: navigation.j2
   temperature: 0.0
   max_tokens: 1000
+
+segment_summary:
+  template: segment_summary.j2
+  temperature: 0.0
+  max_tokens: 2048
+
+category_navigation:
+  template: category_navigation.j2
+  temperature: 0.0
+  max_tokens: 2048
+
+page_ontology_extraction:
+  template: page_ontology_extraction.j2
+  temperature: 0.0
+  max_tokens: 4000
+
+document_key_findings:
+  template: document_key_findings.j2
+  temperature: 0.0
+  max_tokens: 3000
+
