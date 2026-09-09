@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from src.ai.layer3_extraction.page_loader import load_pages_from_fixture
-from src.ai.layer3_extraction.extractor import extract_by_page_scan
+from src.ai.layer3_extraction.extractor import extract_by_page_scan, extract_document
 from src.ai.layer3_extraction.schema_validation import extract_with_retry
 from src.api.dynamic_schema import SchemaFieldIn, build_dynamic_schema
 from src.adapters.llm.extraction_factory import get_extraction_client
@@ -58,12 +58,15 @@ def load_schema(schema_name: str):
 
 def main():
     parser = argparse.ArgumentParser(description="Run Layer 3 extraction from fixture + schema files")
-    parser.add_argument("--doc",    default="sdg_goals_output", help="Fixture doc name (no .md)")
-    parser.add_argument("--schema", default="schema", help="Schema file name (no .json)")
+    parser.add_argument("--doc",      default="sdg_goals_output", help="Fixture doc name (no .md)")
+    parser.add_argument("--schema",   default="schema", help="Schema file name (no .json)")
+    parser.add_argument("--strategy", default=getattr(settings, "layer3_strategy", "page_scan"),
+                        choices=["page_scan", "graph_memory"], help="Layer 3 strategy")
     args = parser.parse_args()
 
-    print(f"Doc   : tests/fixtures/{args.doc}.md")
-    print(f"Schema: tests/schemas/{args.schema}.json")
+    print(f"Doc      : tests/fixtures/{args.doc}.md")
+    print(f"Schema   : tests/schemas/{args.schema}.json")
+    print(f"Strategy : {args.strategy}")
 
     init_db()
 
@@ -79,10 +82,11 @@ def main():
 
     start = time.time()
     result = extract_with_retry(
-        lambda: extract_by_page_scan(pages, schema, llm),
+        lambda: extract_document(pages, schema, llm, strategy=args.strategy),
         schema,
     )
     elapsed = round(time.time() - start, 2)
+
 
     result_id = save_extraction_run(
         doc_id=args.doc,

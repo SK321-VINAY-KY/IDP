@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 
 from app.api.pipeline_routes import (
     DATASET_DIR,
@@ -25,6 +25,7 @@ from app.api.pipeline_routes import (
 from app.core.activity_log import log_activity
 from app.core.auth import get_current_user
 from app.storage.user_store import User
+from src.config.settings import settings as a_settings
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -86,7 +87,7 @@ async def upload_my_documents(
 @router.get("/documents")
 def list_my_documents(user: User = Depends(get_current_user)) -> Dict[str, Any]:
     """
-    Lists all PDF documents in the authenticated user's private workspace.
+    Lists uploaded documents belonging to the calling user.
     """
     user_dir = _user_docs_dir(user.username)
     pdfs = sorted([p for p in user_dir.glob("*.pdf") if p.is_file()])
@@ -104,7 +105,10 @@ def list_my_documents(user: User = Depends(get_current_user)) -> Dict[str, Any]:
 
 
 @router.post("/pipeline/run")
-async def run_my_pipeline(user: User = Depends(get_current_user)) -> Dict[str, Any]:
+async def run_my_pipeline(
+    strategy: Optional[str] = Form(default=None),
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
     """
     Zero-parameter trigger for regular users. Automatically uses the documents
     uploaded to the user's workspace and their most recently confirmed schema.
@@ -123,6 +127,8 @@ async def run_my_pipeline(user: User = Depends(get_current_user)) -> Dict[str, A
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid schema file: {exc}")
 
+    selected_strategy = strategy or getattr(a_settings, "layer3_strategy", "graph_memory")
+
     job_id = f"job_{uuid.uuid4().hex[:12]}"
     _pipeline_jobs[job_id] = {
         "job_id": job_id,
@@ -130,6 +136,7 @@ async def run_my_pipeline(user: User = Depends(get_current_user)) -> Dict[str, A
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "schema_id": schema_record.get("schema_id", schema_path.stem),
         "schema_file": schema_path.name,
+        "strategy": selected_strategy,
         "targets": [p.name for p in targets],
         "successes": [],
         "failures": [],
@@ -147,9 +154,9 @@ async def run_my_pipeline(user: User = Depends(get_current_user)) -> Dict[str, A
         daemon=True,
     )
     thread.start()
-    log_activity(user.username, "pipeline_run", {"job_id": job_id, "targets": len(targets), "schema_id": schema_record.get("schema_id")})
+    log_activity(user.username, "pipeline_run", {"job_id": job_id, "targets": len(targets), "schema_id": schema_record.get("schema_id"), "strategy": selected_strategy})
 
-    return {"job_id": job_id, "status": "queued", "targets": len(targets)}
+    return {"job_id": job_id, "status": "queued", "targets": len(targets), "strategy": selected_strategy}
 
 
 @router.get("/pipeline/status")

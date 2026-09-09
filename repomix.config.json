@@ -1,0 +1,54 @@
+{
+  "$schema": "https://raw.githubusercontent.com/yamadashy/repomix/main/repomix.config.schema.json",
+  "output": {
+    "filePath": "repomix-output.xml",
+    "style": "xml",
+    "parsableStyle": true,
+    "fileSummary": true,
+    "directoryStructure": true,
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "topFilesLength": 10,
+    "showLineNumbers": false,
+    "copyToClipboard": false
+  },
+  "include": [
+    "src/**/*",
+    "schema_chatbot_v2/**/*",
+    "tests/**/*",
+    "scripts/**/*",
+    "backend/**/*",
+    "*.py",
+    "*.json",
+    "*.yaml",
+    "*.yml",
+    "*.md",
+    "Dockerfile",
+    "docker-compose.yml",
+    "requirements.txt"
+  ],
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      ".venv/**",
+      "**/__pycache__/**",
+      "**/*.pyc",
+      "**/*.pyo",
+      ".pytest_cache/**",
+      "logs/**",
+      "dataset/**",
+      "dataset_output/**",
+      "scratch/**",
+      "*.db",
+      "*.sqlite3",
+      "repomix-output.*",
+      "schema_registry/**",
+      "schema_chatbot_v2/data/**",
+      ".git/**"
+    ]
+  },
+  "security": {
+    "enableSecurityCheck": false
+  }
+}

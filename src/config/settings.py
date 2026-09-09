@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 import dotenv
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -53,14 +53,50 @@ class Settings(BaseSettings):
     extraction_model_name: str = "qwen2.5:7b"
     summary_model_name: str = "qwen2.5:7b"
     max_extraction_retries: int = 2
+    layer3_strategy: str = "graph_memory"  # "graph_memory" (default), "page_scan", or "graph_memory_concurrent"
+    graph_concurrency_limit: int = 8
+    graph_anchor_max_k: int = 5
+    graph_anchor_types: list[str] = []
 
     # --- PostgreSQL Storage ---
     database_url: str = "postgresql://postgres:password@localhost:5432/idp"
+
+    @field_validator("graph_concurrency_limit")
+    @classmethod
+    def _validate_concurrency_limit(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("graph_concurrency_limit must be >= 1")
+        return v
+
+    @field_validator("graph_anchor_max_k")
+    @classmethod
+    def _validate_anchor_max_k(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("graph_anchor_max_k must be >= 1")
+        return v
 
     @model_validator(mode="before")
     @classmethod
     def _fallback_unprefixed_env(cls, data: Any) -> Any:
         if isinstance(data, dict):
+            if not data.get("layer3_strategy"):
+                data["layer3_strategy"] = os.getenv("IDP_LAYER3_STRATEGY") or os.getenv("LAYER3_STRATEGY") or "graph_memory"
+            if not data.get("graph_concurrency_limit"):
+                raw_limit = os.getenv("IDP_GRAPH_CONCURRENCY_LIMIT") or os.getenv("GRAPH_CONCURRENCY_LIMIT")
+                if raw_limit:
+                    data["graph_concurrency_limit"] = int(raw_limit)
+            if not data.get("graph_anchor_max_k"):
+                raw_k = os.getenv("IDP_GRAPH_ANCHOR_MAX_K") or os.getenv("GRAPH_ANCHOR_MAX_K")
+                if raw_k:
+                    data["graph_anchor_max_k"] = int(raw_k)
+            if not data.get("graph_anchor_types"):
+                raw_anchors = os.getenv("IDP_GRAPH_ANCHOR_TYPES") or os.getenv("GRAPH_ANCHOR_TYPES")
+                if raw_anchors:
+                    if raw_anchors.startswith("["):
+                        import json
+                        data["graph_anchor_types"] = json.loads(raw_anchors)
+                    else:
+                        data["graph_anchor_types"] = [a.strip() for a in raw_anchors.split(",") if a.strip()]
             if not data.get("sarvam_api_key"):
                 data["sarvam_api_key"] = os.getenv("IDP_SARVAM_API_KEY") or os.getenv("SARVAM_API_KEY") or ""
             if not data.get("sarvam_base_url"):

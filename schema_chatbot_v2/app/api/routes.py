@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
+from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
+from app.core.activity_log import log_activity
 from app.core.auth import get_current_user
 from app.core.conversation_manager import MAX_DOCUMENT_SAMPLES, MIN_DOCUMENT_SAMPLES, ConversationManager, TurnResult
+from app.core.schema_state import _normalize_field_name, normalize_type, SUPPORTED_TYPES, SchemaState
+from app.core.validator import validate_schema
 from app.llm.factory import get_llm_adapter
 from app.models.api_models import ChatRequest, ChatResponse, UpdateSchemaRequest
 from app.output.schema_renderer import render_json, render_pdf
@@ -25,6 +31,21 @@ if not SCHEMA_REGISTRY_DIR.exists():
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+class CustomFieldIn(BaseModel):
+    name: str
+    type: str = "string"
+    required: bool = True
+    description: Optional[str] = ""
+    item_type: Optional[str] = None
+    pattern: Optional[str] = None
+    currency: Optional[str] = None
+
+
+class CreateCustomSchemaRequest(BaseModel):
+    document_type: str
+    fields: List[CustomFieldIn] = Field(default_factory=list)
 
 
 def get_conversation_manager() -> ConversationManager:
@@ -163,6 +184,126 @@ def update_schema(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return _to_response(result)
+
+
+@router.post(
+    "/schema/custom",
+    summary="Create and persist a custom schema directly from the interactive builder",
+)
+def create_custom_schema(
+    req: CreateCustomSchemaRequest,
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    doc_type = (req.document_type or "").strip()
+    if not doc_type:
+        raise HTTPException(status_code=400, detail="document_type cannot be empty or whitespace-only")
+
+    if not req.fields:
+        raise HTTPException(status_code=400, detail="schema must contain at least one field")
+
+    seen_normalized: set[str] = set()
+    schema_state = SchemaState()
+    schema_state.set_document_type(doc_type)
+
+    for idx, f in enumerate(req.fields):
+        raw_name = (f.name or "").strip()
+        if not raw_name:
+            raise HTTPException(status_code=400, detail=f"field at index {idx} has an empty or blank name")
+
+        norm_name = _normalize_field_name(raw_name)
+        if not norm_name:
+            raise HTTPException(status_code=400, detail=f"field name '{f.name}' normalizes to empty string")
+
+        if norm_name in seen_normalized:
+            raise HTTPException(
+                status_code=400,
+                detail=f"duplicate field name detected: '{f.name}' (normalized: '{norm_name}')",
+            )
+        seen_normalized.add(norm_name)
+
+        raw_type = (f.type or "string").strip()
+        item_type = f.item_type
+        if "[" in raw_type and "]" in raw_type:
+            item_type = raw_type[raw_type.find("[") + 1 : raw_type.find("]")].strip()
+            raw_type = "array"
+
+        norm_type, _ = normalize_type(raw_type)
+        if not norm_type or norm_type not in SUPPORTED_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unsupported type '{f.type}' for field '{f.name}'. Supported types: {sorted(SUPPORTED_TYPES)}",
+            )
+
+        if norm_type == "array" and not item_type:
+            item_type = "string"
+
+        schema_state.add_field(
+            norm_name,
+            type=norm_type,
+            required=bool(f.required),
+            description=(f.description or "").strip(),
+            item_type=item_type,
+            pattern=f.pattern,
+            currency=f.currency,
+        )
+
+    # Authoritative validation
+    errors = validate_schema(schema_state)
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+
+    # Generate unique schema ID
+    schema_id = f"schema_{uuid.uuid4().hex[:12]}"
+    while (SCHEMA_REGISTRY_DIR / f"{schema_id}.json").exists():
+        schema_id = f"schema_{uuid.uuid4().hex[:12]}"
+
+    now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+    record = {
+        "schema_id": schema_id,
+        "document_type": schema_state.document_type,
+        "confirmed_at": now_iso,
+        "session_id": None,
+        "turn_count_at_confirm": 1,
+        "schema": schema_state.to_json_schema(),
+        "sample_documents": [],
+        "owner": user.username if user else "admin",
+    }
+
+    SCHEMA_REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
+    path = SCHEMA_REGISTRY_DIR / f"{schema_id}.json"
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
+    # Persist to PostgreSQL schemas table
+    try:
+        from src.ai.layer3_extraction.storage import save_schema_record
+        save_schema_record(
+            schema_id=schema_id,
+            document_type=schema_state.document_type or "document",
+            schema_json=record,
+            session_id=None,
+            sample_documents=[],
+        )
+    except Exception as exc:
+        logger.warning("storage.schema_save_failed for schema_id=%s: %s", schema_id, exc)
+
+    # Audit log
+    try:
+        log_activity(
+            user.username if user else "admin",
+            "schema_confirmed",
+            {"schema_id": schema_id, "document_type": schema_state.document_type},
+        )
+    except Exception:
+        pass
+
+    return {
+        "status": "success",
+        "schema_id": schema_id,
+        "document_type": schema_state.document_type,
+        "confirmed_at": now_iso,
+        "schema": schema_state.to_json_schema(),
+        "record": record,
+    }
 
 
 # ---------------------------------------------------------------------------

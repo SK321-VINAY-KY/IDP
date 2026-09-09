@@ -41,6 +41,5 @@ schema_chatbot_v2/data/
 *.db
 *.sqlite3
 DEMO_GUIDE.md
-
-
-
+repomix-output.*
+repomix-output.xml

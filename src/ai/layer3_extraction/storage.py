@@ -149,8 +149,27 @@ class JobPdfRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+# ==============================================================================
+# Table 6: Document Knowledge Graph Memory (Layer 3)
+# ==============================================================================
+class DocumentGraphRecord(Base):
+    __tablename__ = "document_graphs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    doc_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    job_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    owner: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    schema_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    strategy: Mapped[str] = mapped_column(String, default="graph_memory")
+    graph_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    node_count: Mapped[int] = mapped_column(Integer, default=0)
+    edge_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
 def init_db():
-    """Create all 5 tables in PostgreSQL / SQLite if they do not exist."""
+    """Create all 6 tables in PostgreSQL / SQLite if they do not exist."""
     global engine, SessionLocal
     try:
         Base.metadata.create_all(engine)
@@ -399,3 +418,134 @@ def get_job_pdf(job_id: str) -> Optional[tuple[bytes, str]]:
     except Exception as exc:
         logger.error("storage.get_job_pdf_failed", job_id=job_id, error=str(exc))
         return None
+
+
+# ==============================================================================
+# Document Graph Persistence (Layer 3)
+# ==============================================================================
+
+def save_document_graph(
+    doc_id: str,
+    graph_dict: dict,
+    job_id: Optional[str] = None,
+    owner: Optional[str] = None,
+    schema_id: Optional[str] = None,
+    strategy: str = "graph_memory",
+) -> Optional[int]:
+    """
+    Save or update a document's GraphMemory representation in PostgreSQL / SQLite.
+    Associated with doc_id, job_id, and owner for strict multi-tenant isolation.
+    """
+    try:
+        init_db()
+        nodes = graph_dict.get("nodes", [])
+        edges = graph_dict.get("edges", [])
+        session = SessionLocal()
+        try:
+            query = session.query(DocumentGraphRecord).filter_by(doc_id=doc_id)
+            if job_id:
+                query = query.filter_by(job_id=job_id)
+            rec = query.first()
+
+            if rec:
+                rec.graph_json = graph_dict
+                rec.node_count = len(nodes)
+                rec.edge_count = len(edges)
+                rec.strategy = strategy
+                if owner:
+                    rec.owner = owner
+                if schema_id:
+                    rec.schema_id = schema_id
+                rec.updated_at = datetime.now(timezone.utc)
+            else:
+                rec = DocumentGraphRecord(
+                    doc_id=doc_id,
+                    job_id=job_id,
+                    owner=owner,
+                    schema_id=schema_id,
+                    strategy=strategy,
+                    graph_json=graph_dict,
+                    node_count=len(nodes),
+                    edge_count=len(edges),
+                )
+                session.add(rec)
+            session.commit()
+            session.refresh(rec)
+            logger.info("storage.document_graph_saved", doc_id=doc_id, job_id=job_id, nodes=len(nodes), edges=len(edges), id=rec.id)
+            return rec.id
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error("storage.save_document_graph_failed", doc_id=doc_id, error=str(exc))
+        return None
+
+
+def get_document_graph(
+    doc_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+    owner: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Retrieve stored document graph dictionary.
+    Enforces user isolation if owner is provided (non-admin).
+    """
+    try:
+        init_db()
+        session = SessionLocal()
+        try:
+            query = session.query(DocumentGraphRecord)
+            if doc_id:
+                query = query.filter_by(doc_id=doc_id)
+                if job_id:
+                    query = query.filter_by(job_id=job_id)
+            elif job_id:
+                query = query.filter_by(job_id=job_id)
+            else:
+                return None
+
+            if owner and owner != "admin":
+                query = query.filter((DocumentGraphRecord.owner == owner) | (DocumentGraphRecord.owner == None))
+
+            rec = query.order_by(DocumentGraphRecord.created_at.desc()).first()
+            if rec and rec.graph_json:
+                return rec.graph_json
+            return None
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error("storage.get_document_graph_failed", doc_id=doc_id, job_id=job_id, error=str(exc))
+        return None
+
+
+def list_document_graphs(owner: Optional[str] = None) -> list:
+    """
+    List all available document graphs with summary metadata.
+    """
+    try:
+        init_db()
+        session = SessionLocal()
+        try:
+            query = session.query(DocumentGraphRecord)
+            if owner and owner != "admin":
+                query = query.filter((DocumentGraphRecord.owner == owner) | (DocumentGraphRecord.owner == None))
+            recs = query.order_by(DocumentGraphRecord.created_at.desc()).all()
+            return [
+                {
+                    "id": r.id,
+                    "doc_id": r.doc_id,
+                    "job_id": r.job_id,
+                    "owner": r.owner,
+                    "schema_id": r.schema_id,
+                    "strategy": r.strategy,
+                    "node_count": r.node_count,
+                    "edge_count": r.edge_count,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in recs
+            ]
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error("storage.list_document_graphs_failed", error=str(exc))
+        return []
+

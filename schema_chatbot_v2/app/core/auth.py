@@ -88,3 +88,24 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
             detail="Admin access required",
         )
     return user
+
+
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+
+
+def get_optional_current_user(token: Optional[str] = Depends(oauth2_scheme_optional)) -> Optional[User]:
+    """
+    Decodes the JWT bearer token if provided. Returns None if no token or token is invalid.
+    """
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: Optional[str] = payload.get("sub")
+        if username is None:
+            return None
+        store = get_user_store()
+        return store.get_by_username(username)
+    except Exception:
+        return None
+

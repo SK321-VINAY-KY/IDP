@@ -18,8 +18,12 @@ from typing import Any, Dict, List, Optional
 # Ensure UTF-8 output on Windows console
 if sys.platform == "win32":
     try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        reconfigure_stdout = getattr(sys.stdout, "reconfigure", None)
+        if callable(reconfigure_stdout):
+            reconfigure_stdout(encoding="utf-8", errors="replace")
+        reconfigure_stderr = getattr(sys.stderr, "reconfigure", None)
+        if callable(reconfigure_stderr):
+            reconfigure_stderr(encoding="utf-8", errors="replace")
     except Exception:
         pass
 
@@ -118,7 +122,7 @@ def main():
         try:
             ocr_text = adapter._digitise(1, pdf_bytes)
             job_id = last_job_id[0]
-            ocr_status = recorded_statuses.get(job_id, "completed")
+            ocr_status = recorded_statuses.get(job_id, "completed") if job_id else "completed"
             print(f"OCR Job ID: {job_id}")
             print(f"OCR Status: {ocr_status}")
             print(f"OCR Text Length: {len(ocr_text)} chars")

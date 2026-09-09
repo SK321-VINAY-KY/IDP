@@ -55,7 +55,7 @@
 
     <!-- =========================== NAVIGATION TABS =========================== -->
     <nav class="tabs" id="mainTabs">
-        <button class="tab-btn active" data-tab="chatbot" id="tabBtnChatbot">💬 Schema Discovery &amp; Pipeline</button>
+        <button class="tab-btn active" data-tab="chatbot" id="tabBtnChatbot">📋 Schema Builder &amp; Pipeline</button>
         <button class="tab-btn admin-only" data-tab="documents" id="tabBtnDocuments">📁 Shared Dataset</button>
         <button class="tab-btn user-only hidden" data-tab="user-documents" id="tabBtnUserDocuments">📁 My Documents</button>
         <button class="tab-btn admin-only" data-tab="logs" id="tabBtnLogs">📜 Logs</button>
@@ -64,88 +64,87 @@
     </nav>
 
     <main class="content">
-        <!-- =========================== TAB: Chatbot & Pipeline =========================== -->
+        <!-- =========================== TAB: Schema Builder & Pipeline =========================== -->
         <section id="tab-chatbot" class="tab-panel active">
-            <div class="chat-grid">
-                <div class="chat-col">
-                    <div class="card chat-card">
-                        <div class="card-header">
-                            <h2>Schema Discovery Chat</h2>
-                            <div class="card-actions">
-                                <span id="stateBadge" class="badge badge-mute">idle</span>
-                                <button class="btn btn-ghost btn-sm" id="newSessionBtn">+ New Session</button>
-                            </div>
+            <div class="schema-builder-container">
+                <div class="card schema-builder-card">
+                    <div class="card-header">
+                        <div class="header-titles">
+                            <h2>📋 Interactive Schema Builder</h2>
+                            <p class="muted small">Define custom target extraction schema: specify document type, configure fields, data types, and extraction guidance.</p>
                         </div>
-                        <div id="chatLog" class="chat-log">
-                            <div class="chat-msg bot">
-                                <div class="msg-bubble">
-                                    Upload 2–5 sample PDFs of the same document type, or start chatting to discover a target extraction schema.
-                                </div>
-                            </div>
-                        </div>
-                        <div class="chat-input-row">
-                            <input type="text" id="chatInput" placeholder="Type a message (e.g. 'Add email field')" disabled>
-                            <button class="btn btn-primary" id="sendBtn" disabled>Send</button>
+                        <div class="card-actions">
+                            <button type="button" class="btn btn-primary btn-sm" id="addSchemaFieldBtn">+ Add Field</button>
+                            <button type="button" class="btn btn-outline btn-sm" id="copySchemaBtn" title="Copy schema JSON">📋 Copy JSON</button>
+                            <button type="button" class="btn btn-outline btn-sm" id="toggleJsonPreviewBtn" title="Toggle JSON view">👁 Preview JSON</button>
+                            <button type="button" class="btn btn-ghost btn-sm" id="clearSchemaBtn" title="Clear all fields">🗑 Clear</button>
                         </div>
                     </div>
-                </div>
 
-                <div class="chat-col">
-                    <div class="card">
-                        <div class="card-header">
-                            <h2>Sample Inference Upload</h2>
-                        </div>
-                        <p class="muted small">Upload 2–5 PDFs of the SAME document type (e.g. all resumes) to auto-infer an initial schema.</p>
-                        <div class="mini-upload" id="inferUploadZone">
-                            <input type="file" id="inferInput" multiple accept="application/pdf,.pdf" hidden>
-                            <button class="btn btn-outline" id="inferBrowseBtn">Select PDFs (2–5)</button>
-                            <span id="inferSelected" class="muted small">no files</span>
-                        </div>
-                        <div class="mt-1">
-                            <button class="btn btn-primary btn-full" id="inferBtn" disabled>Run Inference → Chat</button>
-                            <p class="muted small mt-1">⚠ Sarvam Doc AI OCR + LLM proposal: expect <strong>60–180 s</strong> for 2 PDFs.</p>
-                        </div>
-                        <div id="inferStatus" class="status-box hidden"></div>
+                    <!-- Presets Bar -->
+                    <div class="schema-presets-bar">
+                        <span class="muted small"><strong>Quick Presets:</strong></span>
+                        <button type="button" class="btn btn-xs btn-outline preset-btn" data-preset="medical">Medical Discharge</button>
+                        <button type="button" class="btn btn-xs btn-outline preset-btn" data-preset="invoice">Invoice</button>
+                        <button type="button" class="btn btn-xs btn-outline preset-btn" data-preset="resume">Resume</button>
+                        <button type="button" class="btn btn-xs btn-ghost preset-btn" data-preset="blank">Blank</button>
                     </div>
 
-                    <div class="card">
-                        <div class="card-header">
-                            <h2>Current Schema</h2>
-                            <div class="card-actions">
-                                <button class="btn btn-outline btn-sm" id="addSchemaFieldBtn" disabled>+ Add Field</button>
-                                <button class="btn btn-ghost btn-sm" id="copySchemaBtn" disabled>Copy</button>
-                                <button class="btn btn-ghost btn-sm" id="printSchemaBtn" disabled>/schema</button>
-                                <button class="btn btn-ghost btn-sm" id="downloadSchemaPdfHeaderBtn" title="Download confirmed schema as PDF" disabled>📄 PDF</button>
-                                <button class="btn btn-ghost btn-sm" id="downloadSchemaJsonHeaderBtn" title="Download confirmed schema as JSON" disabled>📥 JSON</button>
-                            </div>
+                    <!-- Document Type Row -->
+                    <div class="doc-type-edit-row">
+                        <label for="editDocType">Document Type <span class="required-star" style="color:var(--danger, #ef4444)">*</span>:</label>
+                        <input id="editDocType" class="doc-type-input" type="text" placeholder="e.g. medical_discharge_summary, invoice, resume" autocomplete="off">
+                    </div>
+
+                    <!-- Fields Table Container -->
+                    <div id="schemaPanel" class="schema-panel-container">
+                        <p class="muted">No schema yet.</p>
+                    </div>
+
+                    <!-- Live Validation Errors -->
+                    <div id="schemaErrors" class="error-list hidden"></div>
+
+                    <!-- Collapsible JSON Preview Box -->
+                    <div id="schemaJsonPreviewBox" class="json-preview-box hidden mt-1">
+                        <div class="preview-header" style="display:flex; justify-content:space-between; align-items:center; padding: 4px 8px;">
+                            <span class="muted small font-mono">Payload JSON Preview:</span>
                         </div>
-                        <div id="schemaPanel">
-                            <p class="muted">No schema yet.</p>
+                        <pre id="schemaJsonView" class="json-code-block" style="margin: 0; padding: 10px; background: rgba(0,0,0,0.3); border-radius: 4px; overflow-x: auto; max-height: 240px; font-size: 11px;"></pre>
+                    </div>
+
+                    <!-- Save & Confirm Action -->
+                    <div class="schema-confirm-bar mt-2">
+                        <button type="button" class="btn btn-success btn-lg btn-full" id="confirmBtn">
+                            ✓ Save &amp; Confirm Schema
+                        </button>
+                        <p class="muted small mt-1" style="text-align: center;">
+                            Validates and saves the schema directly to <code>schema_registry/</code> and PostgreSQL. Immediately ready for pipeline extraction below.
+                        </p>
+                    </div>
+                    <div id="confirmStatus" class="status-box hidden mt-1"></div>
+
+                    <!-- Post-Confirmation Actions Bar -->
+                    <div id="postConfirmBox" class="post-confirm-actions-box mt-2 hidden">
+                        <div class="success-banner" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: rgba(34, 197, 94, 0.12); border: 1px solid rgba(34, 197, 94, 0.35); border-radius: var(--radius-sm);">
+                            <span style="font-weight: 600; color: #22c55e;">✓ Schema Confirmed &amp; Saved to Registry</span>
+                            <span class="schema-confirmed-id font-mono small" id="confirmedSchemaIdText"></span>
                         </div>
-                        <div id="schemaErrors" class="error-list hidden"></div>
-                        <div class="mt-1">
-                            <button class="btn btn-success btn-full" id="confirmBtn" disabled>✓ Confirm Schema</button>
-                            <p class="muted small mt-1">Type <code>/confirm</code> in chat (or press above) once schema looks good. Confirmed schemas are saved to <code>schema_registry/</code>.</p>
+                        <div class="pipeline-actions mt-1">
+                            <button type="button" class="btn btn-success btn-lg btn-full" id="quickRunPipelineBtn">
+                                ⚡ Run Extraction Pipeline Now
+                            </button>
                         </div>
-                        <div id="confirmStatus" class="status-box hidden"></div>
-                        <div id="postConfirmBox" class="mt-1 hidden">
-                            <div class="pipeline-actions">
-                                <button class="btn btn-success btn-lg btn-full" id="quickRunPipelineBtn" disabled>
-                                    ⚡ Run Extraction Pipeline Now
-                                </button>
-                            </div>
-                            <div class="schema-download-actions mt-1" style="display: flex; gap: 8px;">
-                                <button class="btn btn-outline btn-sm btn-full" id="downloadSchemaPdfBtn">
-                                    📄 Download Schema PDF
-                                </button>
-                                <button class="btn btn-outline btn-sm btn-full" id="downloadSchemaJsonBtn">
-                                    📥 Download Schema JSON
-                                </button>
-                            </div>
-                            <p class="muted small mt-1">
-                                Launches extraction for your confirmed schema, or download the schema spec above.
-                            </p>
+                        <div class="schema-download-actions mt-1" style="display: flex; gap: 8px;">
+                            <button type="button" class="btn btn-outline btn-sm btn-full" id="downloadSchemaPdfBtn">
+                                📄 Download Schema PDF
+                            </button>
+                            <button type="button" class="btn btn-outline btn-sm btn-full" id="downloadSchemaJsonBtn">
+                                📥 Download Schema JSON
+                            </button>
                         </div>
+                        <p class="muted small mt-1">
+                            Your schema is registered to <code>schema_registry/</code> and PostgreSQL. Ready for direct Layer 3 contextual extraction below!
+                        </p>
                     </div>
                 </div>
             </div>
@@ -165,6 +164,19 @@
                                 <option value="">— load schemas first —</option>
                             </select>
                             <button class="btn btn-ghost btn-sm mt-1" id="refreshSchemasBtn">↻ Refresh Schemas</button>
+                        </label>
+                    </div>
+
+                    <div class="form-row">
+                        <label for="layer3StrategySelect">
+                            <strong>Layer 3 Extraction Strategy</strong>
+                            <select id="layer3StrategySelect" style="width: 100%; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text); border: 1px solid var(--border); font-size: 13px; font-weight: 500;">
+                                <option value="graph_memory" selected>🧠 Graph Memory (Contextual Knowledge Graph &amp; Cross-Page Anaphora)</option>
+                                <option value="page_scan">📄 Classic Page Scan (Independent Page-by-Page Scratchpad)</option>
+                            </select>
+                            <span class="muted small mt-1" style="display:block;">
+                                <strong>Graph Memory:</strong> Ingests pages sequentially into an evolving entity-relationship graph, resolves multi-page pronouns/co-references, and synthesizes schema with verifiable evidence.
+                            </span>
                         </label>
                     </div>
 
@@ -222,9 +234,18 @@
                         <h2>Run My Extraction Pipeline</h2>
                     </div>
                     <p class="muted small">
-                        Automatically processes the documents you uploaded with your most recently confirmed schema. No parameters required!
+                        Automatically processes the documents you uploaded with your most recently confirmed schema.
                     </p>
-                    <div class="pipeline-actions">
+                    <div class="form-row mt-1">
+                        <label for="userLayer3StrategySelect">
+                            <strong>Layer 3 Strategy</strong>
+                            <select id="userLayer3StrategySelect" style="width: 100%; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text); border: 1px solid var(--border); font-size: 13px;">
+                                <option value="graph_memory" selected>🧠 Graph Memory (Contextual Knowledge Graph)</option>
+                                <option value="page_scan">📄 Classic Page Scan (Scratchpad)</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="pipeline-actions mt-1">
                         <button class="btn btn-primary btn-lg btn-full" id="userAutoRunPipelineBtn">
                             ⚡ Run Pipeline on My Documents
                         </button>
@@ -400,6 +421,15 @@
                     </div>
                 </div>
 
+                <!-- Document Scope Selector -->
+                <div style="margin: 0 0 14px 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                    <label for="tab_qb_doc_select" style="font-weight: 600; font-size: 13px; color: var(--fg-muted, #888);">Document Scope:</label>
+                    <select id="tab_qb_doc_select" class="form-control" style="flex: 1; min-width: 240px; max-width: 440px; padding: 6px 12px; border-radius: 6px; font-size: 13px;">
+                        <option value="">-- Select Active Document --</option>
+                    </select>
+                    <span id="tab_qb_mode_badge" class="badge" style="font-size: 11px; display: none;"></span>
+                </div>
+
                 <!-- Chat window -->
                 <div class="query-bot-container">
                     <div class="query-bot-messages" id="tab_qb_msgs">
@@ -416,6 +446,6 @@
         </section>
     </main>
 
-    <script src="app.js?v=20"></script>
+    <script src="app.js?v=21"></script>
 </body>
 </html>

@@ -197,14 +197,17 @@ def get_schema(schema_id: str, _: User = Depends(require_admin)) -> Dict[str, An
 @router.get("/pipeline/status")
 def pipeline_status(_: User = Depends(require_admin)) -> Dict[str, Any]:
     routing_mode = getattr(a_settings, "routing_mode", None) if PIPELINE_AVAILABLE else None
+    layer3_strategy = getattr(a_settings, "layer3_strategy", "graph_memory")
     return {
         "available": PIPELINE_AVAILABLE,
         "routing_mode": routing_mode,
+        "layer3_strategy": layer3_strategy,
         "jobs": {
             k: {
                 "job_id": k,
                 "schema_id": v.get("schema_id"),
                 "schema_file": v.get("schema_file"),
+                "strategy": v.get("strategy", layer3_strategy),
                 "status": v["status"],
                 "created_at": v["created_at"],
                 "total": len(v.get("targets", [])),
@@ -328,10 +331,13 @@ def download_job_pdf_report(job_id: str, user: User = Depends(get_current_user))
 async def run_pipeline(
     schema_id: str = Form(...),
     documents: Optional[str] = Form(default=None),
+    strategy: Optional[str] = Form(default=None),
     _: User = Depends(require_admin),
 ) -> Dict[str, Any]:
     if not PIPELINE_AVAILABLE:
         raise HTTPException(status_code=503, detail="Extraction pipeline unavailable (import failed)")
+
+    selected_strategy = strategy or getattr(a_settings, "layer3_strategy", "graph_memory")
 
     schema_path = SCHEMA_REGISTRY / f"{schema_id}.json"
     if not schema_path.exists():
@@ -367,6 +373,7 @@ async def run_pipeline(
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "schema_id": schema_id,
         "schema_file": schema_path.name,
+        "strategy": selected_strategy,
         "targets": [p.name for p in targets],
         "successes": [],
         "failures": [],
@@ -383,7 +390,7 @@ async def run_pipeline(
     )
     thread.start()
 
-    return {"job_id": job_id, "status": "queued", "targets": len(targets)}
+    return {"job_id": job_id, "status": "queued", "targets": len(targets), "strategy": selected_strategy}
 
 
 def _run_pipeline_job(
@@ -391,6 +398,7 @@ def _run_pipeline_job(
     targets: List[Path],
     schema_path: Path,
     schema_record: Dict[str, Any],
+    strategy: Optional[str] = None,
 ) -> None:
     job = _pipeline_jobs[job_id]
     ctrl = _job_controls.get(job_id)
@@ -398,6 +406,8 @@ def _run_pipeline_job(
         ctrl = JobControl()
         _job_controls[job_id] = ctrl
 
+    selected_strategy = strategy or job.get("strategy") or getattr(a_settings, "layer3_strategy", "graph_memory")
+    job["strategy"] = selected_strategy
     job["status"] = "running"
     job["started_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -489,12 +499,13 @@ def _run_pipeline_job(
             db_id = None
             db_error = None
             extract_elapsed = 0.0
+            graph_meta: Dict[str, Any] = {}
 
             try:
                 from src.adapters.llm.extraction_factory import get_extraction_client
-                from src.ai.layer3_extraction.extractor import extract_by_page_scan
+                from src.ai.layer3_extraction.extractor import extract_by_page_scan, extract_document
                 from src.ai.layer3_extraction.schema_validation import extract_with_retry
-                from src.ai.layer3_extraction.storage import init_db, save_extraction_run
+                from src.ai.layer3_extraction.storage import init_db, save_extraction_run, save_document_graph
                 from src.api.dynamic_schema import SchemaFieldIn, build_dynamic_schema
 
                 raw_fields = (schema_record.get("schema") or {}).get("fields", [])
@@ -512,7 +523,13 @@ def _run_pipeline_job(
                     pages_for_layer3 = [{"markdown": r[0].markdown, "page_number": r[0].page_number} for r in results]
 
                     extracted_result = extract_with_retry(
-                        lambda: extract_by_page_scan(pages_for_layer3, dynamic_schema, extraction_llm),
+                        lambda: extract_document(
+                            pages_for_layer3,
+                            dynamic_schema,
+                            extraction_llm,
+                            strategy=selected_strategy,
+                            graph_out=graph_meta,
+                        ),
                         dynamic_schema,
                     )
                     extract_elapsed = round(time.monotonic() - t_ext0, 2)
@@ -520,18 +537,34 @@ def _run_pipeline_job(
 
                     # Write dataset_output/<stem>.extracted.json
                     json_out_path = OUTPUT_DIR / f"{pdf.stem}.extracted.json"
+                    json_payload = {
+                        "source_pdf": pdf.name,
+                        "schema_used": schema_id,
+                        "strategy_used": selected_strategy,
+                        "document_type": schema_record.get("document_type") or (schema_record.get("schema") or {}).get("document_type"),
+                        "processing_time_seconds": extract_elapsed,
+                        "extracted_data": extracted_data,
+                    }
+                    if graph_meta:
+                        json_payload["graph_memory"] = graph_meta
+
                     json_out_path.write_text(
-                        json.dumps({
-                            "source_pdf": pdf.name,
-                            "schema_used": schema_id,
-                            "document_type": schema_record.get("document_type") or (schema_record.get("schema") or {}).get("document_type"),
-                            "processing_time_seconds": extract_elapsed,
-                            "extracted_data": extracted_data,
-                        }, indent=2) + "\n",
+                        json.dumps(json_payload, indent=2) + "\n",
                         encoding="utf-8",
                     )
 
-                    # Persist to PostgreSQL
+                    # Save file checkpoint: dataset_output/<stem>.graph.json (Requirement 7)
+                    if graph_meta and graph_meta.get("snapshot"):
+                        try:
+                            graph_out_path = OUTPUT_DIR / f"{pdf.stem}.graph.json"
+                            graph_out_path.write_text(
+                                json.dumps(graph_meta["snapshot"], indent=2) + "\n",
+                                encoding="utf-8",
+                            )
+                        except Exception as gf_exc:
+                            logger.warning("pipeline.extract.graph_file_save_failed", pdf=pdf.name, error=str(gf_exc))
+
+                    # Persist to PostgreSQL (Requirement 6)
                     try:
                         init_db()
                         db_id = save_extraction_run(
@@ -544,6 +577,16 @@ def _run_pipeline_job(
                             processing_time_seconds=extract_elapsed,
                             page_outputs=outputs,
                         )
+                        if graph_meta and graph_meta.get("snapshot"):
+                            save_document_graph(
+                                doc_id=pdf.name,
+                                graph_dict=graph_meta["snapshot"],
+                                job_id=job_id,
+                                owner=job.get("owner"),
+                                schema_id=schema_id,
+                                strategy=selected_strategy,
+                            )
+                            logger.info("pipeline.extract.graph_persisted", pdf=pdf.name, job_id=job_id)
                     except Exception as db_exc:
                         db_error = str(db_exc)
                         logger.warning("pipeline.extract.db_save_failed", pdf=pdf.name, error=str(db_exc))
@@ -552,14 +595,19 @@ def _run_pipeline_job(
 
             job["successes"].append({
                 "pdf": pdf.name,
-                "md": str(md_path.name),
-                "schema_ref": str(ref_path.name),
+                "md": md_path.name,
+                "schema_ref": ref_path.name,
                 "avg_conf": round(avg_conf, 3),
                 "chars": total_chars,
                 "pages": len(outputs),
                 "elapsed_s": round(elapsed, 2),
+                "strategy": selected_strategy,
                 "extracted_json": f"{pdf.stem}.extracted.json" if extracted_data else None,
                 "extracted_data": extracted_data,
+                "graph_stats": graph_meta.get("stats") if graph_meta else None,
+                "graph_nodes": len(graph_meta.get("snapshot", {}).get("nodes", [])) if graph_meta else 0,
+                "graph_edges": len(graph_meta.get("snapshot", {}).get("edges", [])) if graph_meta else 0,
+                "graph_memory": graph_meta if graph_meta else None,
                 "extract_elapsed_s": extract_elapsed,
                 "db_run_id": db_id,
                 "db_error": db_error,
@@ -684,6 +732,7 @@ def list_pipeline_outputs() -> Dict[str, Any]:
 @router.post("/pipeline/extract/from-output")
 async def extract_from_existing_output(
     md_name: str = Form(...),
+    strategy: Optional[str] = Form(default=None),
 ) -> Dict[str, Any]:
     """
     Run Layer 3 extraction directly on an ALREADY-PROCESSED pipeline document.
@@ -692,10 +741,12 @@ async def extract_from_existing_output(
     """
     from starlette.concurrency import run_in_threadpool
     from src.adapters.llm.extraction_factory import get_extraction_client
-    from src.ai.layer3_extraction.extractor import extract_by_page_scan
+    from src.ai.layer3_extraction.extractor import extract_by_page_scan, extract_document
     from src.ai.layer3_extraction.schema_validation import extract_with_retry
     from src.ai.layer3_extraction.storage import init_db, save_extraction_run
     from src.api.dynamic_schema import SchemaFieldIn, build_dynamic_schema
+
+    selected_strategy = strategy or getattr(a_settings, "layer3_strategy", "graph_memory")
 
     md_path = OUTPUT_DIR / md_name
     if not md_path.exists():
@@ -741,8 +792,9 @@ async def extract_from_existing_output(
     def _execute():
         t_start = time.time()
         extraction_llm = get_extraction_client()
+        graph_meta: Dict[str, Any] = {}
         extracted_result = extract_with_retry(
-            lambda: extract_by_page_scan(pages, dynamic_schema, extraction_llm),
+            lambda: extract_document(pages, dynamic_schema, extraction_llm, strategy=selected_strategy, graph_out=graph_meta),
             dynamic_schema,
         )
         elapsed = round(time.time() - t_start, 2)
@@ -751,13 +803,17 @@ async def extract_from_existing_output(
         # Save to dataset_output/
         stem = md_path.stem
         json_out_path = OUTPUT_DIR / f"{stem}.extracted.json"
-        json_out_path.write_text(json.dumps({
+        out_payload = {
             "source_doc": md_name,
             "source_pdf": ref_data.get("source_pdf", f"{stem}.pdf"),
             "schema_used": schema_id,
+            "strategy_used": selected_strategy,
             "processing_time_seconds": elapsed,
             "extracted_data": result_dict,
-        }, indent=2) + "\n", encoding="utf-8")
+        }
+        if graph_meta:
+            out_payload["graph_memory"] = graph_meta
+        json_out_path.write_text(json.dumps(out_payload, indent=2) + "\n", encoding="utf-8")
 
         # Save to PostgreSQL
         db_id = None
@@ -796,10 +852,14 @@ async def extract_from_existing_output(
             "doc_id": ref_data.get("source_pdf", md_name),
             "schema": schema_id,
             "document_type": ref_data.get("document_type", "Document"),
+            "strategy": selected_strategy,
             "data": result_dict,
+            "graph_stats": graph_meta.get("stats") if graph_meta else None,
+            "graph_memory": graph_meta if graph_meta else None,
             "meta": {
                 "pages_processed": len(pages),
                 "processing_time_seconds": elapsed,
+                "strategy": selected_strategy,
                 "source_md": md_name,
                 "output_json": f"{stem}.extracted.json",
                 "llm_provider": a_settings.extraction_backend,
@@ -817,17 +877,18 @@ async def extract_from_existing_output(
 
 
 @router.post("/pipeline/extract")
-async def extract_document(
+async def extract_uploaded_document(
     file: UploadFile = File(...),
     schema_id: Optional[str] = Form(default=None),
     raw_schema: Optional[str] = Form(default=None),
+    strategy: Optional[str] = Form(default=None),
 ) -> Dict[str, Any]:
     """
     End-to-End Extraction (single PDF upload):
       1. Receives PDF file + target schema.
       2. Runs Layer 1 (inspection & routing) + Layer 2 (conversion & OCR).
       3. Saves converted markdown to dataset_output/<stem>.md.
-      4. Runs Layer 3 (Sarvam/Ollama page-by-page field extraction with scratchpad & early stopping).
+      4. Runs Layer 3 (Sarvam/Ollama page-by-page field extraction with scratchpad & early stopping, or Graph Memory).
       5. Saves output JSON to dataset_output/<stem>.extracted.json.
       6. Persists extraction run into PostgreSQL database.
       7. Returns structured JSON result and metadata.
@@ -835,11 +896,13 @@ async def extract_document(
     from starlette.concurrency import run_in_threadpool
     from src.adapters.llm.extraction_factory import get_extraction_client
     from src.adapters.llm.factory import get_llm_client
-    from src.ai.layer3_extraction.extractor import extract_by_page_scan
+    from src.ai.layer3_extraction.extractor import extract_by_page_scan, extract_document
     from src.ai.layer3_extraction.page_loader import load_pages_with_confidence
     from src.ai.layer3_extraction.schema_validation import extract_with_retry
     from src.ai.layer3_extraction.storage import init_db, save_extraction_run
     from src.api.dynamic_schema import SchemaFieldIn, build_dynamic_schema
+
+    selected_strategy = strategy or getattr(a_settings, "layer3_strategy", "graph_memory")
 
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
@@ -937,8 +1000,9 @@ async def extract_document(
         pages_md = load_pages_with_confidence(page_outputs)
 
         extraction_llm = get_extraction_client()
+        graph_meta: Dict[str, Any] = {}
         extracted_result = extract_with_retry(
-            lambda: extract_by_page_scan(pages_md, dynamic_schema, extraction_llm),
+            lambda: extract_document(pages_md, dynamic_schema, extraction_llm, strategy=selected_strategy, graph_out=graph_meta),
             dynamic_schema,
         )
 
@@ -946,12 +1010,16 @@ async def extract_document(
         result_dict = extracted_result.model_dump()
 
         json_out_path = OUTPUT_DIR / f"{stem}.extracted.json"
-        json_out_path.write_text(json.dumps({
+        out_payload = {
             "source_pdf": filename,
             "schema_used": schema_name,
+            "strategy_used": selected_strategy,
             "processing_time_seconds": elapsed,
             "extracted_data": result_dict,
-        }, indent=2) + "\n", encoding="utf-8")
+        }
+        if graph_meta:
+            out_payload["graph_memory"] = graph_meta
+        json_out_path.write_text(json.dumps(out_payload, indent=2) + "\n", encoding="utf-8")
 
         db_id = None
         db_error = None
@@ -975,10 +1043,14 @@ async def extract_document(
             "success": True,
             "doc_id": filename,
             "schema": schema_name,
+            "strategy": selected_strategy,
             "data": result_dict,
+            "graph_stats": graph_meta.get("stats") if graph_meta else None,
+            "graph_memory": graph_meta if graph_meta else None,
             "meta": {
                 "pages_processed": len(page_outputs),
                 "processing_time_seconds": elapsed,
+                "strategy": selected_strategy,
                 "output_md": f"{stem}.md",
                 "output_json": f"{stem}.extracted.json",
                 "llm_provider": a_settings.extraction_backend,
@@ -997,25 +1069,307 @@ async def extract_document(
 
 # ========================= Query Bot (JSON Q&A) =========================
 
+# ========================= Query Bot (Graph Memory & JSON Fallback) =========================
+
 from pydantic import BaseModel, Field
+from app.core.auth import get_optional_current_user
+from app.storage.user_store import Role
 
 
 class QueryBotRequest(BaseModel):
-    extracted_data: Any = Field(..., description="Full extracted JSON object or record dictionary")
+    extracted_data: Optional[Any] = Field(None, description="Full extracted JSON object or record dictionary")
     question: str = Field(..., description="User's natural language question about the extracted data")
     doc_id: Optional[str] = Field(None, description="Optional document name for reference")
+    job_id: Optional[str] = Field(None, description="Optional job ID for reference")
+
+
+
+@router.get("/api/query-bot/documents")
+def get_query_bot_documents(
+    user: Optional[User] = Depends(get_optional_current_user),
+) -> Dict[str, Any]:
+    """
+    List all documents available for Query Bot inspection.
+    Gathers documents from:
+      1. PostgreSQL DocumentGraphRecord (with tenant isolation for non-admin users)
+      2. Disk dataset_output/ (*.extracted.json, *.graph.json, *.schema_ref.json)
+      3. Active in-memory pipeline jobs (_pipeline_jobs)
+    """
+    from src.ai.layer3_extraction.storage import (
+        init_db,
+        SessionLocal,
+        DocumentGraphRecord,
+    )
+
+    is_admin = False
+    if user:
+        role_val = getattr(user.role, "value", user.role)
+        is_admin = (role_val == "admin" or user.role == Role.ADMIN)
+
+    docs: Dict[str, Dict[str, Any]] = {}
+
+    # Source 1: PostgreSQL Database
+    try:
+        init_db()
+        session = SessionLocal()
+        try:
+            q = session.query(DocumentGraphRecord)
+            if not is_admin and user:
+                # Regular user: see own docs or unassigned docs
+                q = q.filter(
+                    (DocumentGraphRecord.owner == user.username) | (DocumentGraphRecord.owner.is_(None))
+                )
+            for rec in q.order_by(DocumentGraphRecord.created_at.desc()).all():
+                stem = Path(rec.doc_id).stem
+                doc_key = f"{stem}.pdf" if not rec.doc_id.lower().endswith(".pdf") else rec.doc_id
+                docs[doc_key] = {
+                    "doc_id": doc_key,
+                    "stem": stem,
+                    "label": doc_key,
+                    "has_graph": True,
+                    "has_extracted": True,
+                    "strategy": "graph_memory",
+                    "source": "database",
+                    "job_id": rec.job_id,
+                    "owner": rec.owner,
+                    "created_at": rec.created_at.isoformat() if rec.created_at else None,
+                }
+        finally:
+            session.close()
+    except Exception as db_err:
+        logger.warning("query_bot.list_docs_db_error", error=str(db_err))
+
+    # Source 2: Disk dataset_output/
+    try:
+        ext_files = list(OUTPUT_DIR.glob("*.extracted.json"))
+        graph_files = list(OUTPUT_DIR.glob("*.graph.json"))
+        all_stems = set([p.name.replace(".extracted.json", "") for p in ext_files] +
+                        [p.name.replace(".graph.json", "") for p in graph_files])
+
+        for stem in all_stems:
+            ref_path = OUTPUT_DIR / f"{stem}.schema_ref.json"
+            ext_path = OUTPUT_DIR / f"{stem}.extracted.json"
+            graph_path = OUTPUT_DIR / f"{stem}.graph.json"
+
+            source_pdf = f"{stem}.pdf"
+            if ref_path.is_file():
+                try:
+                    ref_data = json.loads(ref_path.read_text(encoding="utf-8"))
+                    source_pdf = ref_data.get("source_pdf") or source_pdf
+                except Exception:
+                    pass
+
+            doc_key = source_pdf
+            has_graph = graph_path.is_file()
+            has_extracted = ext_path.is_file()
+
+            if doc_key not in docs:
+                docs[doc_key] = {
+                    "doc_id": doc_key,
+                    "stem": stem,
+                    "label": doc_key,
+                    "has_graph": has_graph,
+                    "has_extracted": has_extracted,
+                    "strategy": "graph_memory" if has_graph else "page_scan",
+                    "source": "disk",
+                    "job_id": None,
+                    "owner": None,
+                    "created_at": datetime.fromtimestamp(
+                        (graph_path if has_graph else ext_path).stat().st_mtime
+                    ).isoformat() if (graph_path.exists() or ext_path.exists()) else None,
+                }
+            else:
+                if has_graph:
+                    docs[doc_key]["has_graph"] = True
+                if has_extracted:
+                    docs[doc_key]["has_extracted"] = True
+    except Exception as disk_err:
+        logger.warning("query_bot.list_docs_disk_error", error=str(disk_err))
+
+    # Source 3: In-memory active pipeline jobs
+    try:
+        for job_id, job in _pipeline_jobs.items():
+            if job.get("status") != "completed":
+                continue
+            for s in job.get("successes", []):
+                doc_id = s.get("pdf") or s.get("doc_id") or (
+                    s.get("extracted_json", "").replace(".extracted.json", ".pdf")
+                    if s.get("extracted_json") else None
+                )
+                if doc_id:
+                    stem = Path(doc_id).stem
+                    strat = s.get("strategy") or job.get("strategy") or "graph_memory"
+                    if doc_id not in docs:
+                        docs[doc_id] = {
+                            "doc_id": doc_id,
+                            "stem": stem,
+                            "label": doc_id,
+                            "has_graph": (strat == "graph_memory"),
+                            "has_extracted": True,
+                            "strategy": strat,
+                            "source": "active_job",
+                            "job_id": job_id,
+                            "owner": job.get("owner"),
+                            "created_at": job.get("created_at"),
+                        }
+                    else:
+                        docs[doc_id]["job_id"] = job_id
+                        if strat:
+                            docs[doc_id]["strategy"] = strat
+    except Exception as job_err:
+        logger.warning("query_bot.list_docs_job_error", error=str(job_err))
+
+    sorted_docs = sorted(docs.values(), key=lambda d: d.get("created_at") or "", reverse=True)
+    return {"documents": sorted_docs, "count": len(sorted_docs)}
 
 
 @router.post("/api/query-bot/ask")
-async def ask_query_bot(req: QueryBotRequest) -> Dict[str, Any]:
+async def ask_query_bot(
+    req: QueryBotRequest,
+    user: Optional[User] = Depends(get_optional_current_user),
+) -> Dict[str, Any]:
     """
-    Query Bot: Accepts the full extracted JSON from Layer 3 + user question.
-    Sends both to the LLM to inspect the JSON and return a direct, natural-language answer.
+    Query Bot:
+    1. If Document Graph Memory is available (from PostgreSQL DB, file checkpoint dataset_output/<stem>.graph.json,
+       or request payload's graph_memory), queries the graph via GraphQueryService with bounded multi-hop traversal
+       and verbatim source citations (mode: "graph").
+    2. Strictly enforces user/document isolation (User A cannot query User B's document graph).
+    3. If no graph is found, falls back cleanly to the legacy extracted JSON LLM assistant (mode: "json_fallback").
     """
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    from src.ai.layer3_extraction.storage import (
+        init_db,
+        SessionLocal,
+        DocumentGraphRecord,
+    )
+    from src.ai.layer3_extraction.graph_agent.graph_memory import GraphMemory
+    from src.ai.layer3_extraction.graph_agent.query_service import GraphQueryService
+
+    graph_dict = None
+
+    # Step 1: Check document graph in DB with strict user isolation
+    if req.doc_id or req.job_id:
+        try:
+            init_db()
+            session = SessionLocal()
+            try:
+                q = session.query(DocumentGraphRecord)
+                if req.doc_id:
+                    stem = Path(req.doc_id).stem
+                    doc_candidates = [req.doc_id, f"{stem}.pdf", stem]
+                    q = q.filter(DocumentGraphRecord.doc_id.in_(doc_candidates))
+                    if req.job_id:
+                        sub_q = q.filter_by(job_id=req.job_id)
+                        if sub_q.first():
+                            q = sub_q
+                elif req.job_id:
+                    q = q.filter_by(job_id=req.job_id)
+                db_rec = q.order_by(DocumentGraphRecord.created_at.desc()).first()
+                if db_rec:
+                    # Enforce isolation: if document has an owner, only that owner or admin can query it
+                    if db_rec.owner:
+                        is_admin = False
+                        if user:
+                            role_val = getattr(user.role, "value", user.role)
+                            is_admin = (role_val == "admin" or user.role == Role.ADMIN)
+                        if not is_admin:
+                            if not user:
+                                logger.warning(
+                                    "query_bot.isolation_denied_anonymous",
+                                    doc_id=req.doc_id,
+                                    job_id=req.job_id,
+                                    owner=db_rec.owner,
+                                )
+                                raise HTTPException(
+                                    status_code=403,
+                                    detail="Access denied: authentication required to access this document graph.",
+                                )
+                            if user.username != db_rec.owner:
+                                logger.warning(
+                                    "query_bot.isolation_denied",
+                                    doc_id=req.doc_id,
+                                    job_id=req.job_id,
+                                    owner=db_rec.owner,
+                                    request_user=user.username,
+                                )
+                                raise HTTPException(
+                                    status_code=403,
+                                    detail="Access denied: document graph belongs to another user.",
+                                )
+                    graph_dict = db_rec.graph_json
+            finally:
+                session.close()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning("query_bot.db_lookup_error", error=str(exc))
+
+    # Step 2: Check file checkpoint if DB didn't have it
+    if not graph_dict and req.doc_id:
+        stem = Path(req.doc_id).stem
+        for fname in (f"{stem}.graph.json", f"{req.doc_id}.graph.json", f"{stem}.extracted.json"):
+            chk_path = OUTPUT_DIR / fname
+            if chk_path.is_file():
+                try:
+                    data = json.loads(chk_path.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        if "graph_memory" in data and isinstance(data["graph_memory"], dict):
+                            graph_dict = data["graph_memory"].get("snapshot") or data["graph_memory"]
+                            break
+                        elif "nodes" in data and "edges" in data:
+                            graph_dict = data
+                            break
+                except Exception as fe:
+                    logger.warning("query_bot.file_checkpoint_read_error", path=str(chk_path), error=str(fe))
+
+    # Step 3: Check extracted_data payload for embedded graph
+    if not graph_dict and req.extracted_data and isinstance(req.extracted_data, dict):
+        if "graph_memory" in req.extracted_data and isinstance(req.extracted_data["graph_memory"], dict):
+            graph_dict = req.extracted_data["graph_memory"].get("snapshot") or req.extracted_data["graph_memory"]
+        elif "nodes" in req.extracted_data and "edges" in req.extracted_data:
+            graph_dict = req.extracted_data
+
+    # Path A: Graph Memory answering
+    if graph_dict and isinstance(graph_dict, dict) and "nodes" in graph_dict:
+        try:
+            graph_mem = GraphMemory.from_dict(graph_dict)
+            service = GraphQueryService()
+            result = service.query(graph_mem, req.question)
+            return {
+                "success": True,
+                "question": req.question,
+                "answer": result.answer,
+                "sources": result.sources[:5] if result.sources else [],
+                "doc_id": req.doc_id,
+                "mode": "graph",
+                "hops_traversed": result.hops_traversed,
+                "retrieved_nodes_count": len(result.retrieved_nodes),
+                "retrieved_edges_count": len(result.retrieved_edges),
+            }
+        except Exception as g_err:
+            logger.error("query_bot.graph_query_failed", error=str(g_err))
+            # Fall back to json_fallback if extracted_data is available
+
+    # Path B: JSON Fallback (Requirements 20 & 21)
+    if not req.extracted_data and req.doc_id:
+        stem = Path(req.doc_id).stem
+        for fname in (f"{stem}.extracted.json", f"{req.doc_id}.extracted.json"):
+            ext_path = OUTPUT_DIR / fname
+            if ext_path.is_file():
+                try:
+                    data = json.loads(ext_path.read_text(encoding="utf-8"))
+                    req.extracted_data = data.get("extracted_data") or data
+                    break
+                except Exception:
+                    pass
+
     if not req.extracted_data:
-        raise HTTPException(status_code=400, detail="Extracted JSON data cannot be empty.")
+        raise HTTPException(
+            status_code=400,
+            detail="No document graph found and no extracted JSON data provided to answer the question.",
+        )
 
     import os
     import httpx
@@ -1136,11 +1490,14 @@ async def ask_query_bot(req: QueryBotRequest) -> Dict[str, Any]:
             "success": True,
             "question": req.question,
             "answer": answer,
+            "sources": [],
             "doc_id": req.doc_id,
+            "mode": "json_fallback",
         }
     except Exception as exc:
         logger.exception("query_bot.error")
         raise HTTPException(status_code=500, detail=f"Query bot failed: {exc}")
+
 
 
 

@@ -26,7 +26,7 @@ except ImportError:
 
 class OllamaExtractionClient:
     def __init__(self) -> None:
-        if instructor is None:
+        if instructor is None or OpenAI is None:
             raise ImportError("pip install instructor openai")
         self.model = settings.extraction_model_name
         self.summary_model = settings.summary_model_name
@@ -121,3 +121,75 @@ class OllamaExtractionClient:
         except json.JSONDecodeError:
             logger.warning("ollama.check_page_for_fields.parse_failed", raw=raw[:200])
             return []
+
+    def extract_graph_from_page(
+        self,
+        page_md: str,
+        schema_fields: List[Dict[str, str]],
+        existing_nodes: List[Dict[str, Any]],
+        page_number: int = 0,
+        total_pages: int = 0,
+    ) -> Dict[str, Any]:
+        lines = []
+        for n in existing_nodes[:35]:
+            pages_str = ",".join(map(str, n.get("source_pages", [])))
+            lines.append(f"- [{n.get('id')}] {n.get('type')}: \"{n.get('value')}\" (P{pages_str})")
+        existing_context = "\n".join(lines) if lines else "No existing entities in graph memory."
+
+        prompt = render_prompt(
+            "graph_page_ingestion",
+            page_number=page_number,
+            total_pages=total_pages,
+            page_md=page_md,
+            schema_fields=schema_fields,
+            existing_graph_context=existing_context,
+        )
+        params = prompt_params("graph_page_ingestion")
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            response_model=None,
+            temperature=params["temperature"],
+            max_tokens=params["max_tokens"],
+            extra_body={"options": {"num_ctx": 16384}},
+        )
+        raw = resp.choices[0].message.content or ""
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return {
+                    "entities": parsed.get("entities", []),
+                    "relationships": parsed.get("relationships", []),
+                    "reference_resolutions": parsed.get("reference_resolutions", []),
+                }
+            return {"entities": [], "relationships": [], "reference_resolutions": []}
+        except json.JSONDecodeError:
+            logger.warning("ollama.extract_graph.parse_failed", raw=raw[:200])
+            return {"entities": [], "relationships": [], "reference_resolutions": []}
+
+    def resolve_schema_from_graph(
+        self,
+        graph_evidence: str,
+        schema: type[BaseModel],
+    ) -> BaseModel:
+        schema_fields = [
+            {"name": k, "description": v.description or k}
+            for k, v in schema.model_fields.items()
+        ]
+        prompt = render_prompt(
+            "graph_schema_resolution",
+            schema_fields=schema_fields,
+            graph_evidence=graph_evidence,
+        )
+        params = prompt_params("graph_schema_resolution")
+        return self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": "You extract structured schema fields using a Document Knowledge Graph. Return ONLY valid JSON matching the schema."},
+                {"role": "user", "content": prompt},
+            ],
+            response_model=schema,
+            temperature=params["temperature"],
+            max_tokens=params["max_tokens"],
+            extra_body={"options": {"num_ctx": 16384}},
+        )

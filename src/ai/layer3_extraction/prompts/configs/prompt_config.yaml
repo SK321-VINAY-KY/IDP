@@ -17,3 +17,13 @@ navigation:
   template: navigation.j2
   temperature: 0.0
   max_tokens: 1000
+
+graph_page_ingestion:
+  template: graph_page_ingestion.j2
+  temperature: 0.0
+  max_tokens: 4000
+
+graph_schema_resolution:
+  template: graph_schema_resolution.j2
+  temperature: 0.0
+  max_tokens: 4000

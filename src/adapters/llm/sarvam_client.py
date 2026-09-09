@@ -258,3 +258,120 @@ class SarvamExtractionClient:
             if field in valid_names and value not in ("", None):
                 result.append({"field": str(field), "value": str(value)})
         return result
+
+    def extract_graph_from_page(
+        self,
+        page_md: str,
+        schema_fields: List[Dict[str, str]],
+        existing_nodes: List[Dict[str, Any]],
+        page_number: int = 0,
+        total_pages: int = 0,
+    ) -> Dict[str, Any]:
+        """
+        Extract entities, contextual relationships, and reference resolutions from a page.
+        """
+        lines = []
+        for n in existing_nodes[:35]:
+            pages_str = ",".join(map(str, n.get("source_pages", [])))
+            lines.append(f"- [{n.get('id')}] {n.get('type')}: \"{n.get('value')}\" (P{pages_str})")
+        existing_context = "\n".join(lines) if lines else "No existing entities in graph memory."
+
+        prompt = render_prompt(
+            "graph_page_ingestion",
+            page_number=page_number,
+            total_pages=total_pages,
+            page_md=page_md,
+            schema_fields=schema_fields,
+            existing_graph_context=existing_context,
+        )
+        params = prompt_params("graph_page_ingestion")
+
+        resp = self.raw_client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=params.get("temperature", 0.0),
+            max_tokens=params.get("max_tokens", 4000),
+            extra_body={"reasoning_effort": self.reasoning_effort},
+        )
+        raw = resp.choices[0].message.content or ""
+        raw = _strip_fences(raw)
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return {
+                    "entities": parsed.get("entities", []),
+                    "relationships": parsed.get("relationships", []),
+                    "reference_resolutions": parsed.get("reference_resolutions", []),
+                }
+            return {"entities": [], "relationships": [], "reference_resolutions": []}
+        except json.JSONDecodeError:
+            try:
+                last_end = raw.rfind("}")
+                if last_end != -1:
+                    repaired = raw[:last_end + 1]
+                    parsed = json.loads(repaired)
+                    if isinstance(parsed, dict):
+                        return {
+                            "entities": parsed.get("entities", []),
+                            "relationships": parsed.get("relationships", []),
+                            "reference_resolutions": parsed.get("reference_resolutions", []),
+                        }
+            except Exception:
+                pass
+            logger.warning("sarvam.extract_graph.parse_failed", raw=raw[:200])
+            return {"entities": [], "relationships": [], "reference_resolutions": []}
+
+    def resolve_schema_from_graph(
+        self,
+        graph_evidence: str,
+        schema: type[BaseModel],
+    ) -> BaseModel:
+        """
+        Synthesize final target schema fields using structured Graph Evidence.
+        """
+        schema_fields = [
+            {"name": k, "description": v.description or k}
+            for k, v in schema.model_fields.items()
+        ]
+        prompt = render_prompt(
+            "graph_schema_resolution",
+            schema_fields=schema_fields,
+            graph_evidence=graph_evidence,
+        )
+        params = prompt_params("graph_schema_resolution")
+
+        common_kwargs: Dict[str, Any] = dict(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": "You extract structured schema fields using a Document Knowledge Graph. Return ONLY valid JSON matching the schema."},
+                {"role": "user", "content": prompt},
+            ],
+            response_model=schema,
+            temperature=params.get("temperature", 0.0),
+            max_tokens=params.get("max_tokens", 4000),
+            extra_body={"reasoning_effort": self.reasoning_effort},
+        )
+
+        try:
+            try:
+                result, _ = self.client.chat.completions.create_with_completion(**common_kwargs)
+                return result
+            except AttributeError:
+                result = self.client.chat.completions.create(**common_kwargs)
+                return result
+        except Exception as exc:
+            logger.warning("sarvam.resolve_schema_from_graph.instructor_failed", error=str(exc))
+            raw_resp = self.raw_client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "Return ONLY valid JSON matching the schema fields."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=params.get("temperature", 0.0),
+                max_tokens=params.get("max_tokens", 4000),
+                extra_body={"reasoning_effort": self.reasoning_effort},
+            )
+            text = _strip_fences(raw_resp.choices[0].message.content or "")
+            parsed = json.loads(text)
+            return schema.model_validate(parsed)
+

@@ -1,0 +1,22 @@
+You are synthesizing final structured schema fields using a Contextual Document Knowledge Graph.
+
+================================================================================
+TARGET SCHEMA FIELDS
+================================================================================
+{% for field in schema_fields %}
+- {{ field.name }}{% if field.description %}: {{ field.description }}{% endif %}
+{% endfor %}
+
+================================================================================
+DOCUMENT KNOWLEDGE GRAPH EVIDENCE
+================================================================================
+{{ graph_evidence }}
+
+================================================================================
+RULES & INSTRUCTIONS
+================================================================================
+1. Extract the exact value for each target schema field using the entities, relationships, and provenances in the graph.
+2. Follow entity relationship chains to resolve values (e.g. Patient -> Admission -> Claim -> Approved Amount).
+3. If an entity was resolved across multiple pages (e.g. "the above patient" linked to the patient on Page 1), use the fully resolved entity and its associated facts.
+4. If a field was not found anywhere in the graph, set it to an empty string "".
+5. Output ONLY a valid JSON object matching the target schema field names as keys. No markdown fences, no preamble.

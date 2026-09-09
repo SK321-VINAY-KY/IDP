@@ -29,3 +29,20 @@ class ExtractionLLMClient(Protocol):
         total_pages: int = 0,
     ) -> List[Dict[str, Any]]:
         ...
+
+    def extract_graph_from_page(
+        self,
+        page_md: str,
+        schema_fields: List[Dict[str, str]],
+        existing_nodes: List[Dict[str, Any]],
+        page_number: int = 0,
+        total_pages: int = 0,
+    ) -> Dict[str, Any]:
+        ...
+
+    def resolve_schema_from_graph(
+        self,
+        graph_evidence: str,
+        schema: type[BaseModel],
+    ) -> BaseModel:
+        ...

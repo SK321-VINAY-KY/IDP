@@ -166,3 +166,12 @@ def test_pipeline_status_reflects_states(client, auth_headers):
     data = resp.json()
     assert data["jobs"]["job_a"]["status"] == "paused"
     assert data["jobs"]["job_b"]["status"] == "killed"
+
+
+def test_pipeline_status_includes_layer3_strategy(client, auth_headers):
+    resp = client.get("/pipeline/status", headers=auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "layer3_strategy" in data
+    assert data["layer3_strategy"] == "graph_memory"
+

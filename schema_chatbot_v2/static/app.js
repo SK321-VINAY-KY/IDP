@@ -173,14 +173,14 @@
                 loadSchemas();
                 loadPipelineStatus();
                 loadJobs();
+                loadAllExtractedData();
             } else {
                 loadUserDocuments();
                 loadUserJobs();
+                loadAllExtractedData();
             }
 
-            if (!state.sessionId) {
-                newSession(false);
-            }
+            initSchemaBuilder();
         } catch (err) {
             console.warn('initAuthenticatedSession failed', err);
             showLoginModal();
@@ -497,7 +497,49 @@
         b.textContent = s.toLowerCase() + (s2 ? ' • ' + s2 : '');
     }
 
-    let schemaSyncTimer = null;
+    // ======================= Interactive Schema Builder =======================
+
+    const SCHEMA_PRESETS = {
+        medical: {
+            document_type: 'medical_discharge_summary',
+            fields: [
+                { name: 'patient_name', type: 'string', required: true, description: 'Full legal name of the patient' },
+                { name: 'patient_id', type: 'string', required: false, description: 'Hospital patient identifier or MRN' },
+                { name: 'admission_date', type: 'date', required: true, description: 'Date patient was admitted to hospital' },
+                { name: 'discharge_date', type: 'date', required: false, description: 'Date patient was discharged from hospital' },
+                { name: 'primary_diagnosis', type: 'string', required: true, description: 'Primary diagnosis or clinical condition diagnosed' },
+                { name: 'procedure_performed', type: 'string', required: false, description: 'Surgical or medical procedure performed' },
+                { name: 'approved_claim_amount', type: 'number', required: false, description: 'Total approved insurance claim settlement amount' },
+            ]
+        },
+        invoice: {
+            document_type: 'invoice',
+            fields: [
+                { name: 'invoice_number', type: 'string', required: true, description: 'Unique invoice reference or billing number' },
+                { name: 'invoice_date', type: 'date', required: true, description: 'Date the invoice was issued' },
+                { name: 'vendor_name', type: 'string', required: true, description: 'Name of the issuing vendor or supplier' },
+                { name: 'total_amount', type: 'number', required: true, description: 'Total invoice amount payable including all taxes' },
+                { name: 'tax_amount', type: 'number', required: false, description: 'Total tax or VAT amount charged' },
+                { name: 'line_items', type: 'array', item_type: 'object', required: false, description: 'List of individual itemized charges or services' },
+            ]
+        },
+        resume: {
+            document_type: 'resume',
+            fields: [
+                { name: 'candidate_name', type: 'string', required: true, description: 'Full legal name of the job candidate' },
+                { name: 'email_address', type: 'string', required: true, description: 'Primary contact email address' },
+                { name: 'phone_number', type: 'string', required: false, description: 'Contact phone or mobile number' },
+                { name: 'skills', type: 'array', item_type: 'string', required: false, description: 'List of technical and professional skills' },
+                { name: 'years_of_experience', type: 'number', required: false, description: 'Total years of relevant professional experience' },
+            ]
+        },
+        blank: {
+            document_type: '',
+            fields: [
+                { name: 'field_1', type: 'string', required: true, description: '' }
+            ]
+        }
+    };
 
     function collectSchemaFromInputs() {
         if (!state.currentSchema) {
@@ -505,7 +547,7 @@
         }
         const docTypeInput = $('editDocType');
         if (docTypeInput) {
-            state.currentSchema.document_type = docTypeInput.value.trim().toLowerCase().replace(/\s+/g, '_');
+            state.currentSchema.document_type = docTypeInput.value.trim().toLowerCase().replace(/[\s-]+/g, '_');
         }
 
         const rows = document.querySelectorAll('#schemaPanel table.schema-table tbody tr');
@@ -553,15 +595,31 @@
         }
 
         const errors = [];
-        if (!schema.document_type) errors.push('document_type is not set');
-        if (!schema.fields || !schema.fields.length) errors.push('schema has no fields');
-        const seen = new Set();
-        (schema.fields || []).forEach(f => {
-            if (!f.name) errors.push('field name cannot be blank');
-            else if (seen.has(f.name)) errors.push(`duplicate field name: ${f.name}`);
-            seen.add(f.name);
-            if (f.type === 'array' && !f.item_type) errors.push(`field '${f.name}' is an array but has no item_type`);
-        });
+        const docType = schema.document_type || ($('editDocType') ? $('editDocType').value.trim() : '');
+        if (!docType) {
+            errors.push('Document Type is required and cannot be empty.');
+        }
+
+        const fields = schema.fields || [];
+        if (!fields.length) {
+            errors.push('Schema must contain at least one field.');
+        } else {
+            const seen = new Set();
+            fields.forEach((f, idx) => {
+                if (!f.name || !f.name.trim()) {
+                    errors.push(`Row ${idx + 1}: Field name cannot be blank.`);
+                } else {
+                    const norm = f.name.trim().toLowerCase().replace(/[\s-]+/g, '_');
+                    if (seen.has(norm)) {
+                        errors.push(`Duplicate field name: '${f.name}' (row ${idx + 1}).`);
+                    }
+                    seen.add(norm);
+                }
+                if (f.type === 'array' && !f.item_type) {
+                    errors.push(`Field '${f.name}' is an array but has no item_type.`);
+                }
+            });
+        }
 
         state.currentErrors = errors;
         if (errors.length) {
@@ -573,52 +631,23 @@
             if (errs) errs.classList.add('hidden');
         }
 
-        const canConfirm = (state.currentState === 'REVIEW' || state.currentState === 'START') && !errors.length && (schema.fields || []).length > 0 && !!schema.document_type;
-        if ($('confirmBtn')) $('confirmBtn').disabled = state.completed || !canConfirm;
-    }
-
-    async function syncSchemaToServer() {
-        if (!state.sessionId || state.completed) return;
-        const syncStatus = $('schemaSyncStatus');
-        if (syncStatus) syncStatus.textContent = '⏳ Saving...';
-        try {
-            const data = await api('/session/' + state.sessionId + '/schema', {
-                method: 'POST',
-                json: {
-                    document_type: state.currentSchema.document_type,
-                    fields: state.currentSchema.fields
-                }
-            });
-            state.currentState = data.state;
-            state.currentErrors = data.errors || [];
-            validateAndRefreshUI();
-            if (syncStatus) syncStatus.textContent = '✓ Saved';
-            setTimeout(() => { if (syncStatus) syncStatus.textContent = '✓ Interactive Editor'; }, 1500);
-        } catch (e) {
-            if (syncStatus) syncStatus.textContent = '⚠️ Sync error';
-        }
-    }
-
-    function scheduleSchemaSync() {
-        collectSchemaFromInputs();
-        validateAndRefreshUI();
-        clearTimeout(schemaSyncTimer);
-        schemaSyncTimer = setTimeout(syncSchemaToServer, 500);
+        const canConfirm = !errors.length && fields.length > 0 && !!docType;
+        if ($('confirmBtn')) $('confirmBtn').disabled = !canConfirm;
     }
 
     function addNewSchemaField() {
         if (!state.currentSchema) {
-            state.currentSchema = { document_type: 'document', fields: [] };
+            state.currentSchema = { document_type: '', fields: [] };
         }
         const count = (state.currentSchema.fields || []).length + 1;
         state.currentSchema.fields.push({
             name: 'field_' + count,
             type: 'string',
-            required: true,
+            required: false,
             description: ''
         });
         renderSchemaPanel();
-        scheduleSchemaSync();
+        validateAndRefreshUI();
         setTimeout(() => {
             const inputs = document.querySelectorAll('.field-name-input');
             if (inputs.length) {
@@ -631,225 +660,281 @@
     function renderSchemaPanel() {
         const schema = state.currentSchema;
         const panel = $('schemaPanel');
-        const errs = $('schemaErrors');
-        const addBtn = $('addSchemaFieldBtn');
-
         if (!panel) return;
 
-        if (!schema) {
-            panel.innerHTML = '<p class="muted">No schema yet. Start a session, upload samples, or click "+ Add Field".</p>';
-            if (errs) errs.classList.add('hidden');
-            if ($('copySchemaBtn')) $('copySchemaBtn').disabled = true;
-            if ($('printSchemaBtn')) $('printSchemaBtn').disabled = true;
-            if ($('downloadSchemaPdfHeaderBtn')) $('downloadSchemaPdfHeaderBtn').disabled = true;
-            if ($('downloadSchemaJsonHeaderBtn')) $('downloadSchemaJsonHeaderBtn').disabled = true;
-            if ($('confirmBtn')) $('confirmBtn').disabled = true;
-            if (addBtn) addBtn.disabled = !state.sessionId;
+        if (!schema || !schema.fields || !schema.fields.length) {
+            panel.innerHTML = `
+                <div style="padding: 24px; text-align: center; background: rgba(0,0,0,0.1); border-radius: var(--radius-sm); border: 1px dashed var(--border);">
+                    <p class="muted" style="margin-bottom: 8px;">No fields defined yet. Choose a Quick Preset above or click below to add your first field.</p>
+                    <button type="button" class="btn btn-outline btn-sm" id="addFieldInlineBtn">➕ Add First Field</button>
+                </div>
+            `;
+            const inlineBtn = $('addFieldInlineBtn');
+            if (inlineBtn) inlineBtn.addEventListener('click', addNewSchemaField);
+            validateAndRefreshUI();
             return;
         }
 
-        if ($('copySchemaBtn')) $('copySchemaBtn').disabled = false;
-        if ($('printSchemaBtn')) $('printSchemaBtn').disabled = false;
-        const canDownloadSchema = !!(state.completed || state.lastConfirmedSchemaId);
-        if ($('downloadSchemaPdfHeaderBtn')) $('downloadSchemaPdfHeaderBtn').disabled = !canDownloadSchema;
-        if ($('downloadSchemaJsonHeaderBtn')) $('downloadSchemaJsonHeaderBtn').disabled = !canDownloadSchema;
-        if (addBtn) addBtn.disabled = state.completed;
-
-        const docType = schema.document_type || '';
-        const fields = schema.fields || [];
-
+        const fields = schema.fields;
         const typeOptions = [
             'string', 'number', 'integer', 'boolean', 'date',
             'array[string]', 'array[object]', 'object'
         ];
 
         let html = `
-            <div class="doc-type-edit-row">
-                <label for="editDocType">Document Type:</label>
-                <input id="editDocType" class="doc-type-input" type="text" value="${escapeHtml(docType)}" placeholder="e.g. resume, invoice, insurance_claim" ${state.completed ? 'disabled' : ''}>
+            <table class="schema-table">
+                <thead>
+                    <tr>
+                        <th style="width: 26%;">Field Name</th>
+                        <th style="width: 22%;">Type</th>
+                        <th style="width: 14%; text-align: center;">Required</th>
+                        <th style="width: 32%;">Extraction Guidance / Description</th>
+                        <th style="width: 6%; text-align: center;">Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+
+        fields.forEach((f, idx) => {
+            const curType = f.type === 'array' ? (f.item_type ? `array[${f.item_type}]` : 'array[string]') : (f.type || 'string');
+            const isReq = !!f.required;
+            const opts = typeOptions.map(t => `<option value="${t}" ${t === curType ? 'selected' : ''}>${t}</option>`).join('');
+
+            html += `
+                <tr data-idx="${idx}">
+                    <td>
+                        <input type="text" class="schema-input field-name-input" data-field="name" value="${escapeHtml(f.name || '')}" placeholder="e.g. patient_name">
+                    </td>
+                    <td>
+                        <select class="schema-select field-type-select" data-field="type">
+                            ${opts}
+                        </select>
+                    </td>
+                    <td style="text-align: center;">
+                        <button type="button" class="req-toggle ${isReq ? 'is-req' : 'is-opt'}" data-idx="${idx}">
+                            ${isReq ? 'YES' : 'NO'}
+                        </button>
+                    </td>
+                    <td>
+                        <input type="text" class="schema-input field-desc-input" data-field="description" value="${escapeHtml(f.description || '')}" placeholder="Instructions for Layer 3 extraction...">
+                    </td>
+                    <td style="text-align: center;">
+                        <button type="button" class="btn-del-field" data-idx="${idx}" title="Delete field">✕</button>
+                    </td>
+                </tr>
+            `;
+        });
+
+        html += `
+                </tbody>
+            </table>
+            <div class="schema-bottom-actions mt-1" style="display: flex; justify-content: space-between; align-items: center;">
+                <button type="button" class="btn btn-ghost btn-sm" id="addFieldInlineBtn">➕ Add Field</button>
+                <span class="muted small">${fields.length} field(s) configured</span>
             </div>
         `;
 
-        if (!fields.length) {
-            html += `
-                <div style="padding: 16px; text-align: center;">
-                    <p class="muted small">No fields defined yet.</p>
-                    <button type="button" class="btn btn-outline btn-sm" id="addFieldInlineBtn" ${state.completed ? 'disabled' : ''}>➕ Add First Field</button>
-                </div>
-            `;
-        } else {
-            html += `
-                <table class="schema-table">
-                    <thead>
-                        <tr>
-                            <th style="width: 28%;">Field Name</th>
-                            <th style="width: 26%;">Type</th>
-                            <th style="width: 14%; text-align: center;">Req</th>
-                            <th style="width: 26%;">Description</th>
-                            <th style="width: 6%; text-align: center;"></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-            `;
-
-            fields.forEach((f, idx) => {
-                const curType = f.type === 'array' ? (f.item_type ? `array[${f.item_type}]` : 'array[string]') : (f.type || 'string');
-                const isReq = !!f.required;
-                const opts = typeOptions.map(t => `<option value="${t}" ${t === curType ? 'selected' : ''}>${t}</option>`).join('');
-
-                html += `
-                    <tr data-idx="${idx}">
-                        <td>
-                            <input type="text" class="schema-input field-name-input" data-field="name" value="${escapeHtml(f.name || '')}" placeholder="field_name" ${state.completed ? 'disabled' : ''}>
-                        </td>
-                        <td>
-                            <select class="schema-select field-type-select" data-field="type" ${state.completed ? 'disabled' : ''}>
-                                ${opts}
-                            </select>
-                        </td>
-                        <td style="text-align: center;">
-                            <button type="button" class="req-toggle ${isReq ? 'is-req' : 'is-opt'}" data-idx="${idx}" ${state.completed ? 'disabled' : ''}>
-                                ${isReq ? 'YES' : 'NO'}
-                            </button>
-                        </td>
-                        <td>
-                            <input type="text" class="schema-input field-desc-input" data-field="description" value="${escapeHtml(f.description || '')}" placeholder="Description..." ${state.completed ? 'disabled' : ''}>
-                        </td>
-                        <td style="text-align: center;">
-                            <button type="button" class="btn-del-field" data-idx="${idx}" title="Delete field" ${state.completed ? 'disabled' : ''}>✕</button>
-                        </td>
-                    </tr>
-                `;
-            });
-
-            html += `
-                    </tbody>
-                </table>
-                <div class="schema-bottom-actions">
-                    <button type="button" class="btn btn-ghost btn-sm" id="addFieldInlineBtn" ${state.completed ? 'disabled' : ''}>➕ Add Field</button>
-                    <span id="schemaSyncStatus" class="sync-badge">✓ Interactive Editor</span>
-                </div>
-            `;
-        }
-
-        html += `<details style="margin-top:12px"><summary class="muted small" style="cursor:pointer">View Full JSON Schema</summary><pre id="schemaJsonView">${escapeHtml(JSON.stringify(schema, null, 2))}</pre></details>`;
         panel.innerHTML = html;
+        const inlineBtn = $('addFieldInlineBtn');
+        if (inlineBtn) inlineBtn.addEventListener('click', addNewSchemaField);
 
         validateAndRefreshUI();
     }
 
-    function handleChatResponse(data) {
-        state.sessionId = data.session_id;
-        state.currentState = data.state;
-        state.currentSchema = data.schema;
-        state.currentErrors = data.errors || [];
-        state.completed = !!data.completed;
-        if (data.completed && data.schema_id) {
-            state.lastConfirmedSchemaId = data.schema_id;
-        }
-        if (data.message) addChatMsg('bot', data.message);
-        setStateBadge(data.state, data.completed ? 'confirmed' : '');
+    function applyPreset(presetKey) {
+        const preset = SCHEMA_PRESETS[presetKey];
+        if (!preset) return;
+        state.currentSchema = JSON.parse(JSON.stringify(preset));
+        state.completed = false;
+        const docTypeInput = $('editDocType');
+        if (docTypeInput) docTypeInput.value = state.currentSchema.document_type;
+        const postBox = $('postConfirmBox');
+        if (postBox) postBox.classList.add('hidden');
         renderSchemaPanel();
-        if ($('chatInput')) $('chatInput').disabled = false;
-        if ($('sendBtn')) $('sendBtn').disabled = false;
-        if (data.completed) {
-            showStatus('confirmStatus', `🎉 Schema confirmed! schema_id = <code>${escapeHtml(data.schema_id)}</code>. Saved to schema_registry/.`, 'success');
-            if ($('postConfirmBox')) {
-                $('postConfirmBox').classList.remove('hidden');
-                $('quickRunPipelineBtn').disabled = false;
-            }
-            if (state.role === 'admin') {
-                setTimeout(() => {
-                    loadSchemas();
-                    loadPipelineStatus();
-                }, 300);
-            }
-        } else {
-            if ($('postConfirmBox')) $('postConfirmBox').classList.add('hidden');
-        }
+        validateAndRefreshUI();
     }
 
-    async function newSession(shouldFocus = true) {
+    function clearSchema() {
+        if (state.currentSchema && state.currentSchema.fields && state.currentSchema.fields.length) {
+            if (!confirm('Are you sure you want to clear all fields in the builder?')) return;
+        }
+        applyPreset('blank');
+    }
+
+    async function copySchemaJson() {
+        collectSchemaFromInputs();
+        if (!state.currentSchema) return;
         try {
-            state.lastConfirmedSchemaId = null;
-            if ($('postConfirmBox')) $('postConfirmBox').classList.add('hidden');
-            hideStatus('confirmStatus');
-            const data = await api('/chat', { method: 'POST', json: { session_id: null, message: null } });
-            state.sessionId = data.session_id;
-            if ($('chatLog')) $('chatLog').innerHTML = '';
-            handleChatResponse(data);
-            if (shouldFocus && $('chatInput')) {
-                $('chatInput').focus({ preventScroll: true });
+            await navigator.clipboard.writeText(JSON.stringify(state.currentSchema, null, 2));
+            const btn = $('copySchemaBtn');
+            if (btn) {
+                const orig = btn.textContent;
+                btn.textContent = '✓ Copied!';
+                setTimeout(() => { btn.textContent = orig; }, 1500);
             }
         } catch (e) {
-            addChatMsg('bot', 'Failed to start session: ' + e.message);
+            alert('Failed to copy: ' + e.message);
         }
     }
 
-    if ($('newSessionBtn')) $('newSessionBtn').addEventListener('click', () => newSession(true));
+    function toggleJsonPreview() {
+        collectSchemaFromInputs();
+        const box = $('schemaJsonPreviewBox');
+        if (!box) return;
+        box.classList.toggle('hidden');
+        const view = $('schemaJsonView');
+        if (view && state.currentSchema) {
+            view.textContent = JSON.stringify(state.currentSchema, null, 2);
+        }
+    }
 
-    async function sendChat() {
-        const input = $('chatInput');
-        const msg = input ? input.value.trim() : '';
-        if (!msg || !state.sessionId) return;
-        input.value = '';
-        addChatMsg('user', msg);
-        input.disabled = true;
-        if ($('sendBtn')) $('sendBtn').disabled = true;
+    async function saveCustomSchema() {
+        collectSchemaFromInputs();
+        validateAndRefreshUI();
+
+        const schema = state.currentSchema;
+        if (!schema || !schema.document_type || !schema.fields || !schema.fields.length) {
+            showStatus('confirmStatus', 'Please specify a document type and at least one field.', 'error');
+            return;
+        }
+
+        if (state.currentErrors && state.currentErrors.length) {
+            showStatus('confirmStatus', 'Please fix schema issues before confirming: ' + state.currentErrors.join(', '), 'error');
+            return;
+        }
+
+        const btn = $('confirmBtn');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '⏳ Saving & Registering...';
+        }
+
         try {
-            const data = await api('/chat', {
+            const payload = {
+                document_type: schema.document_type,
+                fields: schema.fields.map(f => ({
+                    name: f.name,
+                    type: f.type || 'string',
+                    required: !!f.required,
+                    description: f.description || '',
+                    item_type: f.item_type || null,
+                    pattern: f.pattern || null,
+                    currency: f.currency || null,
+                }))
+            };
+
+            const data = await api('/schema/custom', {
                 method: 'POST',
-                json: { session_id: state.sessionId, message: msg }
+                json: payload
             });
-            handleChatResponse(data);
-        } catch (e) {
-            addChatMsg('bot', 'Error: ' + e.message);
-            if (input) input.disabled = false;
-            if ($('sendBtn')) $('sendBtn').disabled = false;
+
+            state.lastConfirmedSchemaId = data.schema_id;
+            state.completed = true;
+
+            showStatus('confirmStatus', `🎉 Schema saved and confirmed! Schema ID: <code>${escapeHtml(data.schema_id)}</code>`, 'success');
+
+            const confIdText = $('confirmedSchemaIdText');
+            if (confIdText) confIdText.textContent = `ID: ${data.schema_id}`;
+
+            const postBox = $('postConfirmBox');
+            if (postBox) postBox.classList.remove('hidden');
+
+            const quickBtn = $('quickRunPipelineBtn');
+            if (quickBtn) quickBtn.disabled = false;
+
+            const downloadPdfBtn = $('downloadSchemaPdfBtn');
+            if (downloadPdfBtn) downloadPdfBtn.disabled = false;
+            const downloadJsonBtn = $('downloadSchemaJsonBtn');
+            if (downloadJsonBtn) downloadJsonBtn.disabled = false;
+
+            // Refresh pipeline schema selector and pre-select the newly created schema
+            if (state.role === 'admin') {
+                await loadSchemas();
+                const sel = $('schemaSelect');
+                if (sel) {
+                    sel.value = data.schema_id;
+                    updateRunBtn();
+                }
+            }
+        } catch (err) {
+            showStatus('confirmStatus', 'Failed to save schema: ' + err.message, 'error');
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '✓ Save & Confirm Schema';
+            }
         }
     }
 
-    if ($('sendBtn')) $('sendBtn').addEventListener('click', sendChat);
-    if ($('chatInput')) {
-        $('chatInput').addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') sendChat();
-        });
-    }
-
-    if ($('printSchemaBtn')) {
-        $('printSchemaBtn').addEventListener('click', async () => {
-            if (!state.sessionId) return;
-            try {
-                const data = await api('/session/' + state.sessionId);
-                state.currentSchema = data.schema;
-                state.currentState = data.state;
-                state.completed = data.completed;
-                renderSchemaPanel();
-            } catch (e) {
-                addChatMsg('bot', 'Error re-print schema: ' + e.message);
+    function initSchemaBuilder() {
+        if (!state.currentSchema) {
+            applyPreset('medical');
+        } else {
+            const docTypeInput = $('editDocType');
+            if (docTypeInput && state.currentSchema.document_type) {
+                docTypeInput.value = state.currentSchema.document_type;
             }
+            renderSchemaPanel();
+            validateAndRefreshUI();
+        }
+    }
+
+    if ($('addSchemaFieldBtn')) $('addSchemaFieldBtn').addEventListener('click', addNewSchemaField);
+    if ($('clearSchemaBtn')) $('clearSchemaBtn').addEventListener('click', clearSchema);
+    if ($('copySchemaBtn')) $('copySchemaBtn').addEventListener('click', copySchemaJson);
+    if ($('toggleJsonPreviewBtn')) $('toggleJsonPreviewBtn').addEventListener('click', toggleJsonPreview);
+    if ($('confirmBtn')) $('confirmBtn').addEventListener('click', saveCustomSchema);
+
+    document.querySelectorAll('.preset-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const presetKey = e.currentTarget.getAttribute('data-preset');
+            if (presetKey) applyPreset(presetKey);
+        });
+    });
+
+    if ($('editDocType')) {
+        $('editDocType').addEventListener('input', () => {
+            collectSchemaFromInputs();
+            validateAndRefreshUI();
+        });
+        $('editDocType').addEventListener('change', () => {
+            collectSchemaFromInputs();
+            validateAndRefreshUI();
         });
     }
 
-    if ($('copySchemaBtn')) {
-        $('copySchemaBtn').addEventListener('click', async () => {
-            if (!state.currentSchema) return;
-            try {
-                await navigator.clipboard.writeText(JSON.stringify(state.currentSchema, null, 2));
-                const old = $('copySchemaBtn').textContent;
-                $('copySchemaBtn').textContent = '✓ Copied!';
-                setTimeout(() => { $('copySchemaBtn').textContent = old; }, 1500);
-            } catch (e) {
-                addChatMsg('bot', 'Copy failed: ' + e.message);
+    if ($('schemaPanel')) {
+        $('schemaPanel').addEventListener('input', () => {
+            collectSchemaFromInputs();
+            validateAndRefreshUI();
+        });
+        $('schemaPanel').addEventListener('change', () => {
+            collectSchemaFromInputs();
+            validateAndRefreshUI();
+        });
+        $('schemaPanel').addEventListener('click', (e) => {
+            const reqToggle = e.target.closest('.req-toggle');
+            if (reqToggle) {
+                reqToggle.classList.toggle('is-req');
+                reqToggle.classList.toggle('is-opt');
+                const isReq = reqToggle.classList.contains('is-req');
+                reqToggle.textContent = isReq ? 'YES' : 'NO';
+                collectSchemaFromInputs();
+                validateAndRefreshUI();
+                return;
             }
-        });
-    }
 
-    if ($('confirmBtn')) {
-        $('confirmBtn').addEventListener('click', async () => {
-            if (!state.sessionId || state.completed) return;
-            if ($('chatInput')) $('chatInput').value = '/confirm';
-            sendChat();
+            const delBtn = e.target.closest('.btn-del-field');
+            if (delBtn) {
+                const tr = delBtn.closest('tr');
+                const idx = parseInt(tr.getAttribute('data-idx'), 10);
+                if (!isNaN(idx) && state.currentSchema && state.currentSchema.fields) {
+                    state.currentSchema.fields.splice(idx, 1);
+                    renderSchemaPanel();
+                    validateAndRefreshUI();
+                }
+                return;
+            }
         });
     }
 
@@ -1049,6 +1134,9 @@
                     badge.textContent = '✕ unavailable';
                     badge.className = 'badge badge-danger';
                 }
+            }
+            if (data.layer3_strategy && $('layer3StrategySelect') && !window.__userChangedStrategy) {
+                $('layer3StrategySelect').value = data.layer3_strategy;
             }
             updateRunBtn();
         } catch (e) {
@@ -1269,9 +1357,9 @@
             host.innerHTML = `
                 <div class="job-summary-grid">
                     <div class="summary-box"><div class="lbl">Status</div><div class="val">${escapeHtml(j.status)}</div></div>
+                    <div class="summary-box"><div class="lbl">Strategy</div><div class="val" style="font-size:12px; font-weight:600; color:${j.strategy === 'graph_memory' ? '#c084fc' : '#94a3b8'}">${j.strategy === 'graph_memory' ? '🧠 Graph Memory' : '📄 Page Scan'}</div></div>
                     <div class="summary-box"><div class="lbl">Docs</div><div class="val">${sucs.length + fails.length} / ${(j.targets || []).length || 0}</div></div>
                     <div class="summary-box"><div class="lbl">Success</div><div class="val" style="color:#6ee7b7">${sucs.length}</div></div>
-                    <div class="summary-box"><div class="lbl">Failed</div><div class="val" style="color:#fca5a5">${fails.length}</div></div>
                     <div class="summary-box"><div class="lbl">Wall time</div><div class="val">${wall}</div></div>
                 </div>
                 ${sucs.length ? `
@@ -1279,12 +1367,15 @@
                     <h3>✓ Successful (${sucs.length})</h3>
                     ${sucs.map((s, idx) => `
                         <div class="result-row ok" style="flex-direction: column; align-items: stretch; gap: 8px;">
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                                 <div>
                                     <span class="result-name">${escapeHtml(s.pdf)}</span>
-                                    <div class="result-meta">pages: ${s.pages} • conf: ${(s.avg_conf || 0).toFixed(3)} • Layer 1+2: ${s.elapsed_s}s ${s.extract_elapsed_s ? `• Layer 3 (Sarvam 105B): ${s.extract_elapsed_s}s` : ''}</div>
+                                    <div class="result-meta">pages: ${s.pages} • conf: ${(s.avg_conf || 0).toFixed(3)} • Layer 1+2: ${s.elapsed_s}s ${s.extract_elapsed_s ? `• Layer 3 (${s.strategy || 'extract'}): ${s.extract_elapsed_s}s` : ''}</div>
                                 </div>
-                                <div style="display: flex; gap: 6px; align-items: center;">
+                                <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                                    ${s.strategy === 'graph_memory'
+                                        ? `<span class="badge badge-primary" style="background:rgba(124,58,237,0.2);color:#c084fc;border:1px solid rgba(124,58,237,0.4)">🧠 Graph Memory (${s.graph_nodes || 0} nodes, ${s.graph_edges || 0} edges)</span>`
+                                        : `<span class="badge badge-mute">📄 Classic Page Scan</span>`}
                                     ${s.db_run_id ? `<span class="badge badge-success">PostgreSQL: Run #${s.db_run_id}</span>` : ''}
                                     <span class="result-meta"><code>${escapeHtml(s.md)}</code></span>
                                 </div>
@@ -1297,6 +1388,47 @@
                                 </div>
                                 <pre class="extracted-json-pre">${escapeHtml(JSON.stringify(s.extracted_data, null, 2))}</pre>
                             </div>
+                            ` : ''}
+                            ${s.graph_memory && s.graph_memory.snapshot ? `
+                            <details class="graph-memory-details" style="margin-top: 6px; background: rgba(124,58,237,0.08); border: 1px solid rgba(124,58,237,0.25); border-radius: 6px; padding: 8px 12px;">
+                                <summary style="cursor: pointer; font-weight: 600; color: #c084fc; font-size: 12px; user-select: none;">
+                                    🧠 Document Knowledge Graph (${s.graph_nodes || 0} Entities, ${s.graph_edges || 0} Relationships)
+                                </summary>
+                                <div style="margin-top: 8px; font-size: 11px;">
+                                    <div style="display: flex; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;">
+                                        <span class="badge badge-info font-mono">Entities: ${s.graph_nodes || 0}</span>
+                                        <span class="badge badge-warn font-mono">Relationships: ${s.graph_edges || 0}</span>
+                                        <span class="badge badge-primary font-mono">Strategy: Graph Memory</span>
+                                    </div>
+                                    <div style="max-height: 220px; overflow-y: auto; background: rgba(0,0,0,0.3); border-radius: 4px; padding: 8px; margin-bottom: 6px;">
+                                        <strong>Captured Graph Nodes &amp; Evidence:</strong>
+                                        <ul style="margin: 4px 0 0 16px; padding: 0;">
+                                            ${(s.graph_memory.snapshot.nodes || []).map(n => `
+                                                <li style="margin-bottom: 4px;">
+                                                    <span style="color:#c084fc; font-weight:600;">[${escapeHtml(n.type)}]</span>
+                                                    <strong>${escapeHtml(n.label || '')}:</strong> <code>${escapeHtml(n.value || '')}</code>
+                                                    <span class="muted small">(Pages: ${(n.source_pages || []).join(',')}, conf: ${n.confidence})</span>
+                                                    ${(n.evidence && n.evidence.length) ? `<div class="muted small" style="padding-left: 12px; font-style: italic;">"${escapeHtml(n.evidence[0].text || '')}"</div>` : ''}
+                                                </li>
+                                            `).join('')}
+                                        </ul>
+                                    </div>
+                                    ${(s.graph_memory.snapshot.edges || []).length ? `
+                                    <div style="max-height: 180px; overflow-y: auto; background: rgba(0,0,0,0.3); border-radius: 4px; padding: 8px;">
+                                        <strong>Entity Relationships &amp; Cross-Page Anaphora:</strong>
+                                        <ul style="margin: 4px 0 0 16px; padding: 0;">
+                                            ${(s.graph_memory.snapshot.edges || []).map(e => `
+                                                <li style="margin-bottom: 4px;">
+                                                    <code>${escapeHtml(e.source_node)}</code> --[<strong style="color:#6ee7b7">${escapeHtml(e.relationship)}</strong> (status: ${escapeHtml(e.status)})]--> <code>${escapeHtml(e.target_node)}</code>
+                                                    <span class="muted small">(P${e.source_page})</span>
+                                                    ${e.evidence ? `<div class="muted small" style="padding-left: 12px; font-style: italic;">"${escapeHtml(e.evidence)}"</div>` : ''}
+                                                </li>
+                                            `).join('')}
+                                        </ul>
+                                    </div>
+                                    ` : ''}
+                                </div>
+                            </details>
                             ` : ''}
                         </div>
                     `).join('')}
@@ -1365,6 +1497,8 @@
                 const fd = new FormData();
                 fd.append('schema_id', schema_id);
                 fd.append('documents', JSON.stringify(selected));
+                const strategy = ($('layer3StrategySelect') && $('layer3StrategySelect').value) || 'graph_memory';
+                fd.append('strategy', strategy);
                 const res = await api('/pipeline/run', { method: 'POST', body: fd });
                 btn.textContent = 'Running (job ' + res.job_id + ')...';
                 state.selectedJobId = res.job_id;
@@ -1404,7 +1538,10 @@
         showStatus('userAutoRunStatus', 'Starting extraction pipeline for your workspace...', 'info');
 
         try {
-            const res = await api('/me/pipeline/run', { method: 'POST' });
+            const fd = new FormData();
+            const strategy = ($('userLayer3StrategySelect') && $('userLayer3StrategySelect').value) || 'graph_memory';
+            fd.append('strategy', strategy);
+            const res = await api('/me/pipeline/run', { method: 'POST', body: fd });
             showStatus('userAutoRunStatus', `✓ Job ${res.job_id} queued for ${res.targets} document(s).`, 'success');
             loadUserJobs();
         } catch (e) {
@@ -1415,6 +1552,12 @@
     }
 
     if ($('userAutoRunPipelineBtn')) $('userAutoRunPipelineBtn').addEventListener('click', runUserPipeline);
+    if ($('layer3StrategySelect')) {
+        $('layer3StrategySelect').addEventListener('change', () => { window.__userChangedStrategy = true; });
+    }
+    if ($('userLayer3StrategySelect')) {
+        $('userLayer3StrategySelect').addEventListener('change', () => { window.__userChangedStrategy = true; });
+    }
     if ($('quickRunPipelineBtn')) {
         $('quickRunPipelineBtn').addEventListener('click', () => {
             if (state.role === 'user') {
@@ -1712,42 +1855,132 @@
 
     // ======================= Query Bot Tab =======================
 
-    // Holds all extracted data merged from every completed job
+    // Holds all extracted data and document map
     let qbAllExtractedData = null;
+    let qbDocsMap = {};
+
+    function updateQbModeBadge() {
+        const docSelect = $('tab_qb_doc_select');
+        const modeBadge = $('tab_qb_mode_badge');
+        if (!docSelect || !modeBadge) return;
+        const selectedDocId = docSelect.value;
+        const m = selectedDocId ? qbDocsMap[selectedDocId] : null;
+        if (!m) {
+            modeBadge.style.display = 'none';
+            return;
+        }
+        const isGraph = m.strategy === 'graph_memory' || m.has_graph;
+        modeBadge.style.display = 'inline-block';
+        modeBadge.className = 'badge ' + (isGraph ? 'badge-primary' : 'badge-secondary');
+        modeBadge.textContent = isGraph ? '⚡ Graph Memory' : '📄 JSON Fallback';
+    }
 
     async function loadAllExtractedData() {
         try {
-            const data = await api('/pipeline/status');
-            const jobs = Object.values(data.jobs || {});
-            const completed = jobs.filter(j => j.status === 'completed');
+            const docSelect = $('tab_qb_doc_select');
+            const modeBadge = $('tab_qb_mode_badge');
 
-            if (!completed.length) {
+            // 1. Fetch available documents from dedicated query-bot endpoint
+            let docs = [];
+            try {
+                const docRes = await api('/api/query-bot/documents');
+                docs = docRes.documents || [];
+            } catch (err) {
+                console.warn('Failed to load /api/query-bot/documents, fallback to jobs', err);
+            }
+
+            // 2. Fetch /pipeline/status for any in-flight active jobs
+            const statusData = await api('/pipeline/status').catch(() => ({}));
+            const jobs = Object.values(statusData.jobs || {});
+            const completedJobs = jobs.filter(j => j.status === 'completed');
+
+            qbDocsMap = {};
+            const merged = {};
+
+            // Register documents from /api/query-bot/documents
+            docs.forEach(d => {
+                qbDocsMap[d.doc_id] = {
+                    doc_id: d.doc_id,
+                    stem: d.stem,
+                    label: d.label || d.doc_id,
+                    strategy: d.strategy || (d.has_graph ? 'graph_memory' : 'page_scan'),
+                    has_graph: !!d.has_graph,
+                    has_extracted: !!d.has_extracted,
+                    job_id: d.job_id,
+                    extracted_data: null,
+                };
+            });
+
+            // Merge details from completed in-memory jobs if available
+            if (completedJobs.length > 0) {
+                const details = await Promise.all(
+                    completedJobs.map(j => api('/pipeline/jobs/' + j.job_id).catch(() => null))
+                );
+                details.forEach(j => {
+                    if (!j) return;
+                    const sucs = j.successes || [];
+                    sucs.forEach(s => {
+                        const docId = s.pdf || s.doc_id || (s.extracted_json ? s.extracted_json.replace('.extracted.json', '.pdf') : null);
+                        if (docId) {
+                            if (!qbDocsMap[docId]) {
+                                qbDocsMap[docId] = {
+                                    doc_id: docId,
+                                    job_id: j.job_id,
+                                    strategy: s.strategy || j.strategy || 'graph_memory',
+                                    has_graph: (s.strategy || j.strategy) === 'graph_memory',
+                                };
+                            }
+                            qbDocsMap[docId].extracted_data = s.extracted_data;
+                        }
+                        if (s.extracted_data) {
+                            const key = s.extracted_json || s.pdf || s.doc_id || 'document';
+                            merged[key] = s.extracted_data;
+                        }
+                    });
+                    if (!sucs.length && j.extracted_data) {
+                        merged[j.job_id] = j.extracted_data;
+                        qbDocsMap[j.job_id] = {
+                            doc_id: j.job_id,
+                            job_id: j.job_id,
+                            extracted_data: j.extracted_data,
+                            strategy: j.strategy || 'graph_memory',
+                            has_graph: (j.strategy || 'graph_memory') === 'graph_memory',
+                        };
+                    }
+                });
+            }
+
+            const docKeys = Object.keys(qbDocsMap);
+
+            if (!docKeys.length) {
                 qbAllExtractedData = null;
+                qbDocsMap = {};
+                if (docSelect) {
+                    docSelect.innerHTML = '<option value="">-- No documents processed yet --</option>';
+                }
+                if (modeBadge) modeBadge.style.display = 'none';
                 return;
             }
 
-            const details = await Promise.all(
-                completed.map(j => api('/pipeline/jobs/' + j.job_id).catch(() => null))
-            );
-
-            const merged = {};
-            details.forEach(j => {
-                if (!j) return;
-                const sucs = j.successes || [];
-                sucs.forEach(s => {
-                    if (s.extracted_data) {
-                        const key = s.extracted_json || s.pdf || s.doc_id || 'document';
-                        merged[key] = s.extracted_data;
-                    }
-                });
-                if (!sucs.length && j.extracted_data) {
-                    merged[j.job_id] = j.extracted_data;
-                }
-            });
-
             qbAllExtractedData = Object.keys(merged).length ? merged : null;
+
+            if (docSelect) {
+                const prevVal = docSelect.value;
+                docSelect.innerHTML = docKeys.map(d => {
+                    const m = qbDocsMap[d];
+                    const stratLabel = (m.strategy === 'graph_memory' || m.has_graph) ? 'graph_memory' : 'page_scan';
+                    return `<option value="${escapeHtml(d)}">${escapeHtml(d)} (${stratLabel})</option>`;
+                }).join('');
+
+                if (prevVal && qbDocsMap[prevVal]) {
+                    docSelect.value = prevVal;
+                } else if (docKeys.length > 0) {
+                    docSelect.value = docKeys[0];
+                }
+
+                updateQbModeBadge();
+            }
         } catch (e) {
-            qbAllExtractedData = null;
             console.warn('loadAllExtractedData error', e);
         }
     }
@@ -1756,15 +1989,20 @@
         const input = $('tab_qb_input');
         const btn = $('tab_qb_btn');
         const msgs = $('tab_qb_msgs');
+        const docSelect = $('tab_qb_doc_select');
+        const modeBadge = $('tab_qb_mode_badge');
         if (!input || !btn || !msgs) return;
 
         const question = input.value.trim();
         if (!question) { input.focus(); return; }
 
-        if (!qbAllExtractedData) {
+        const selectedDocId = docSelect ? docSelect.value : null;
+        const selectedMeta = selectedDocId ? qbDocsMap[selectedDocId] : null;
+
+        if (!selectedDocId) {
             const errDiv = document.createElement('div');
             errDiv.className = 'query-bot-msg bot error';
-            errDiv.textContent = 'No extracted data available yet. Run a pipeline job first.';
+            errDiv.textContent = 'Please select a document from the dropdown first.';
             msgs.appendChild(errDiv);
             msgs.scrollTop = msgs.scrollHeight;
             return;
@@ -1777,7 +2015,7 @@
 
         const botDiv = document.createElement('div');
         botDiv.className = 'query-bot-msg bot loading';
-        botDiv.textContent = 'Thinking…';
+        botDiv.textContent = 'Searching document graph…';
         msgs.appendChild(botDiv);
         msgs.scrollTop = msgs.scrollHeight;
 
@@ -1787,16 +2025,45 @@
         btn.textContent = 'Asking…';
 
         try {
+            const reqPayload = {
+                question,
+                doc_id: selectedDocId || undefined,
+                job_id: selectedMeta ? selectedMeta.job_id : undefined,
+                extracted_data: (selectedMeta && selectedMeta.extracted_data) ? selectedMeta.extracted_data : undefined,
+            };
+
             const res = await api('/api/query-bot/ask', {
                 method: 'POST',
-                json: {
-                    extracted_data: qbAllExtractedData,
-                    question,
-                    doc_id: 'all extracted documents'
-                }
+                json: reqPayload,
             });
+
             botDiv.className = 'query-bot-msg bot';
-            botDiv.textContent = res.answer || 'No answer returned.';
+
+            // Build rich answer HTML with source citations & mode badge
+            let ansHtml = `<div>${escapeHtml(res.answer || 'No answer returned.')}</div>`;
+
+            if (res.sources && res.sources.length > 0) {
+                ansHtml += '<div style="margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-light); font-size: 11px; opacity: 0.85;">';
+                res.sources.forEach(s => {
+                    const pg = s.page ? `Page ${s.page}` : 'Document';
+                    const ev = s.evidence ? `: "${escapeHtml(s.evidence)}"` : '';
+                    ansHtml += `<div style="margin-top: 2px;">📍 <strong>[Source: ${escapeHtml(pg)}]</strong>${ev}</div>`;
+                });
+                ansHtml += '</div>';
+            }
+
+            const isGraph = res.mode === 'graph';
+            const badgeClass = isGraph ? 'badge-primary' : 'badge-secondary';
+            const badgeText = isGraph ? '⚡ Graph Memory' : '📄 JSON Fallback';
+            ansHtml += `<div style="margin-top: 6px;"><span class="badge ${badgeClass}" style="font-size: 10px; font-weight: 500;">${badgeText}</span></div>`;
+
+            botDiv.innerHTML = ansHtml;
+
+            if (modeBadge) {
+                modeBadge.style.display = 'inline-block';
+                modeBadge.className = `badge ${badgeClass}`;
+                modeBadge.textContent = badgeText;
+            }
         } catch (err) {
             botDiv.className = 'query-bot-msg bot error';
             botDiv.textContent = 'Error: ' + (err.message || String(err));
@@ -1809,6 +2076,7 @@
         }
     }
 
+    if ($('tab_qb_doc_select')) $('tab_qb_doc_select').addEventListener('change', updateQbModeBadge);
     if ($('tab_qb_btn')) $('tab_qb_btn').addEventListener('click', askTabQueryBot);
     if ($('tab_qb_input')) {
         $('tab_qb_input').addEventListener('keydown', (e) => {

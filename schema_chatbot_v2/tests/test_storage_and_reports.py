@@ -26,6 +26,8 @@ from src.utils.job_pdf_report import generate_job_pdf
 def admin_token():
     store = get_user_store()
     user = store.get_by_username("admin")
+    if not user:
+        user = store.create("admin", "changeme", Role.ADMIN)
     return create_access_token(user)
 
 
