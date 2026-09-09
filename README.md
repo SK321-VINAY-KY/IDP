@@ -22,7 +22,7 @@
 The IDP platform operates across three tightly integrated layers:
 - **Layer 1: Routing & Heuristics** — Inspects raw PDF pages with zero-model heuristics, evaluates page layout complexity, and dispatches single or multi-engine extraction plans with VLM escalation.
 - **Layer 2: Conversion & Engine Execution** — Executes the optimal extraction engine (Docling, PaddleOCR printed, or tuned handwritten DBNet), performs line-level normalized deduplication, and generates standardized Markdown with provenance metadata.
-- **Layer 3: Schema Discovery, Extraction & Admin Application** — FastAPI web platform (`schema_chatbot_v2`) providing multi-tenant JWT authentication, interactive schema derivation via Sarvam Document AI and LLM, ReportLab PDF job reporting, PostgreSQL persistence, and interactive JSON Q&A.
+- **Layer 3: Schema Discovery, Graphical Memory Extraction & Admin Application** — FastAPI web platform (`schema_chatbot_v2`) providing multi-tenant JWT authentication, interactive schema derivation via Sarvam Document AI, an autonomous **Graphical Memory & MemoryManager (Graph Agent)** for multi-page contextual schema extraction, ReportLab PDF job reporting, PostgreSQL persistence, and graph-augmented multi-hop Q&A.
 
 ```
                                   ┌─────────────────────────────────────────────────────────────┐
@@ -99,6 +99,16 @@ The IDP platform operates across three tightly integrated layers:
 - **`JSONFileUserStore`**: Users are persisted to disk at `schema_chatbot_v2/data/users.json` using atomic file writes (`.tmp` replacement).
 - **Cryptographic Security**: Passwords are saved strictly as salted PBKDF2-HMAC-SHA256 hashes (100,000 iterations); plaintext passwords are never stored. Server restarts preserve all existing users without overwriting.
 
+### 6. Graphical Memory & MemoryManager (Graph Agent Architecture)
+- **Document Knowledge Graph (`GraphMemory`)**: Maintains a structured in-memory knowledge representation consisting of `GraphNode` instances (typed entities such as `Person`, `Organization`, `Date`, `Amount`, `Admission`), directed `GraphEdge` relationships (e.g. `HAS`, `BELONGS_TO`, `TREATS`, `PERFORMED_BY`), and exact page-level provenance `Evidence`.
+- **Concurrent Ingestion & Blackboard (`MemoryManager`)**: Coordinates worker extraction via immutable `PageDelta` bundles. Handles canonical ID remapping, anchor entity clustering, and post-merge cross-page reference reconciliation (resolving anaphora and distributed mentions).
+- **Direct Schema Resolution (`resolver.py`)**: Directly synthesizes dynamic Pydantic schema models from `GraphMemory` without passing huge raw Markdown texts into the LLM context, eliminating prompt overflow and context dilution.
+- **Configurable Strategies (`layer3_strategy`)**:
+  - `graph_memory` (default): Robust sequential/batched graph ingestion with multi-page reference linking.
+  - `graph_memory_concurrent`: High-throughput asynchronous worker ingestion bounded by `graph_concurrency_limit` semaphore.
+  - `page_scan`: Baseline iterative page-by-page LLM extraction.
+- **Graph-Augmented Query Bot (`query_service.py`)**: Bounded, cycle-safe multi-hop BFS graph traversal engine providing grounded natural language answers over extracted documents with explicit node, edge, and source attribution.
+
 ---
 
 ## 🚀 Cloning & Environment Setup
@@ -165,6 +175,12 @@ IDP_DATABASE_URL=postgresql://postgres:12345@localhost:5432/idp
 # --- Storage & Logging ---
 SESSION_STORE=memory
 LOG_LEVEL=INFO
+
+# --- Layer 3 Extraction Strategy & Graph Agent ---
+IDP_LAYER3_STRATEGY=graph_memory             # Options: graph_memory (default), page_scan, graph_memory_concurrent
+IDP_GRAPH_CONCURRENCY_LIMIT=8                # Worker limit for concurrent graph ingestion
+IDP_GRAPH_ANCHOR_MAX_K=5                     # Max anchor entities per page
+IDP_GRAPH_ANCHOR_TYPES=["Person","Organization","Date","Admission"]  # Filter anchor types
 ```
 
 ### 2. Schema Chatbot `.env` (`schema_chatbot_v2/.env`)
@@ -236,16 +252,23 @@ Run a quick Python command to confirm tables are created and connected:
 
 ## 🧪 Automated Test Suite
 
-The repository contains 161 automated test cases covering routing tables, escalation logic, capability matching, Sarvam token caps, user stores, and session persistence:
+The repository contains automated test suites covering routing tables, escalation logic, capability matching, Sarvam token caps, user stores, session persistence, Graphical Memory, MemoryManager, and Query Bot:
 
 ```bash
 # Run the complete test suite
 .venv\Scripts\python.exe -m pytest tests/ schema_chatbot_v2/tests/ -v
 
-# Run specific test suites
+# Run Graph Memory and MemoryManager tests
+.venv\Scripts\python.exe -m pytest tests/test_memory_manager.py -v
+.venv\Scripts\python.exe -m pytest tests/test_graph_memory_query_bot.py -v
+.venv\Scripts\python.exe -m pytest tests/test_layer3_pipeline.py -v
+.venv\Scripts\python.exe -m pytest tests/test_query_bot_e2e.py -v
+
+# Run Schema Chatbot and Storage test suites
 .venv\Scripts\python.exe -m pytest schema_chatbot_v2/tests/test_user_store.py -v
 .venv\Scripts\python.exe -m pytest schema_chatbot_v2/tests/test_sarvam_adapter.py -v
 .venv\Scripts\python.exe -m pytest schema_chatbot_v2/tests/test_storage_and_reports.py -v
+.venv\Scripts\python.exe -m pytest schema_chatbot_v2/tests/test_custom_schema_builder.py -v
 ```
 
 ---
@@ -326,11 +349,57 @@ Initializes PostgreSQL 18 connections with connection pooling and implements an 
 Offers helper functions to save raw PDFs, store confirmed schemas, record extraction runs, and retrieve ReportLab PDFs.
 Constructed with SQLAlchemy ORM, psycopg2-binary, SQLite3, hashlib SHA-256, and Pydantic.
 
+#### `src/ai/layer3_extraction/extractor.py`
+Orchestrates Layer 3 structured schema extraction from Markdown documents across multiple configurable strategies.
+Supports `graph_memory` (default), `graph_memory_concurrent` (semaphore-bounded parallel workers), and `page_scan`.
+Dynamically compiles Pydantic schema models from registry definitions and handles fallback extractions.
+Built with Pydantic dynamic models, `asyncio.Semaphore`, Jinja2 prompt rendering, and extraction LLM clients.
+
 #### `src/ai/output/md_writer.py`
 Formats extracted page bodies into clean Markdown documents featuring per-page provenance HTML comments.
 Generates an audit-ready `<!-- PIPELINE_SUMMARY [...] -->` JSON footer encapsulating engine choices, confidence, and timings.
 Writes document-level `<stem>.schema_ref.json` sidecar files linking documents to confirmed schema definitions.
 Built purely with Python standard library string formatting, Pathlib, and JSON serialization.
+
+---
+
+### Layer 3 Graphical Memory & Graph Agent (`src/ai/layer3_extraction/graph_agent/`)
+
+#### `src/ai/layer3_extraction/graph_agent/models.py`
+Defines core data structures for graph memory: `GraphNode`, `GraphEdge`, `Evidence`, and `PageProcessingResult`.
+Supports node categories (`EXPLICIT`, `CONTEXTUAL`, `REFERENCE_SUPPORT`), confidence scoring, and multi-page provenances.
+Provides dictionary serialization and deserialization helpers for JSON persistence and debugging.
+Constructed with Python standard library dataclasses, typing annotations, and Pydantic validation.
+
+#### `src/ai/layer3_extraction/graph_agent/graph_memory.py`
+In-memory and serializable document knowledge graph storing entity nodes and directed relationship edges.
+Supports spatial, semantic, and categorical querying, neighbor traversals, and anchor entity discovery.
+Enforces uniqueness by entity type and normalized value, appending page evidence and aliases on duplicates.
+Implemented using native Python dictionaries, set indexing, and JSON export/import methods.
+
+#### `src/ai/layer3_extraction/graph_agent/memory_manager.py`
+Central blackboard and coordinator managing concurrent page workers and canonical graph updates.
+Collects immutable `PageDelta` objects from independent page workers and merges them canonically.
+Remaps worker-local IDs to canonical graph IDs, rewrites edge endpoints, and resolves cross-page references post-merge.
+Built using `asyncio` locks, regular expressions, Pydantic models, and UUID generation.
+
+#### `src/ai/layer3_extraction/graph_agent/resolver.py`
+Synthesizes final hydrated dynamic Pydantic schema instances directly from `GraphMemory`.
+Formats extracted graph entities and relationships into structured prompt context without raw markdown concatenation.
+Prevents context window truncation and ensures extraction outputs are grounded in explicit graph evidence.
+Built using Pydantic dynamic model parsing, extraction LLM clients, and structured logging.
+
+#### `src/ai/layer3_extraction/graph_agent/agent.py`
+Autonomous graph-traversing agent coordinating the complete Layer 3 ingestion, anchoring, and extraction lifecycle.
+Executes page ingestion with configurable concurrency or sequential processing depending on the selected strategy.
+Interacts with the LLM to discover entities, form relationships, and resolve target schema fields.
+Constructed with asynchronous task orchestration, exception handlers, and telemetry tracking.
+
+#### `src/ai/layer3_extraction/graph_agent/query_service.py`
+Bounded, cycle-safe graph query service enabling natural language Q&A over document knowledge graphs.
+Implements breadth-first search (BFS) multi-hop graph expansion with configurable hop and node caps.
+Extracts keyword anchors, filters common stop words, and synthesizes grounded answers with explicit source citations.
+Built using Python `collections.deque`, regex tokenizer, and extraction LLM client adapters.
 
 ---
 
@@ -381,6 +450,24 @@ Specifies Pydantic v1 response models for VLM inference including printed vs. ha
 Contains typed schema representations for table detection, diagram flags, and direct markdown transcription output.
 Ensures JSON responses from external VLMs adhere strictly to the internal Layer 1 routing expectations.
 Constructed using Pydantic v1 schema definitions.
+
+#### `src/adapters/llm/extraction_base.py`
+Defines the `ExtractionLLMClient` abstract interface specifying synchronous and asynchronous generation methods for Layer 3.
+Declares structured JSON chat completion methods with temperature, token limit, and system prompt constraints.
+Ensures unified interaction across Ollama, Sarvam, and Mock extraction providers.
+Built using Python standard library `abc`, typing annotations, and Pydantic base classes.
+
+#### `src/adapters/llm/extraction_client.py`
+Provides factory dispatching and concrete client wrappers for Layer 3 extraction models.
+Dispatches requests to Ollama or Sarvam based on application configuration (`settings.llm_provider`).
+Manages HTTP connection pools, retry mechanisms, and structured JSON parsing.
+Built using `httpx`, `asyncio`, and dynamic provider resolution.
+
+#### `src/adapters/llm/sarvam_client.py`
+Implements `ExtractionLLMClient` for Sarvam AI's chat completion endpoints powering Layer 3 extraction.
+Handles authentication headers (`api-subscription-key`), token limits, and payload formatting.
+Includes defensive error handling for truncated responses and timeout exceptions.
+Built using `httpx` async client and structured exception handling.
 
 ---
 
@@ -603,6 +690,56 @@ Comprehensive two-phase demonstration harness linking Phase 1 schema discovery w
 Calls `/schema/infer` on the running chatbot to derive a shared schema, then processes corpus PDFs through Engineer A.
 Outputs Markdown files and schema sidecars linking each processed document to its registry schema identifier.
 Built using `httpx`, PyMuPDF, Pathlib, and the Layer 1 routing pipeline.
+
+---
+
+### Diagnostics, Benchmarks & Interactive Tools (`scripts/`, root)
+
+#### `scripts/compare_layer3_strategies.py`
+Diagnostic benchmarking harness comparing Layer 3 extraction strategies (`page_scan` vs. `graph_memory` vs. `graph_memory_concurrent`).
+Measures token consumption, execution wall-clock time, entity recall, and schema resolution precision across test documents.
+Generates side-by-side terminal comparison tables and structured JSON performance logs.
+Built with Python `time`, string formatting, and Layer 3 extraction APIs.
+
+#### `scripts/diagnose_intake_failure.py`
+Diagnostic script investigating Sarvam Document AI OCR intake, job polling latency, and token truncation.
+Hooks into Sarvam API client calls to inspect `reasoning_content`, `completion_tokens`, and JSON finish reasons.
+Provides safe UTF-8 previews for Windows console execution and identifies payload size bottlenecks.
+Constructed with `httpx`, Python standard library `sys`, `json`, and Pydantic helpers.
+
+#### `test_layer3_interactive.py`
+Interactive CLI testing tool for running Layer 3 extraction and Graph Memory inspection on arbitrary documents.
+Allows selecting extraction strategy (`graph_memory`, `page_scan`), printing graph nodes/edges, and executing queries.
+Built with standard library `argparse`, colorized console output, and Layer 3 pipeline services.
+
+---
+
+### Test Suites (`tests/`, `schema_chatbot_v2/tests/`)
+
+#### `tests/test_memory_manager.py`
+Unit test suite verifying `GraphMemory` operations, `MemoryManager` concurrent delta merging, canonical ID remapping, and cross-page reference reconciliation.
+Tests cycle detection, entity deduplication, alias updates, and anchor extraction heuristics.
+Constructed using `pytest`, `pytest-asyncio`, and mock extraction models.
+
+#### `tests/test_graph_memory_query_bot.py`
+Tests multi-hop graph retrieval, cycle-safe BFS traversal, stop-word filtering, and source citation generation in `GraphQueryService`.
+Validates that answers cite explicit source node and page provenances from graph memory.
+Built with `pytest` and mock LLM adapters.
+
+#### `tests/test_layer3_pipeline.py`
+Integration test suite evaluating end-to-end extraction across `graph_memory` and `page_scan` strategies.
+Verifies dynamic Pydantic model hydration and storage persistence into PostgreSQL/SQLite.
+Built using `pytest` and temporary SQLite fixtures.
+
+#### `tests/test_query_bot_e2e.py`
+End-to-end integration tests for the Query Bot API endpoint (`/api/query-bot/ask`).
+Validates request parsing, tenant data isolation, response formatting, and error handling.
+Built with FastAPI `TestClient` and `pytest`.
+
+#### `schema_chatbot_v2/tests/test_custom_schema_builder.py`
+Unit and integration tests for dynamic schema authoring and registry persistence.
+Verifies field type constraints, required flags, nested object definitions, and schema JSON export.
+Built with `pytest` and Pydantic validation.
 
 ---
 
