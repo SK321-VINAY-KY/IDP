@@ -43,3 +43,7 @@ schema_chatbot_v2/data/
 DEMO_GUIDE.md
 repomix-output.*
 repomix-output.xml
+repomix-layer3.*
+repomix.*.json
+scratch_*.json
+

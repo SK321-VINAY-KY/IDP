@@ -17,8 +17,9 @@ Owner: engineer-b@idp-pilot & engineer-a@idp-pilot
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from sqlalchemy import (
     DateTime,
@@ -168,8 +169,32 @@ class DocumentGraphRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
+# ==============================================================================
+# Table 7: Durable Page Delta Checkpoints (Layer 3)
+# ==============================================================================
+class PageCheckpointRecord(Base):
+    __tablename__ = "page_checkpoints"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    checkpoint_key: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    doc_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    page_number: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    pipeline_version: Mapped[str] = mapped_column(String, default="v1")
+    extraction_version: Mapped[str] = mapped_column(String, default="v1")
+    model_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    prompt_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    schema_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    page_delta_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    delta_checksum: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=1)
+    error_info: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
 def init_db():
-    """Create all 6 tables in PostgreSQL / SQLite if they do not exist."""
+    """Create all 7 tables in PostgreSQL / SQLite if they do not exist."""
     global engine, SessionLocal
     try:
         Base.metadata.create_all(engine)
@@ -548,4 +573,189 @@ def list_document_graphs(owner: Optional[str] = None) -> list:
     except Exception as exc:
         logger.error("storage.list_document_graphs_failed", error=str(exc))
         return []
+
+
+# ==============================================================================
+# Page Checkpoint Helpers (Layer 3 Durable Recovery)
+# ==============================================================================
+
+def compute_page_delta_checksum(delta_dict: Optional[dict]) -> str:
+    """Compute deterministic SHA256 checksum of a PageDelta dictionary."""
+    if not delta_dict:
+        return ""
+    serialized = json.dumps(delta_dict, sort_keys=True, default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def build_checkpoint_key(
+    doc_id: str,
+    page_number: int,
+    pipeline_version: str = "v1",
+    extraction_version: str = "v1",
+) -> str:
+    return f"{doc_id}:p{page_number}:{pipeline_version}:{extraction_version}"
+
+
+def save_page_checkpoint(
+    doc_id: str,
+    page_number: int,
+    status: str,
+    page_delta_json: Optional[dict] = None,
+    delta_checksum: Optional[str] = None,
+    error_info: Optional[str] = None,
+    pipeline_version: str = "v1",
+    extraction_version: str = "v1",
+    model_version: Optional[str] = None,
+    prompt_version: Optional[str] = None,
+    schema_version: Optional[str] = None,
+) -> Optional[int]:
+    """
+    Save or update a durable page checkpoint in PostgreSQL / SQLite.
+    Protects against duplicate page processing and enables crash recovery.
+    """
+    try:
+        init_db()
+        key = build_checkpoint_key(doc_id, page_number, pipeline_version, extraction_version)
+        if page_delta_json and not delta_checksum:
+            delta_checksum = compute_page_delta_checksum(page_delta_json)
+
+        session = SessionLocal()
+        try:
+            rec = session.query(PageCheckpointRecord).filter_by(checkpoint_key=key).first()
+            if rec:
+                rec.status = status
+                if page_delta_json is not None:
+                    rec.page_delta_json = page_delta_json
+                if delta_checksum:
+                    rec.delta_checksum = delta_checksum
+                if error_info is not None:
+                    rec.error_info = error_info
+                rec.attempt_count += 1
+                rec.updated_at = datetime.now(timezone.utc)
+            else:
+                rec = PageCheckpointRecord(
+                    checkpoint_key=key,
+                    doc_id=doc_id,
+                    page_number=page_number,
+                    pipeline_version=pipeline_version,
+                    extraction_version=extraction_version,
+                    model_version=model_version,
+                    prompt_version=prompt_version,
+                    schema_version=schema_version,
+                    status=status,
+                    page_delta_json=page_delta_json,
+                    delta_checksum=delta_checksum,
+                    attempt_count=1,
+                    error_info=error_info,
+                )
+                session.add(rec)
+            session.commit()
+            session.refresh(rec)
+            logger.info(
+                "page.checkpoint.created",
+                checkpoint_key=key,
+                doc_id=doc_id,
+                page_number=page_number,
+                status=status,
+                attempt=rec.attempt_count,
+            )
+            return rec.id
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error(
+            "page.checkpoint.save_failed",
+            doc_id=doc_id,
+            page_number=page_number,
+            error=str(exc),
+        )
+        return None
+
+
+def get_page_checkpoint(
+    doc_id: str,
+    page_number: int,
+    pipeline_version: str = "v1",
+    extraction_version: str = "v1",
+) -> Optional[dict]:
+    """Retrieve durable page checkpoint dictionary."""
+    try:
+        init_db()
+        key = build_checkpoint_key(doc_id, page_number, pipeline_version, extraction_version)
+        session = SessionLocal()
+        try:
+            rec = session.query(PageCheckpointRecord).filter_by(checkpoint_key=key).first()
+            if rec:
+                return {
+                    "id": rec.id,
+                    "checkpoint_key": rec.checkpoint_key,
+                    "doc_id": rec.doc_id,
+                    "page_number": rec.page_number,
+                    "pipeline_version": rec.pipeline_version,
+                    "extraction_version": rec.extraction_version,
+                    "status": rec.status,
+                    "page_delta_json": rec.page_delta_json,
+                    "delta_checksum": rec.delta_checksum,
+                    "attempt_count": rec.attempt_count,
+                    "error_info": rec.error_info,
+                    "created_at": rec.created_at.isoformat() if rec.created_at else None,
+                    "updated_at": rec.updated_at.isoformat() if rec.updated_at else None,
+                }
+            return None
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error("storage.get_page_checkpoint_failed", doc_id=doc_id, page=page_number, error=str(exc))
+        return None
+
+
+def list_page_checkpoints(doc_id: str, pipeline_version: Optional[str] = None) -> List[dict]:
+    """List all checkpoints for a document in ascending page order."""
+    try:
+        init_db()
+        session = SessionLocal()
+        try:
+            query = session.query(PageCheckpointRecord).filter_by(doc_id=doc_id)
+            if pipeline_version:
+                query = query.filter_by(pipeline_version=pipeline_version)
+            recs = query.order_by(PageCheckpointRecord.page_number.asc()).all()
+            return [
+                {
+                    "id": r.id,
+                    "checkpoint_key": r.checkpoint_key,
+                    "doc_id": r.doc_id,
+                    "page_number": r.page_number,
+                    "pipeline_version": r.pipeline_version,
+                    "extraction_version": r.extraction_version,
+                    "status": r.status,
+                    "page_delta_json": r.page_delta_json,
+                    "delta_checksum": r.delta_checksum,
+                    "attempt_count": r.attempt_count,
+                    "error_info": r.error_info,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                }
+                for r in recs
+            ]
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error("storage.list_page_checkpoints_failed", doc_id=doc_id, error=str(exc))
+        return []
+
+
+def delete_page_checkpoints(doc_id: str) -> int:
+    """Delete all checkpoints for a given document."""
+    try:
+        init_db()
+        session = SessionLocal()
+        try:
+            deleted = session.query(PageCheckpointRecord).filter_by(doc_id=doc_id).delete()
+            session.commit()
+            return deleted
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error("storage.delete_page_checkpoints_failed", doc_id=doc_id, error=str(exc))
+        return 0
 
