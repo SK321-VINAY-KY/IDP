@@ -24,6 +24,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # --- Environment ---
+    app_env: str = "development"
+
     # --- LLM / VLM (provider selection) ---
     # Set `llm_provider` to the concrete provider you want to use.
     # Supported values: "ollama" (local), "gemini" (Google Gemini via REST/proxy), "sarvam".
@@ -120,7 +123,20 @@ class Settings(BaseSettings):
             env_routing = os.getenv("IDP_ROUTING_MODE") or os.getenv("ROUTING_MODE")
             if env_routing:
                 data["routing_mode"] = env_routing.strip()
+            if not data.get("app_env"):
+                data["app_env"] = (os.getenv("IDP_APP_ENV") or os.getenv("APP_ENV") or "development").lower()
         return data
+
+    @model_validator(mode="after")
+    def _validate_secrets(self) -> "Settings":
+        if self.app_env in ("production", "staging"):
+            weak_passwords = {"password", "12345", "changeme", "admin", "postgres", "root", "secret"}
+            import urllib.parse
+            parsed = urllib.parse.urlparse(self.database_url)
+            pwd = parsed.password
+            if not pwd or pwd.lower() in weak_passwords:
+                raise ValueError(f"Insecure/default database password in DATABASE_URL for {self.app_env}: '{pwd}'")
+        return self
 
     # --- PaddleOCR engine settings ---
     # Handwriting mode: lower detection threshold so thinner/more irregular

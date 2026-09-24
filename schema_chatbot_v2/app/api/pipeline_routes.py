@@ -671,8 +671,40 @@ def _parse_pages_from_markdown(md_text: str) -> List[Dict[str, Any]]:
     return pages
 
 
+_SCHEMA_ID_REGEX = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def validate_md_filename(md_name: str) -> Path:
+    """
+    Validates that md_name is a strict single-component filename ending in .md
+    and resolving strictly within OUTPUT_DIR.
+    """
+    if not md_name or not isinstance(md_name, str):
+        raise HTTPException(status_code=400, detail="Invalid md_name.")
+    p = Path(md_name)
+    if p.name != md_name or p.suffix.lower() != ".md":
+        raise HTTPException(status_code=400, detail="Invalid md_name: must be a simple filename ending with .md")
+    resolved = (OUTPUT_DIR / p).resolve()
+    if not resolved.is_relative_to(OUTPUT_DIR.resolve()):
+        raise HTTPException(status_code=400, detail="Path traversal detected.")
+    return resolved
+
+
+def resolve_strict_schema_file(schema_id: str) -> Path:
+    r"""
+    Validates schema_id against strict regex ^[A-Za-z0-9_\-]+$ and resolves exact file
+    in SCHEMA_REGISTRY without wildcard glob fallbacks.
+    """
+    if not schema_id or not _SCHEMA_ID_REGEX.match(schema_id):
+        raise HTTPException(status_code=400, detail=f"Invalid schema_id format: '{schema_id}'")
+    schema_path = (SCHEMA_REGISTRY / f"{schema_id}.json").resolve()
+    if not schema_path.is_relative_to(SCHEMA_REGISTRY.resolve()) or not schema_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Schema '{schema_id}' not found in registry.")
+    return schema_path
+
+
 @router.get("/pipeline/outputs")
-def list_pipeline_outputs() -> Dict[str, Any]:
+def list_pipeline_outputs(_: User = Depends(require_admin)) -> Dict[str, Any]:
     """
     List all documents that have already finished Layer 1 & 2 processing,
     along with their bound target schema and whether Layer 3 extracted JSON exists.
@@ -733,6 +765,7 @@ def list_pipeline_outputs() -> Dict[str, Any]:
 async def extract_from_existing_output(
     md_name: str = Form(...),
     strategy: Optional[str] = Form(default=None),
+    _: User = Depends(require_admin),
 ) -> Dict[str, Any]:
     """
     Run Layer 3 extraction directly on an ALREADY-PROCESSED pipeline document.
@@ -748,7 +781,7 @@ async def extract_from_existing_output(
 
     selected_strategy = strategy or getattr(a_settings, "layer3_strategy", "graph_memory")
 
-    md_path = OUTPUT_DIR / md_name
+    md_path = validate_md_filename(md_name)
     if not md_path.exists():
         raise HTTPException(status_code=404, detail=f"Output file '{md_name}' not found in dataset_output.")
 
@@ -764,14 +797,7 @@ async def extract_from_existing_output(
     if not schema_id:
         raise HTTPException(status_code=400, detail=f"No schema_id recorded in {ref_path.name}")
 
-    schema_file = SCHEMA_REGISTRY / f"{schema_id}.json"
-    if not schema_file.exists():
-        # Fallback to search
-        cand = list(SCHEMA_REGISTRY.glob(f"*{schema_id}*.json"))
-        if cand:
-            schema_file = cand[0]
-        else:
-            raise HTTPException(status_code=404, detail=f"Schema file '{schema_id}.json' not found in schema_registry.")
+    schema_file = resolve_strict_schema_file(schema_id)
 
     schema_json = json.loads(schema_file.read_text(encoding="utf-8"))
     raw_fields = (schema_json.get("schema") or {}).get("fields", [])
@@ -882,6 +908,7 @@ async def extract_uploaded_document(
     schema_id: Optional[str] = Form(default=None),
     raw_schema: Optional[str] = Form(default=None),
     strategy: Optional[str] = Form(default=None),
+    user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
     End-to-End Extraction (single PDF upload):
@@ -912,13 +939,7 @@ async def extract_uploaded_document(
     fields_in: List[SchemaFieldIn] = []
     schema_name = "custom_schema"
     if schema_id:
-        schema_path = SCHEMA_REGISTRY / f"{schema_id}.json"
-        if not schema_path.exists():
-            cand = list(SCHEMA_REGISTRY.glob(f"*{schema_id}*.json"))
-            if cand:
-                schema_path = cand[0]
-            else:
-                raise HTTPException(status_code=404, detail=f"Schema '{schema_id}' not found in registry.")
+        schema_path = resolve_strict_schema_file(schema_id)
         schema_data = json.loads(schema_path.read_text(encoding="utf-8"))
         schema_name = schema_data.get("schema_id", schema_id)
         raw_fields = (schema_data.get("schema") or {}).get("fields", [])
@@ -1016,9 +1037,22 @@ async def extract_uploaded_document(
             "strategy_used": selected_strategy,
             "processing_time_seconds": elapsed,
             "extracted_data": result_dict,
+            "owner": user.username,
         }
         if graph_meta:
             out_payload["graph_memory"] = graph_meta
+            try:
+                from src.ai.layer3_extraction.storage import save_document_graph
+                save_document_graph(
+                    doc_id=filename,
+                    job_id=None,
+                    schema_id=schema_name,
+                    strategy=selected_strategy,
+                    graph_dict=graph_meta,
+                    owner=user.username,
+                )
+            except Exception as g_err:
+                logger.warning("pipeline.extract.save_graph_failed", error=str(g_err))
         json_out_path.write_text(json.dumps(out_payload, indent=2) + "\n", encoding="utf-8")
 
         db_id = None
@@ -1072,8 +1106,59 @@ async def extract_uploaded_document(
 # ========================= Query Bot (Graph Memory & JSON Fallback) =========================
 
 from pydantic import BaseModel, Field
-from app.core.auth import get_optional_current_user
+from app.core.auth import get_current_user
 from app.storage.user_store import Role
+
+
+def _lookup_doc_owner(doc_id: str, stem: str) -> Optional[str]:
+    """
+    Looks up the recorded owner of a document from PostgreSQL DB or disk metadata.
+    """
+    from src.ai.layer3_extraction.storage import init_db, SessionLocal, DocumentGraphRecord
+    try:
+        init_db()
+        sess = SessionLocal()
+        try:
+            candidates = [doc_id, f"{stem}.pdf", stem]
+            rec = sess.query(DocumentGraphRecord).filter(
+                DocumentGraphRecord.doc_id.in_(candidates)
+            ).order_by(DocumentGraphRecord.created_at.desc()).first()
+            if rec and rec.owner:
+                return rec.owner
+        finally:
+            sess.close()
+    except Exception:
+        pass
+
+    for fname in (f"{stem}.extracted.json", f"{doc_id}.extracted.json", f"{stem}.schema_ref.json"):
+        p = OUTPUT_DIR / fname
+        if p.is_file():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and data.get("owner"):
+                    return data["owner"]
+            except Exception:
+                pass
+    return None
+
+
+def _check_doc_access(owner: Optional[str], user: User, is_admin: bool) -> None:
+    """
+    Enforces that ownerless records are readable by admins only, and user records
+    are readable only by the owning user or admins.
+    """
+    if is_admin:
+        return
+    if not owner:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: ownerless document readable by admin only.",
+        )
+    if owner != user.username:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: document belongs to another user.",
+        )
 
 
 class QueryBotRequest(BaseModel):
@@ -1086,7 +1171,7 @@ class QueryBotRequest(BaseModel):
 
 @router.get("/api/query-bot/documents")
 def get_query_bot_documents(
-    user: Optional[User] = Depends(get_optional_current_user),
+    user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
     List all documents available for Query Bot inspection.
@@ -1101,10 +1186,8 @@ def get_query_bot_documents(
         DocumentGraphRecord,
     )
 
-    is_admin = False
-    if user:
-        role_val = getattr(user.role, "value", user.role)
-        is_admin = (role_val == "admin" or user.role == Role.ADMIN)
+    role_val = getattr(user.role, "value", user.role)
+    is_admin = (role_val == "admin" or user.role == Role.ADMIN)
 
     docs: Dict[str, Dict[str, Any]] = {}
 
@@ -1114,11 +1197,9 @@ def get_query_bot_documents(
         session = SessionLocal()
         try:
             q = session.query(DocumentGraphRecord)
-            if not is_admin and user:
-                # Regular user: see own docs or unassigned docs
-                q = q.filter(
-                    (DocumentGraphRecord.owner == user.username) | (DocumentGraphRecord.owner.is_(None))
-                )
+            if not is_admin:
+                # Regular user: see only own documents (no ownerless docs)
+                q = q.filter(DocumentGraphRecord.owner == user.username)
             for rec in q.order_by(DocumentGraphRecord.created_at.desc()).all():
                 stem = Path(rec.doc_id).stem
                 doc_key = f"{stem}.pdf" if not rec.doc_id.lower().endswith(".pdf") else rec.doc_id
@@ -1163,6 +1244,12 @@ def get_query_bot_documents(
             has_graph = graph_path.is_file()
             has_extracted = ext_path.is_file()
 
+            # Enforce isolation: disk docs without ownership or belonging to others are hidden from non-admins
+            disk_owner = _lookup_doc_owner(doc_key, stem)
+            if not is_admin:
+                if not disk_owner or disk_owner != user.username:
+                    continue
+
             if doc_key not in docs:
                 docs[doc_key] = {
                     "doc_id": doc_key,
@@ -1173,7 +1260,7 @@ def get_query_bot_documents(
                     "strategy": "graph_memory" if has_graph else "page_scan",
                     "source": "disk",
                     "job_id": None,
-                    "owner": None,
+                    "owner": disk_owner,
                     "created_at": datetime.fromtimestamp(
                         (graph_path if has_graph else ext_path).stat().st_mtime
                     ).isoformat() if (graph_path.exists() or ext_path.exists()) else None,
@@ -1191,6 +1278,10 @@ def get_query_bot_documents(
         for job_id, job in _pipeline_jobs.items():
             if job.get("status") != "completed":
                 continue
+            job_owner = job.get("owner")
+            if not is_admin:
+                if not job_owner or job_owner != user.username:
+                    continue
             for s in job.get("successes", []):
                 doc_id = s.get("pdf") or s.get("doc_id") or (
                     s.get("extracted_json", "").replace(".extracted.json", ".pdf")
@@ -1209,7 +1300,7 @@ def get_query_bot_documents(
                             "strategy": strat,
                             "source": "active_job",
                             "job_id": job_id,
-                            "owner": job.get("owner"),
+                            "owner": job_owner,
                             "created_at": job.get("created_at"),
                         }
                     else:
@@ -1226,7 +1317,7 @@ def get_query_bot_documents(
 @router.post("/api/query-bot/ask")
 async def ask_query_bot(
     req: QueryBotRequest,
-    user: Optional[User] = Depends(get_optional_current_user),
+    user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
     Query Bot:
@@ -1246,6 +1337,9 @@ async def ask_query_bot(
     )
     from src.ai.layer3_extraction.graph_agent.graph_memory import GraphMemory
     from src.ai.layer3_extraction.graph_agent.query_service import GraphQueryService
+
+    role_val = getattr(user.role, "value", user.role)
+    is_admin = (role_val == "admin" or user.role == Role.ADMIN)
 
     graph_dict = None
 
@@ -1268,36 +1362,8 @@ async def ask_query_bot(
                     q = q.filter_by(job_id=req.job_id)
                 db_rec = q.order_by(DocumentGraphRecord.created_at.desc()).first()
                 if db_rec:
-                    # Enforce isolation: if document has an owner, only that owner or admin can query it
-                    if db_rec.owner:
-                        is_admin = False
-                        if user:
-                            role_val = getattr(user.role, "value", user.role)
-                            is_admin = (role_val == "admin" or user.role == Role.ADMIN)
-                        if not is_admin:
-                            if not user:
-                                logger.warning(
-                                    "query_bot.isolation_denied_anonymous",
-                                    doc_id=req.doc_id,
-                                    job_id=req.job_id,
-                                    owner=db_rec.owner,
-                                )
-                                raise HTTPException(
-                                    status_code=403,
-                                    detail="Access denied: authentication required to access this document graph.",
-                                )
-                            if user.username != db_rec.owner:
-                                logger.warning(
-                                    "query_bot.isolation_denied",
-                                    doc_id=req.doc_id,
-                                    job_id=req.job_id,
-                                    owner=db_rec.owner,
-                                    request_user=user.username,
-                                )
-                                raise HTTPException(
-                                    status_code=403,
-                                    detail="Access denied: document graph belongs to another user.",
-                                )
+                    # Enforce isolation: ownerless is admin-only, user docs are owner-only
+                    _check_doc_access(db_rec.owner, user, is_admin)
                     graph_dict = db_rec.graph_json
             finally:
                 session.close()
@@ -1314,6 +1380,8 @@ async def ask_query_bot(
             if chk_path.is_file():
                 try:
                     data = json.loads(chk_path.read_text(encoding="utf-8"))
+                    file_owner = _lookup_doc_owner(req.doc_id, stem)
+                    _check_doc_access(file_owner, user, is_admin)
                     if isinstance(data, dict):
                         if "graph_memory" in data and isinstance(data["graph_memory"], dict):
                             graph_dict = data["graph_memory"].get("snapshot") or data["graph_memory"]
@@ -1321,11 +1389,17 @@ async def ask_query_bot(
                         elif "nodes" in data and "edges" in data:
                             graph_dict = data
                             break
+                except HTTPException:
+                    raise
                 except Exception as fe:
                     logger.warning("query_bot.file_checkpoint_read_error", path=str(chk_path), error=str(fe))
 
     # Step 3: Check extracted_data payload for embedded graph
     if not graph_dict and req.extracted_data and isinstance(req.extracted_data, dict):
+        if req.doc_id:
+            stem = Path(req.doc_id).stem
+            payload_owner = _lookup_doc_owner(req.doc_id, stem)
+            _check_doc_access(payload_owner, user, is_admin)
         if "graph_memory" in req.extracted_data and isinstance(req.extracted_data["graph_memory"], dict):
             graph_dict = req.extracted_data["graph_memory"].get("snapshot") or req.extracted_data["graph_memory"]
         elif "nodes" in req.extracted_data and "edges" in req.extracted_data:
@@ -1360,8 +1434,12 @@ async def ask_query_bot(
             if ext_path.is_file():
                 try:
                     data = json.loads(ext_path.read_text(encoding="utf-8"))
+                    file_owner = _lookup_doc_owner(req.doc_id, stem)
+                    _check_doc_access(file_owner, user, is_admin)
                     req.extracted_data = data.get("extracted_data") or data
                     break
+                except HTTPException:
+                    raise
                 except Exception:
                     pass
 

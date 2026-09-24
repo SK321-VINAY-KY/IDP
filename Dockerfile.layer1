@@ -1,0 +1,23 @@
+# ==============================================================================
+# Dockerfile for IDP Layer 1 (Routing & Inspection) — AWS Lambda Container Fallback
+# ==============================================================================
+
+FROM public.ecr.aws/lambda/python:3.11
+
+# Prevent Python from writing .pyc files and enable unbuffered output
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/var/task \
+    IDP_ROUTING_MODE=capability_based
+
+WORKDIR /var/task
+
+# Install minimal Layer 1 dependencies
+COPY requirements-layer1.txt .
+RUN pip install --no-cache-dir -r requirements-layer1.txt
+
+# Copy source code required for Layer 1
+COPY src/ /var/task/src/
+
+# Lambda entrypoint
+CMD [ "src.api.lambda_layer1_handler.lambda_handler" ]

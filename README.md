@@ -152,15 +152,15 @@ Create and configure `.env` in the repository root and inside `schema_chatbot_v2
 # --- LLM & VLM Providers ---
 LLM_PROVIDER=sarvam
 IDP_LLM_PROVIDER=sarvam
-SARVAM_API_KEY=sk_your_sarvam_api_key_here
-IDP_SARVAM_API_KEY=sk_your_sarvam_api_key_here
+SARVAM_API_KEY=<set-in-secrets-manager>
+IDP_SARVAM_API_KEY=<set-in-secrets-manager>
 SARVAM_MODEL=sarvam-105b
 IDP_SARVAM_MODEL_NAME=sarvam-105b
 SARVAM_BASE_URL=https://api.sarvam.ai/v1
 IDP_SARVAM_BASE_URL=https://api.sarvam.ai/v1
 
 # --- Google Gemini VLM (Optional for Layer 1 Ambiguity) ---
-IDP_GEMINI_API_KEY=your_google_gemini_api_key_here
+IDP_GEMINI_API_KEY=<set-in-secrets-manager>
 
 # --- Sarvam Document AI OCR Settings ---
 SARVAM_TIMEOUT_S=180
@@ -169,8 +169,8 @@ SARVAM_DOC_AI_POLL_INTERVAL_S=6
 SARVAM_DOC_AI_TIMEOUT_S=120
 
 # --- PostgreSQL Database ---
-DATABASE_URL=postgresql://postgres:12345@localhost:5432/idp
-IDP_DATABASE_URL=postgresql://postgres:12345@localhost:5432/idp
+DATABASE_URL=postgresql://postgres:<set-in-secrets-manager>@localhost:5432/idp
+IDP_DATABASE_URL=postgresql://postgres:<set-in-secrets-manager>@localhost:5432/idp
 
 # --- Storage & Logging ---
 SESSION_STORE=memory
@@ -186,7 +186,7 @@ IDP_GRAPH_ANCHOR_TYPES=["Person","Organization","Date","Admission"]  # Filter an
 ### 2. Schema Chatbot `.env` (`schema_chatbot_v2/.env`)
 ```env
 LLM_PROVIDER=sarvam
-SARVAM_API_KEY=sk_your_sarvam_api_key_here
+SARVAM_API_KEY=<set-in-secrets-manager>
 SARVAM_MODEL=sarvam-105b
 SARVAM_BASE_URL=https://api.sarvam.ai/v1
 SARVAM_TIMEOUT_S=180
@@ -195,11 +195,23 @@ SARVAM_DOC_AI_POLL_INTERVAL_S=6
 SARVAM_DOC_AI_TIMEOUT_S=120
 SESSION_STORE=memory
 LOG_LEVEL=INFO
-DATABASE_URL=postgresql://postgres:12345@localhost:5432/idp
+DATABASE_URL=postgresql://postgres:<set-in-secrets-manager>@localhost:5432/idp
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=changeme
-JWT_SECRET=idp-schema-pipeline-dev-secret-key-change-me
+ADMIN_PASSWORD=<set-in-secrets-manager>
+JWT_SECRET=<set-in-secrets-manager-min-32-chars>
 ```
+
+### 3. Production Configuration
+When running with `APP_ENV=production` or `APP_ENV=staging`, the application enforces strict credential security on startup. Insecure defaults will fail fast and halt service initialization.
+
+| Variable | Description | Requirement |
+| :--- | :--- | :--- |
+| `APP_ENV` | Target environment (`production` or `staging`) | Must be set to enforce checks |
+| `JWT_SECRET` | Secret key for signing authentication tokens | Must be at least 32 characters; default values rejected |
+| `ADMIN_PASSWORD` | Administrator initial account password | Must be explicitly set; `changeme` / weak passwords rejected |
+| `DATABASE_URL` / `IDP_DATABASE_URL` | PostgreSQL connection string | Must contain a strong password; `password`/`12345` rejected |
+| `SARVAM_API_KEY` / `IDP_SARVAM_API_KEY` | Sarvam AI authentication key | Injected via AWS Secrets Manager / Parameter Store |
+| `CORS_ORIGINS` | Comma-separated list of allowed origins | Must be explicitly set; wildcard `*` rejected in production |
 
 ---
 

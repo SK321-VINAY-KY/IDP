@@ -291,6 +291,11 @@ def get_user_store(file_path: Optional[str | Path] = None) -> UserStore:
             admin_user = os.getenv("ADMIN_USERNAME", "admin")
             admin_pass = os.getenv("ADMIN_PASSWORD", "changeme")
 
+            app_env = os.getenv("APP_ENV", "development").lower()
+            if app_env in ("production", "staging"):
+                if not os.getenv("ADMIN_PASSWORD") or os.getenv("ADMIN_PASSWORD") in ("changeme", "admin", "password", "12345"):
+                    raise ValueError("ADMIN_PASSWORD must be explicitly set and cannot be 'changeme' in production/staging.")
+
             if os.getenv("ADMIN_USERNAME") is None or os.getenv("ADMIN_PASSWORD") is None:
                 logger.warning(
                     "ADMIN_USERNAME and/or ADMIN_PASSWORD environment variables not set; "

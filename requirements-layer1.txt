@@ -1,0 +1,7 @@
+# Engineer A — Layer 1 (Inspection & Routing) AWS Lambda dependencies
+# Minimal footprint for fast cold-starts and low memory consumption.
+pymupdf>=1.26.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+boto3>=1.34.0

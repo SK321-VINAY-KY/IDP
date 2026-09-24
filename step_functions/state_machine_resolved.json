@@ -1,0 +1,148 @@
+{
+  "Comment": "IDP Layer 2 Document Orchestrator: Map-based Parallel OCR Engine Invocation",
+  "StartAt": "ProcessDocumentPages",
+  "States": {
+    "ProcessDocumentPages": {
+      "Type": "Map",
+      "ItemsPath": "$.pages",
+      "ItemSelector": {
+        "document_id.$": "$.document_id",
+        "s3_bucket.$": "$.s3_bucket",
+        "s3_key.$": "$.s3_key",
+        "page_number.$": "$$.Map.Item.Value.page_number",
+        "route.$": "$$.Map.Item.Value.route"
+      },
+      "MaxConcurrency": 10,
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "RouteEngineChoice",
+        "States": {
+          "RouteEngineChoice": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.route",
+                "StringEquals": "docling",
+                "Next": "InvokeDocling"
+              },
+              {
+                "Variable": "$.route",
+                "StringEquals": "paddleocr_handwritten",
+                "Next": "InvokePaddleHandwritten"
+              }
+            ],
+            "Default": "InvokePaddlePrinted"
+          },
+          "InvokeDocling": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "arn:aws:lambda:ap-south-1:106611079163:function:idp-engine-docling",
+              "Payload": {
+                "document_id.$": "$.document_id",
+                "s3_bucket.$": "$.s3_bucket",
+                "s3_key.$": "$.s3_key",
+                "page_number.$": "$.page_number",
+                "engine": "docling"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "ResultSelector": {
+              "result.$": "$.Payload.body.results[0]"
+            },
+            "OutputPath": "$.result",
+            "End": true
+          },
+          "InvokePaddlePrinted": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "arn:aws:lambda:ap-south-1:106611079163:function:idp-engine-paddle-printed",
+              "Payload": {
+                "document_id.$": "$.document_id",
+                "s3_bucket.$": "$.s3_bucket",
+                "s3_key.$": "$.s3_key",
+                "page_number.$": "$.page_number",
+                "engine": "paddleocr_printed"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "ResultSelector": {
+              "result.$": "$.Payload.body.results[0]"
+            },
+            "OutputPath": "$.result",
+            "End": true
+          },
+          "InvokePaddleHandwritten": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "arn:aws:lambda:ap-south-1:106611079163:function:idp-engine-paddle-handwritten",
+              "Payload": {
+                "document_id.$": "$.document_id",
+                "s3_bucket.$": "$.s3_bucket",
+                "s3_key.$": "$.s3_key",
+                "page_number.$": "$.page_number",
+                "engine": "paddleocr_handwritten"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "ResultSelector": {
+              "result.$": "$.Payload.body.results[0]"
+            },
+            "OutputPath": "$.result",
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.results",
+      "Next": "FormatWorkflowOutput"
+    },
+    "FormatWorkflowOutput": {
+      "Type": "Pass",
+      "Parameters": {
+        "document_id.$": "$.document_id",
+        "s3_bucket.$": "$.s3_bucket",
+        "s3_key.$": "$.s3_key",
+        "total_pages.$": "States.ArrayLength($.results)",
+        "results.$": "$.results"
+      },
+      "End": true
+    }
+  }
+}

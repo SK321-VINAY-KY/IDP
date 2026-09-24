@@ -22,12 +22,30 @@ app = FastAPI(
     version="0.2.0",
 )
 
+import os
+
+def get_cors_origins() -> list[str]:
+    app_env = os.getenv("APP_ENV", "development").lower()
+    raw = os.getenv("CORS_ORIGINS")
+    if app_env in ("production", "staging"):
+        if not raw or not raw.strip():
+            raise ValueError(f"CORS_ORIGINS environment variable must be set in {app_env} environment.")
+        origins = [o.strip() for o in raw.split(",") if o.strip()]
+        if "*" in origins:
+            raise ValueError("Wildcard '*' is strictly forbidden in CORS_ORIGINS for production/staging environments.")
+        return origins
+    else:
+        if raw and raw.strip():
+            return [o.strip() for o in raw.split(",") if o.strip()]
+        return ["http://localhost:8000", "http://127.0.0.1:8000"]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
