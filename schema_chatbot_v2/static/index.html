@@ -171,11 +171,12 @@
                         <label for="layer3StrategySelect">
                             <strong>Layer 3 Extraction Strategy</strong>
                             <select id="layer3StrategySelect" style="width: 100%; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text); border: 1px solid var(--border); font-size: 13px; font-weight: 500;">
-                                <option value="graph_memory" selected>🧠 Graph Memory (Contextual Knowledge Graph &amp; Cross-Page Anaphora)</option>
+                                <option value="graph_memory_concurrent" selected>⚡ Graph Memory Concurrent (High Speed, 8x Parallel)</option>
+                                <option value="graph_memory">🧠 Graph Memory Sequential (Ordered Context)</option>
                                 <option value="page_scan">📄 Classic Page Scan (Independent Page-by-Page Scratchpad)</option>
                             </select>
                             <span class="muted small mt-1" style="display:block;">
-                                <strong>Graph Memory:</strong> Ingests pages sequentially into an evolving entity-relationship graph, resolves multi-page pronouns/co-references, and synthesizes schema with verifiable evidence.
+                                <strong>Graph Memory Concurrent (Recommended):</strong> Parallel delta extraction across pages (8x speedup) with dispatch-time snapshots and post-merge reconciliation. Best for multi-page documents.
                             </span>
                         </label>
                     </div>
@@ -199,7 +200,7 @@
                         </button>
                     </div>
                     <p class="muted small mt-1">
-                        Processes each selected document through <strong>Layer 1 (Routing)</strong>, <strong>Layer 2 (Conversion &amp; OCR)</strong>, and continues directly into <strong>Layer 3 (Contextual Field Extraction via Sarvam 105B)</strong> using the selected schema. Results are saved in <code>dataset_output/</code> and recorded in PostgreSQL.
+                        Processes each selected document through <strong>Layer 1 (Routing)</strong>, <strong>Layer 2 (Conversion &amp; OCR)</strong>, and continues directly into <strong>Layer 3 (Contextual Field Extraction via Amazon Bedrock GPT OSS 120B)</strong> using the selected schema. Results are saved in <code>dataset_output/</code> and recorded in PostgreSQL.
                     </p>
                 </div>
 
@@ -240,7 +241,8 @@
                         <label for="userLayer3StrategySelect">
                             <strong>Layer 3 Strategy</strong>
                             <select id="userLayer3StrategySelect" style="width: 100%; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text); border: 1px solid var(--border); font-size: 13px;">
-                                <option value="graph_memory" selected>🧠 Graph Memory (Contextual Knowledge Graph)</option>
+                                <option value="graph_memory_concurrent" selected>⚡ Graph Memory Concurrent (High Speed, 8x Parallel)</option>
+                                <option value="graph_memory">🧠 Graph Memory Sequential (Ordered Context)</option>
                                 <option value="page_scan">📄 Classic Page Scan (Scratchpad)</option>
                             </select>
                         </label>

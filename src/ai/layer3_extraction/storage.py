@@ -47,7 +47,7 @@ def _create_db_engine():
     db_url = getattr(settings, "database_url", "sqlite:///./idp_storage.db")
     try:
         if db_url.startswith("postgresql"):
-            eng = create_engine(db_url, pool_pre_ping=True)
+            eng = create_engine(db_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
             # Ping test connection
             with eng.connect() as conn:
                 pass
@@ -193,8 +193,23 @@ class PageCheckpointRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
+# ==============================================================================
+# Table 8: Users (Layer 3 Auth Persistence)
+# ==============================================================================
+class UserRecord(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    hashed_password: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(String, default="user", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
 def init_db():
-    """Create all 7 tables in PostgreSQL / SQLite if they do not exist."""
+    """Create all 8 tables in PostgreSQL / SQLite if they do not exist."""
     global engine, SessionLocal
     try:
         Base.metadata.create_all(engine)
@@ -337,6 +352,37 @@ def save_markdown_record(
             session.close()
     except Exception as exc:
         logger.error("storage.save_markdown_failed", doc_id=doc_id, error=str(exc))
+        return None
+
+
+def get_markdown_record(doc_id: str) -> Optional[dict]:
+    """
+    Retrieve stored markdown record by doc_id or md_filename.
+    """
+    try:
+        init_db()
+        session = SessionLocal()
+        try:
+            rec = session.query(MarkdownRecord).filter(
+                (MarkdownRecord.doc_id == doc_id) | (MarkdownRecord.md_filename == doc_id)
+            ).order_by(MarkdownRecord.id.desc()).first()
+            if rec:
+                return {
+                    "id": rec.id,
+                    "doc_id": rec.doc_id,
+                    "md_filename": rec.md_filename,
+                    "markdown_content": rec.markdown_content,
+                    "page_count": rec.page_count,
+                    "schema_id": rec.schema_id,
+                    "schema_ref_json": rec.schema_ref_json,
+                    "pages_json": rec.pages_json,
+                    "created_at": rec.created_at.isoformat() if rec.created_at else None,
+                }
+            return None
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error("storage.get_markdown_failed", doc_id=doc_id, error=str(exc))
         return None
 
 

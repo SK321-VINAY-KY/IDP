@@ -98,20 +98,39 @@ class BedrockAdapter(LLMAdapter):
     def client(self):
         if self._client is None:
             import boto3  # local import: keep boto3 optional unless bedrock is actually used
-
-            self._client = boto3.client("bedrock-runtime", region_name=self.region)
+            profile = os.getenv("AWS_PROFILE") or os.getenv("IDP_AWS_PROFILE")
+            if profile:
+                session = boto3.Session(profile_name=profile, region_name=self.region)
+                self._client = session.client("bedrock-runtime", region_name=self.region)
+            else:
+                self._client = boto3.client("bedrock-runtime", region_name=self.region)
         return self._client
+
+    def _additional_fields(self) -> Dict[str, Any]:
+        effort = getattr(settings, "bedrock_reasoning_effort", "low")
+        if effort and ("gpt-oss" in self.model_id.lower() or "qdtz23c8eis1" in self.model_id):
+            return {"reasoning_effort": effort}
+        return {}
 
     def extract(self, state: str, user_message: str, context: Dict[str, Any]) -> ExtractionResult:
         user_prompt = build_extraction_user_prompt(state, user_message, context)
         try:
-            response = self.client.converse(
-                modelId=self.model_id,
-                system=[{"text": EXTRACTION_SYSTEM_PROMPT}],
-                messages=[{"role": "user", "content": [{"text": user_prompt}]}],
-                toolConfig={"tools": [_EXTRACTION_TOOL], "toolChoice": {"tool": {"name": "record_extraction"}}},
-                inferenceConfig={"temperature": 0.1},
-            )
+            kwargs: Dict[str, Any] = {
+                "modelId": self.model_id,
+                "system": [{"text": EXTRACTION_SYSTEM_PROMPT}],
+                "messages": [{"role": "user", "content": [{"text": user_prompt}]}],
+                "toolConfig": {"tools": [_EXTRACTION_TOOL], "toolChoice": {"tool": {"name": "record_extraction"}}},
+                "inferenceConfig": {"temperature": 0.1, "maxTokens": 4000},
+            }
+            extra = self._additional_fields()
+            if extra:
+                kwargs["additionalModelRequestFields"] = extra
+            try:
+                response = self.client.converse(**kwargs)
+            except Exception:
+                kwargs.pop("additionalModelRequestFields", None)
+                response = self.client.converse(**kwargs)
+
             tool_input = self._extract_tool_input(response)
             return ExtractionResult.model_validate(tool_input)
         except Exception:
@@ -122,13 +141,23 @@ class BedrockAdapter(LLMAdapter):
     def phrase_question(self, gap_field: str, gap_attribute: str, context: Dict[str, Any]) -> str:
         template = fallback_question(gap_field, gap_attribute)
         try:
-            response = self.client.converse(
-                modelId=self.model_id,
-                system=[{"text": "Rephrase as one short, friendly question. Reply with ONLY the question."}],
-                messages=[{"role": "user", "content": [{"text": template}]}],
-                inferenceConfig={"temperature": 0.3},
-            )
-            text = response["output"]["message"]["content"][0]["text"]
+            kwargs: Dict[str, Any] = {
+                "modelId": self.model_id,
+                "system": [{"text": "Rephrase as one short, friendly question. Reply with ONLY the question."}],
+                "messages": [{"role": "user", "content": [{"text": template}]}],
+                "inferenceConfig": {"temperature": 0.3, "maxTokens": 2000},
+            }
+            extra = self._additional_fields()
+            if extra:
+                kwargs["additionalModelRequestFields"] = extra
+            try:
+                response = self.client.converse(**kwargs)
+            except Exception:
+                kwargs.pop("additionalModelRequestFields", None)
+                response = self.client.converse(**kwargs)
+
+            content = response.get("output", {}).get("message", {}).get("content", [])
+            text = next((block["text"] for block in content if isinstance(block, dict) and "text" in block), "")
             return text.strip() or template
         except Exception:
             logger.warning("Bedrock phrase_question call failed, using template fallback")
@@ -136,14 +165,11 @@ class BedrockAdapter(LLMAdapter):
 
     def infer_schema_from_pdfs(self, samples: List[bytes]) -> SchemaProposal:
         """
-        Unlike Sarvam, this doesn't need a separate OCR step: Claude on
-        Bedrock reads PDFs natively via a Converse `document` content block
-        (Converse requires an accompanying `text` block alongside any
-        document, and a document `name` restricted to a safe charset - see
-        https://docs.aws.amazon.com/bedrock/latest/userguide/conversation-inference.html).
-        Not exercised against a live AWS account - see the note at the top
-        of this file.
+        Infers target extraction schema after comparing N sample documents.
+        Supports native document blocks for multimodal models and automatic
+        text-extraction fallback for text-only models (e.g. OpenAI GPT OSS 120B).
         """
+        # Try native document blocks first
         content: List[Dict[str, Any]] = [{"text": document_inference_user_text(len(samples))}]
         for i, pdf_bytes in enumerate(samples, start=1):
             content.append(
@@ -156,14 +182,37 @@ class BedrockAdapter(LLMAdapter):
                 }
             )
 
+        kwargs: Dict[str, Any] = {
+            "modelId": self.model_id,
+            "system": [{"text": DOCUMENT_INFERENCE_SYSTEM_PROMPT}],
+            "messages": [{"role": "user", "content": content}],
+            "toolConfig": {"tools": [_SCHEMA_PROPOSAL_TOOL], "toolChoice": {"tool": {"name": "propose_schema"}}},
+            "inferenceConfig": {"temperature": 0.1, "maxTokens": 4000},
+        }
+        extra = self._additional_fields()
+        if extra:
+            kwargs["additionalModelRequestFields"] = extra
+
         try:
-            response = self.client.converse(
-                modelId=self.model_id,
-                system=[{"text": DOCUMENT_INFERENCE_SYSTEM_PROMPT}],
-                messages=[{"role": "user", "content": content}],
-                toolConfig={"tools": [_SCHEMA_PROPOSAL_TOOL], "toolChoice": {"tool": {"name": "propose_schema"}}},
-                inferenceConfig={"temperature": 0.1},
-            )
+            try:
+                response = self.client.converse(**kwargs)
+            except Exception as exc:
+                err_str = str(exc)
+                if "doesn't support documents" in err_str or "ValidationException" in type(exc).__name__:
+                    # Fallback to text extraction for text-only LLMs
+                    logger.info("Bedrock model does not support document blocks; falling back to extracted text")
+                    text_content: List[Dict[str, Any]] = [{"text": document_inference_user_text(len(samples))}]
+                    for i, pdf_bytes in enumerate(samples, start=1):
+                        extracted_text = self._extract_text_from_pdf_bytes(pdf_bytes)
+                        text_content.append({"text": f"--- SAMPLE DOCUMENT {i} ---\n{extracted_text}"})
+                    kwargs["messages"] = [{"role": "user", "content": text_content}]
+                    kwargs.pop("additionalModelRequestFields", None)
+                    if extra:
+                        kwargs["additionalModelRequestFields"] = extra
+                    response = self.client.converse(**kwargs)
+                else:
+                    raise exc
+
             tool_input = self._extract_tool_input(response)
             proposal = SchemaProposal.model_validate(tool_input)
         except Exception:
@@ -173,6 +222,16 @@ class BedrockAdapter(LLMAdapter):
         for field in proposal.fields:
             field.total_samples = len(samples)
         return proposal
+
+    @staticmethod
+    def _extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
+        try:
+            import fitz
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            texts = [page.get_text() for page in doc]
+            return "\n".join(texts)
+        except Exception:
+            return pdf_bytes.decode("utf-8", errors="replace")[:10000]
 
     @staticmethod
     def _safe_document_name(name: str) -> str:

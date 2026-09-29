@@ -19,6 +19,7 @@ build/
 
 # Environment and secrets
 .env
+*.db
 
 # Model and local caches
 .cache/
@@ -29,7 +30,8 @@ build/
 # Runtime outputs & temporary logs
 logs/
 scratch/
-dataset_output/
+dataset_output/*.layer3_result.json
+dataset_output/*.targeted_12p.json
 data/
 schema_chatbot_v2/data/
 

@@ -1,5 +1,5 @@
 import pytest
-from app.storage.user_store import InMemoryUserStore, Role, get_user_store, verify_password
+from app.storage.user_store import InMemoryUserStore, Role, get_user_store, reset_user_store, verify_password
 
 
 def test_in_memory_user_store_crud():
@@ -171,4 +171,45 @@ def test_json_file_session_store_persists(tmp_path):
     assert loaded is not None
     assert loaded.turn_count == 5
     assert loaded.owner == "test_user"
+
+
+def test_postgres_user_store_crud():
+    from app.storage.user_store import PostgresUserStore
+    store = PostgresUserStore()
+    user = store.create(username="pg_alice", password="pg_password_123", role=Role.USER)
+    assert user.username == "pg_alice"
+    assert user.role == Role.USER
+    assert verify_password("pg_password_123", user.hashed_password)
+
+    fetched = store.get_by_username("pg_alice")
+    assert fetched is not None
+    assert fetched.user_id == user.user_id
+
+    # Duplicate username raises
+    with pytest.raises(ValueError, match="already exists"):
+        store.create(username="pg_alice", password="another_password")
+
+    # Update role
+    user.role = Role.ADMIN
+    store.save(user)
+    updated = store.get(user.user_id)
+    assert updated.role == Role.ADMIN
+
+    # Delete
+    store.delete(user.user_id)
+    assert store.get(user.user_id) is None
+
+
+def test_production_allows_postgres_user_store(monkeypatch):
+    reset_user_store()
+    monkeypatch.setenv("IDP_APP_ENV", "production")
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("ADMIN_PASSWORD", "SuperSecurePassword123!")
+    monkeypatch.setenv("USER_STORE_TYPE", "postgres")
+
+    store = get_user_store()
+    assert store is not None
+    assert store.__class__.__name__ == "PostgresUserStore"
+    reset_user_store()
+
 

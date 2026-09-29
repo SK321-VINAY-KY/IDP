@@ -126,3 +126,34 @@ def test_lambda_s3_read_error():
     assert res["statusCode"] == 500
     body = json.loads(res["body"])
     assert "NoSuchKey" in body["error"]
+
+
+def test_lambda_s3_missing_bucket():
+    class DummyContext:
+        aws_request_id = "test-req-missing-bucket"
+
+    event = {
+        "s3_key": "documents/test.pdf",
+    }
+
+    res = lambda_handler(event, DummyContext())
+    assert res["statusCode"] == 400
+    body = json.loads(res["body"])
+    assert "Invalid invocation event" in body["error"]
+
+
+def test_lambda_s3_client_none():
+    class DummyContext:
+        aws_request_id = "test-req-s3-none"
+
+    event = {
+        "s3_bucket": "vinay-rag-documents-2026",
+        "s3_key": "documents/test.pdf",
+    }
+
+    with patch("src.api.lambda_layer1_handler.get_s3_client", return_value=None):
+        res = lambda_handler(event, DummyContext())
+
+    assert res["statusCode"] == 500
+    body = json.loads(res["body"])
+    assert "Failed to initialize S3 client" in body["error"]

@@ -482,7 +482,8 @@ class GraphQueryService:
             or re.search(r"(?:prompt['s]*\s*constraint|prompt\s*constraint|system\s*prompt|internal\s*monologue|scratchpad)", clean_out, re.IGNORECASE)
             or re.match(r"^\(?(?:Source|Page):?\s*(?:Page\s*)?\d+\)?\.?$", clean_out, re.IGNORECASE)
             or re.match(r"^(?:\s*Source:\s*Page\s*\d+\s*)+$", clean_out, re.IGNORECASE)
-            or any(bad in clean_out.lower() for bad in ["critical: do not", "internal monologue", "scratchpad", "system prompt", "knowledge graph evidence:", "based on the prompt"])
+            or any(bad in clean_out.lower() for bad in ["critical: do not", "internal monologue", "scratchpad", "system prompt", "knowledge graph evidence:", "based on the prompt", "e.g. 'source: page", "e.g. \"source: page", "found (e.g."])
+            or clean_out.lower().startswith("found (")
         ):
             return ""
         return clean_out
@@ -511,6 +512,11 @@ class GraphQueryService:
 
         # 1. Patient Name
         if any(w in q for w in ["patient name", "name of the patient", "who is the patient", "patient's name"]):
+            for n in nodes:
+                if n.type in ["Person", "Identifier"] and not self._is_garbage_node(n):
+                    if any("patient" in getattr(ev, "text", "").lower() for ev in (n.evidence or [])):
+                        page = n.source_pages[0] if n.source_pages else 1
+                        return f"The patient name is {n.value}. (Source: Page {page})"
             for n in nodes:
                 if n.type in ["Person", "Identifier"] and any(w in n.label.lower() for w in ["patient_name", "patient"]) and not self._is_garbage_node(n):
                     page = n.source_pages[0] if n.source_pages else 1
@@ -631,11 +637,65 @@ class GraphQueryService:
             getattr(app_settings, "llm_provider", None)
             or getattr(a_settings, "extraction_backend", None)
             or os.getenv("IDP_EXTRACTION_BACKEND")
-            or "sarvam"
-        )
+            or "bedrock"
+        ).lower()
 
         try:
-            if (backend == "sarvam" or api_key) and api_key:
+            if backend == "bedrock":
+                bedrock_model_id = (
+                    getattr(app_settings, "bedrock_model_id", None)
+                    or getattr(a_settings, "bedrock_model_id", None)
+                    or os.getenv("IDP_BEDROCK_MODEL_ID")
+                    or os.getenv("BEDROCK_MODEL_ID")
+                    or "arn:aws:bedrock:ap-south-1:106611079163:application-inference-profile/qdtz23c8eis1"
+                )
+                bedrock_region = (
+                    getattr(app_settings, "bedrock_region", None)
+                    or getattr(a_settings, "bedrock_region", None)
+                    or os.getenv("IDP_BEDROCK_REGION")
+                    or os.getenv("BEDROCK_REGION")
+                    or os.getenv("AWS_DEFAULT_REGION")
+                    or "ap-south-1"
+                )
+                system_prompt = (
+                    "You are a factual, concise Document QA assistant. "
+                    "Answer the user's question directly in 1 or 2 plain sentences based strictly on the provided Document Knowledge Graph evidence. "
+                    "Always cite the exact source page number where the answer is found (e.g. 'Source: Page 6'). "
+                    "CRITICAL: Do NOT output thinking, reasoning steps, internal monologue, numbered analysis lists, or scratchpads. "
+                    "Provide ONLY the final answer."
+                )
+                user_prompt = f"Document Knowledge Graph Evidence:\n{context_text}\n\nQuestion: {question}\nDirect Answer:"
+                import boto3
+                profile = os.getenv("AWS_PROFILE") or os.getenv("IDP_AWS_PROFILE")
+                if profile:
+                    b_client = boto3.Session(profile_name=profile, region_name=bedrock_region).client("bedrock-runtime", region_name=bedrock_region)
+                else:
+                    b_client = boto3.client("bedrock-runtime", region_name=bedrock_region)
+
+                kwargs = {
+                    "modelId": bedrock_model_id,
+                    "system": [{"text": system_prompt}],
+                    "messages": [{"role": "user", "content": [{"text": user_prompt}]}],
+                    "inferenceConfig": {"temperature": 0.0, "maxTokens": 1500},
+                }
+                effort = getattr(app_settings, "bedrock_reasoning_effort", None) or getattr(a_settings, "bedrock_reasoning_effort", None) or "low"
+                if effort and ("gpt-oss" in bedrock_model_id.lower() or "qdtz23c8eis1" in bedrock_model_id):
+                    kwargs["additionalModelRequestFields"] = {"reasoning_effort": effort}
+
+                try:
+                    b_resp = b_client.converse(**kwargs)
+                except Exception:
+                    kwargs.pop("additionalModelRequestFields", None)
+                    b_resp = b_client.converse(**kwargs)
+
+                content = b_resp.get("output", {}).get("message", {}).get("content", [])
+                text = next((block["text"] for block in content if isinstance(block, dict) and "text" in block), "")
+                if text:
+                    cleaned = self._sanitize_model_output(text)
+                    if cleaned and len(cleaned) > 5:
+                        return cleaned
+
+            elif (backend == "sarvam" or api_key) and api_key:
                 system_prompt = (
                     "You are a factual, concise Document QA assistant. "
                     "Answer the user's question directly in 1 or 2 plain sentences based strictly on the provided Document Knowledge Graph evidence. "

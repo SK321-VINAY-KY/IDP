@@ -9,8 +9,13 @@ dist/
 build/
 .eggs/
 
-# Virtual environments
+# Virtual environments & secrets
 .env
+*.env
+*.env.*
+!*.env.example
+*users.json
+dataset_uploads/
 .venv
 venv/
 env/

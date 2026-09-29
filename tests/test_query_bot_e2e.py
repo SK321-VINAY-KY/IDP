@@ -5,6 +5,14 @@ BASE_URL = "http://127.0.0.1:8000"
 
 
 def test_query_bot_e2e():
+    try:
+        with httpx.Client(base_url=BASE_URL, timeout=1.0) as check_client:
+            r = check_client.get("/health")
+            if r.status_code != 200:
+                pytest.skip("Local test server at 127.0.0.1:8000 returned non-200")
+    except Exception:
+        pytest.skip("Local test server not running at http://127.0.0.1:8000 (run uvicorn app.main:app first)")
+
     with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
         # 1. Verify static assets
         r_html = client.get("/app/index.html")

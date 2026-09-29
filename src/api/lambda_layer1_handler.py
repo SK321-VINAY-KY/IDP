@@ -20,14 +20,15 @@ from src.ai.layer1_routing.router import (
     capabilities_from_profile,
     route_from_profile,
 )
-from src.config.settings import settings
+from src.config.settings import LambdaSettings
 from src.utils.logger import get_logger, set_correlation_id
 
 logger = get_logger("layer1_lambda")
-_s3_client: Optional[Any] = None
+lambda_settings = LambdaSettings()
+_s3_client: Any = None
 
 
-def get_s3_client():
+def get_s3_client() -> Any:
     global _s3_client
     if _s3_client is None:
         _s3_client = boto3.client("s3")
@@ -83,8 +84,17 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     # Fetch PDF stream from S3 or use provided bytes
     if pdf_bytes is None:
+        if not bucket:
+            err_msg = f"S3 bucket name is missing for document: {key}"
+            logger.error("layer1.missing_bucket", key=key)
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": err_msg, "key": key}),
+            }
         try:
             s3 = get_s3_client()
+            if s3 is None:
+                raise RuntimeError("Failed to initialize S3 client: client returned None")
             s3_response = s3.get_object(Bucket=bucket, Key=key)
             pdf_bytes = s3_response["Body"].read()
         except Exception as exc:
@@ -122,7 +132,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         profile = inspect_page(page, page_num)
 
         # Step 2: Routing decision
-        if settings.routing_mode == "capability_based":
+        if lambda_settings.routing_mode == "capability_based":
             caps = capabilities_from_profile(profile)
             plan = build_engine_plan(caps)
             tasks = [
@@ -136,7 +146,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 and not caps.has_indic_script
                 and (caps.has_printed_scan or caps.has_handwriting)
                 and (profile.is_scanned or profile.complexity_score >= 4 or
-                     profile.image_coverage > settings.mixed_content_min_image_coverage)
+                     profile.image_coverage > lambda_settings.mixed_content_min_image_coverage)
             )
         else:
             single_route = route_from_profile(profile)
@@ -172,7 +182,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "s3_bucket": bucket,
         "s3_key": key,
         "total_pages": total_pages,
-        "routing_mode": settings.routing_mode,
+        "routing_mode": lambda_settings.routing_mode,
         "pages": page_reports,
     }
 
@@ -182,3 +192,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "statusCode": 200,
         "body": result_payload,
     }
+
+
+# Standard alias
+handler = lambda_handler

@@ -71,13 +71,13 @@ async def upload_my_documents(
     """
     Uploads PDFs to the authenticated user's isolated document directory.
     """
+    from app.api.pipeline_routes import check_user_extract_rate_limit, validate_uploaded_pdf
+    check_user_extract_rate_limit(user.username)
     user_dir = _user_docs_dir(user.username)
     saved: List[str] = []
     for f in files:
-        if not (f.filename or "").lower().endswith(".pdf") and f.content_type != "application/pdf":
-            continue
-        content = await f.read()
-        target = user_dir / Path(f.filename or f"doc_{uuid.uuid4().hex[:8]}.pdf").name
+        safe_name, content = await validate_uploaded_pdf(f)
+        target = user_dir / safe_name
         target.write_bytes(content)
         saved.append(target.name)
     log_activity(user.username, "document_upload", {"files": saved, "count": len(saved)})
@@ -113,6 +113,8 @@ async def run_my_pipeline(
     Zero-parameter trigger for regular users. Automatically uses the documents
     uploaded to the user's workspace and their most recently confirmed schema.
     """
+    from app.api.pipeline_routes import check_user_extract_rate_limit
+    check_user_extract_rate_limit(user.username)
     user_dir = _user_docs_dir(user.username)
     targets = sorted([p for p in user_dir.glob("*.pdf") if p.is_file()])
     if not targets:
@@ -279,3 +281,24 @@ def list_my_schemas(user: User = Depends(get_current_user)) -> List[Dict[str, An
         except Exception as exc:
             logger.warning("user_schema.list_failed", file=f.name, error=str(exc))
     return results
+
+
+@router.post("/pipeline/extract/from-output")
+async def extract_my_existing_output(
+    md_name: str = Form(...),
+    strategy: Optional[str] = Form(default=None),
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    User-facing endpoint to run Layer 3 extraction on an already-processed document
+    belonging to the calling user in their isolated partition.
+    """
+    from app.api.pipeline_routes import check_user_extract_rate_limit, extract_from_existing_output
+    check_user_extract_rate_limit(user.username)
+    return await extract_from_existing_output(
+        md_name=md_name,
+        strategy=strategy,
+        owner=user.username,
+        user=user,
+    )
+

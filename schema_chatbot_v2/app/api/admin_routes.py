@@ -7,7 +7,8 @@ import logging
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+import re
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.activity_log import get_activity_logs
 from app.core.auth import require_admin
@@ -18,11 +19,23 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+USERNAME_REGEX = re.compile(r"^(?!.*\.\.)[a-z0-9_.-]{3,64}$")
+
 
 class CreateUserRequest(BaseModel):
-    username: str = Field(..., min_length=1)
+    username: str = Field(..., min_length=3, max_length=64)
     password: str = Field(..., min_length=1)
     role: Role = Role.USER
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if ".." in v or not USERNAME_REGEX.fullmatch(v):
+            raise ValueError(
+                "Username must match '^[a-z0-9_.-]{3,64}$' and cannot contain consecutive dots ('..')"
+            )
+        return v
 
 
 @router.post("/users", status_code=status.HTTP_201_CREATED)

@@ -24,8 +24,10 @@ app = FastAPI(
 
 import os
 
+from app.config import resolve_app_env
+
 def get_cors_origins() -> list[str]:
-    app_env = os.getenv("APP_ENV", "development").lower()
+    app_env = resolve_app_env()
     raw = os.getenv("CORS_ORIGINS")
     if app_env in ("production", "staging"):
         if not raw or not raw.strip():

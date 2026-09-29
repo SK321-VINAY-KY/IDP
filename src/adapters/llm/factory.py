@@ -30,6 +30,11 @@ def get_llm_client() -> Any:
         from src.adapters.llm.gemini_client import GeminiClient
 
         logger.info("llm.factory.selected", provider="gemini")
-        return GeminiClient()
+    if provider in ("bedrock", "sarvam"):
+        if getattr(settings, "gemini_api_key", None):
+            from src.adapters.llm.gemini_client import GeminiClient
+            return GeminiClient()
+        from src.adapters.llm.ollama_client import OllamaClient
+        return OllamaClient()
 
     raise ValueError(f"Unsupported llm_provider: {settings.llm_provider!r}")

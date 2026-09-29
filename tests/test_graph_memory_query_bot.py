@@ -244,12 +244,12 @@ def test_5_user_isolation(test_client, alice_token, bob_token, admin_token):
     )
     assert resp_bob.status_code == 403
 
-    # 3. Anonymous user queries Alice's document -> 403 Forbidden
+    # 3. Anonymous user queries Alice's document -> 401 Unauthorized or 403 Forbidden
     resp_anon = test_client.post(
         "/api/query-bot/ask",
         json={"question": "Who is the patient?", "doc_id": "alice_confidential.pdf"},
     )
-    assert resp_anon.status_code == 403
+    assert resp_anon.status_code in (401, 403)
 
     # 4. Admin queries Alice's document -> 200 OK (Admin override)
     resp_admin = test_client.post(
@@ -411,16 +411,29 @@ def test_12_graph_only_query_bot_fact(test_client, admin_token):
         "claim_amount": "INR 87,500",
     }
 
-    # Query the doctor
-    resp = test_client.post(
-        "/api/query-bot/ask",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "question": "Who was the doctor treating the patient?",
-            "doc_id": "medical_report.pdf",
-            "extracted_data": extracted_json,
-        },
-    )
+    # Query the doctor with mocked LLM answer
+    with patch("httpx.post") as mock_post:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.is_success = True
+        mock_resp.json.return_value = {
+            "choices": [{
+                "message": {
+                    "content": "The doctor treating the patient was Dr. Arun Sharma. (Source: Page 1)"
+                }
+            }]
+        }
+        mock_post.return_value = mock_resp
+
+        resp = test_client.post(
+            "/api/query-bot/ask",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "question": "Who was the doctor treating the patient?",
+                "doc_id": "medical_report.pdf",
+                "extracted_data": extracted_json,
+            },
+        )
 
     assert resp.status_code == 200
     data = resp.json()

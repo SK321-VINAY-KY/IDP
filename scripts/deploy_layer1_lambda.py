@@ -39,7 +39,7 @@ def parse_tags(tags_str: str | None) -> dict[str, str]:
       "Project=IDP,Environment=dev,Owner=Vinay,CostCenter=101"
       '{"Project": "IDP", "Environment": "dev"}'
     """
-    raw = tags_str or os.getenv("IDP_AWS_TAGS") or ""
+    raw = tags_str or os.getenv("IDP_AWS_TAGS") or "createdby=vinay.k@shellkode.com,customer=internal,purpose=internal"
     raw = raw.strip()
     if not raw:
         return {}
@@ -386,7 +386,7 @@ def main():
     parser.add_argument("--role-name", default="idp-layer1-lambda-role", help="IAM role name")
     parser.add_argument(
         "--tags",
-        default=os.getenv("IDP_AWS_TAGS"),
+        default=os.getenv("IDP_AWS_TAGS", "createdby=vinay.k@shellkode.com,customer=internal,purpose=internal"),
         help="Mandatory AWS resource tags as Key=Value pairs comma-separated, e.g.: 'Project=IDP,Environment=dev,Owner=Vinay'",
     )
     args = parser.parse_args()

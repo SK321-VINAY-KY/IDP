@@ -8,31 +8,23 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app/schema_chatbot_v2:/app \
-    HF_HOME=/root/.cache/huggingface \
-    PADDLE_HOME=/root/.cache/paddle \
-    PADDLEOCR_HOME=/root/.paddleocr
+    PYTHONPATH=/app/schema_chatbot_v2:/app
 
-# Install system dependencies required for PyMuPDF, OpenCV, Docling, and PaddleOCR
+# Install system dependencies required for psycopg2, PyMuPDF, and healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
     gcc \
-    g++ \
-    libgl1 \
-    libglib2.0-0 \
-    libgomp1 \
+    libpq-dev \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install dependencies for both Layer 1+2 pipeline and Web / Chatbot service
-COPY requirements.txt /app/requirements.txt
+# Install dependencies for Web Console, Schema Discovery, and Graph Memory
 COPY schema_chatbot_v2/requirements.txt /app/schema_chatbot_v2/requirements.txt
 
 RUN pip install --no-cache-dir -U pip setuptools wheel && \
-    pip install --no-cache-dir -r /app/requirements.txt -r /app/schema_chatbot_v2/requirements.txt
+    pip install --no-cache-dir -r /app/schema_chatbot_v2/requirements.txt
 
 # Copy complete project codebase and frontend assets
 COPY . /app

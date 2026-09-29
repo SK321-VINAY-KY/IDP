@@ -5,6 +5,26 @@
     "schema_chatbot_v2",
     "backend"
   ],
+  "executionEnvironments": [
+    {
+      "root": "docker/paddle_handwritten",
+      "extraPaths": [
+        "docker/paddle_handwritten"
+      ]
+    },
+    {
+      "root": "docker/paddle_printed",
+      "extraPaths": [
+        "docker/paddle_printed"
+      ]
+    },
+    {
+      "root": "docker/docling",
+      "extraPaths": [
+        "docker/docling"
+      ]
+    }
+  ],
   "exclude": [
     "**/_pyrefly_virtual_/**",
     "**/node_modules/**",

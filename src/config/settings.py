@@ -29,8 +29,13 @@ class Settings(BaseSettings):
 
     # --- LLM / VLM (provider selection) ---
     # Set `llm_provider` to the concrete provider you want to use.
-    # Supported values: "ollama" (local), "gemini" (Google Gemini via REST/proxy), "sarvam".
-    llm_provider: str = "sarvam"
+    # Supported values: "bedrock", "sarvam", "ollama", "gemini".
+    llm_provider: str = "bedrock"
+
+    # Bedrock settings
+    bedrock_region: str = "ap-south-1"
+    bedrock_model_id: str = "arn:aws:bedrock:ap-south-1:106611079163:application-inference-profile/qdtz23c8eis1"
+    bedrock_reasoning_effort: str = "low"
 
     # Ollama (local) settings (kept for backwards compatibility)
     ollama_base_url: str = "http://localhost:11434/v1"
@@ -46,8 +51,8 @@ class Settings(BaseSettings):
     # Use a Google Gemini model name by default when `llm_provider` is "gemini".
     vlm_model_name: str = "qwen2.5vl:7b"
 
-    # --- Layer 3 — Extraction LLM (Sarvam / Ollama) ---
-    extraction_backend: str = "sarvam"
+    # --- Layer 3 — Extraction LLM (Bedrock / Sarvam / Ollama) ---
+    extraction_backend: str = "bedrock"
     sarvam_base_url: str = "https://api.sarvam.ai/v1"
     sarvam_model_name: str = "sarvam-105b"
     sarvam_api_key: str = ""
@@ -56,7 +61,7 @@ class Settings(BaseSettings):
     extraction_model_name: str = "qwen2.5:7b"
     summary_model_name: str = "qwen2.5:7b"
     max_extraction_retries: int = 2
-    layer3_strategy: str = "graph_memory"  # "graph_memory" (default), "page_scan", or "graph_memory_concurrent"
+    layer3_strategy: str = "graph_memory_concurrent"  # "graph_memory_concurrent" (default), "graph_memory", or "page_scan"
     graph_concurrency_limit: int = 8
     graph_anchor_max_k: int = 5
     graph_anchor_types: list[str] = []
@@ -83,7 +88,7 @@ class Settings(BaseSettings):
     def _fallback_unprefixed_env(cls, data: Any) -> Any:
         if isinstance(data, dict):
             if not data.get("layer3_strategy"):
-                data["layer3_strategy"] = os.getenv("IDP_LAYER3_STRATEGY") or os.getenv("LAYER3_STRATEGY") or "graph_memory"
+                data["layer3_strategy"] = os.getenv("IDP_LAYER3_STRATEGY") or os.getenv("LAYER3_STRATEGY") or "graph_memory_concurrent"
             if not data.get("graph_concurrency_limit"):
                 raw_limit = os.getenv("IDP_GRAPH_CONCURRENCY_LIMIT") or os.getenv("GRAPH_CONCURRENCY_LIMIT")
                 if raw_limit:
@@ -112,10 +117,16 @@ class Settings(BaseSettings):
                     data["sarvam_timeout_s"] = float(raw_timeout)
             if "sarvam_reasoning_effort" not in data or data.get("sarvam_reasoning_effort") is None:
                 data["sarvam_reasoning_effort"] = os.getenv("IDP_SARVAM_REASONING_EFFORT") or os.getenv("SARVAM_REASONING_EFFORT") or None
+            if not data.get("bedrock_region"):
+                data["bedrock_region"] = os.getenv("IDP_BEDROCK_REGION") or os.getenv("BEDROCK_REGION") or os.getenv("AWS_DEFAULT_REGION") or "ap-south-1"
+            if not data.get("bedrock_model_id"):
+                data["bedrock_model_id"] = os.getenv("IDP_BEDROCK_MODEL_ID") or os.getenv("BEDROCK_MODEL_ID") or "arn:aws:bedrock:ap-south-1:106611079163:application-inference-profile/qdtz23c8eis1"
+            if not data.get("bedrock_reasoning_effort"):
+                data["bedrock_reasoning_effort"] = os.getenv("IDP_BEDROCK_REASONING_EFFORT") or os.getenv("BEDROCK_REASONING_EFFORT") or "low"
             if not data.get("extraction_backend"):
-                data["extraction_backend"] = os.getenv("IDP_EXTRACTION_BACKEND") or os.getenv("EXTRACTION_BACKEND") or "sarvam"
+                data["extraction_backend"] = os.getenv("IDP_EXTRACTION_BACKEND") or os.getenv("EXTRACTION_BACKEND") or "bedrock"
             if not data.get("llm_provider"):
-                data["llm_provider"] = os.getenv("IDP_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "sarvam"
+                data["llm_provider"] = os.getenv("IDP_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "bedrock"
             if not data.get("database_url") or data.get("database_url") == "postgresql://postgres:password@localhost:5432/idp":
                 env_db = os.getenv("IDP_DATABASE_URL") or os.getenv("DATABASE_URL")
                 if env_db:
@@ -124,7 +135,17 @@ class Settings(BaseSettings):
             if env_routing:
                 data["routing_mode"] = env_routing.strip()
             if not data.get("app_env"):
-                data["app_env"] = (os.getenv("IDP_APP_ENV") or os.getenv("APP_ENV") or "development").lower()
+                env = os.getenv("IDP_APP_ENV") or os.getenv("APP_ENV")
+                if env and env.strip():
+                    data["app_env"] = env.strip().lower()
+                elif (
+                    os.getenv("ECS_CONTAINER_METADATA_URI")
+                    or os.getenv("ECS_CONTAINER_METADATA_URI_V4")
+                    or os.getenv("AWS_EXECUTION_ENV")
+                ):
+                    data["app_env"] = "production"
+                else:
+                    data["app_env"] = "development"
         return data
 
     @model_validator(mode="after")
@@ -227,4 +248,17 @@ class Settings(BaseSettings):
     capability_max_engines_per_page: int = 3
 
 
+class LambdaSettings(Settings):
+    """
+    Dedicated configuration for stateless AWS Lambda handlers (e.g. Layer 1 inspection & Layer 2 engines).
+    Stateless Lambda handlers do not use or require the PostgreSQL database, so database_url
+    production checks are skipped specifically for Lambda handler configurations.
+    """
+    @model_validator(mode="after")
+    def _validate_secrets(self) -> "LambdaSettings":
+        # Stateless Lambda handler config: database_url is not required or validated
+        return self
+
+
 settings = Settings()
+

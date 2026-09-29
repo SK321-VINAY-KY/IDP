@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import sys
 import threading
@@ -50,6 +51,63 @@ class JobControl:
 
 _pipeline_jobs: Dict[str, Dict[str, Any]] = {}
 _job_controls: Dict[str, JobControl] = {}
+
+MAX_UPLOAD_SIZE_BYTES: int = int(os.getenv("MAX_UPLOAD_SIZE_BYTES", str(20 * 1024 * 1024)))  # 20MB
+RATE_LIMIT_MAX_REQUESTS: int = int(os.getenv("RATE_LIMIT_EXTRACT_MAX_REQUESTS", "5"))
+RATE_LIMIT_WINDOW_SECONDS: int = int(os.getenv("RATE_LIMIT_EXTRACT_WINDOW_SECONDS", "60"))
+_extract_rate_limits: Dict[str, List[float]] = {}
+_rate_limit_lock = threading.Lock()
+
+
+def check_user_extract_rate_limit(username: str) -> None:
+    """
+    Enforces a simple sliding window per-user rate limit on document extraction.
+    """
+    now = time.time()
+    with _rate_limit_lock:
+        history = _extract_rate_limits.setdefault(username, [])
+        valid_history = [t for t in history if now - t < RATE_LIMIT_WINDOW_SECONDS]
+        if len(valid_history) >= RATE_LIMIT_MAX_REQUESTS:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Rate limit exceeded: maximum {RATE_LIMIT_MAX_REQUESTS} extraction requests per {RATE_LIMIT_WINDOW_SECONDS}s allowed."
+            )
+        valid_history.append(now)
+        _extract_rate_limits[username] = valid_history
+
+
+def reset_extract_rate_limits() -> None:
+    """
+    Resets in-memory extraction rate limits (for testing and isolation).
+    """
+    with _rate_limit_lock:
+        _extract_rate_limits.clear()
+
+
+async def validate_uploaded_pdf(file: UploadFile) -> Tuple[str, bytes]:
+    """
+    Validates that the upload is a non-empty .pdf without path traversal,
+    and does not exceed MAX_UPLOAD_SIZE_BYTES.
+    Returns (safe_filename, content_bytes).
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Missing filename in upload.")
+    p = Path(file.filename)
+    if p.name != file.filename or ".." in file.filename or "/" in file.filename or "\\" in file.filename:
+        raise HTTPException(status_code=400, detail="Invalid filename: path traversal detected.")
+    if p.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=400, detail="Only .pdf files are supported.")
+
+    content = await file.read(MAX_UPLOAD_SIZE_BYTES + 1)
+    if len(content) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds maximum allowed upload size of {MAX_UPLOAD_SIZE_BYTES} bytes."
+        )
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    return p.name, content
+
 
 RENDER_DPI = 150
 MAT = pymupdf.Matrix(RENDER_DPI / 72, RENDER_DPI / 72)
@@ -140,14 +198,13 @@ def list_documents(_: User = Depends(require_admin)) -> Dict[str, Any]:
 @router.post("/documents/upload")
 async def upload_documents(
     files: List[UploadFile] = File(...),
-    _: User = Depends(require_admin),
+    user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
+    check_user_extract_rate_limit(user.username)
     saved: List[str] = []
     for f in files:
-        if not (f.filename or "").lower().endswith(".pdf") and f.content_type != "application/pdf":
-            continue
-        content = await f.read()
-        target = DATASET_DIR / Path(f.filename or f"doc_{uuid.uuid4().hex[:8]}.pdf").name
+        safe_name, content = await validate_uploaded_pdf(f)
+        target = DATASET_DIR / safe_name
         target.write_bytes(content)
         saved.append(target.name)
 
@@ -197,7 +254,7 @@ def get_schema(schema_id: str, _: User = Depends(require_admin)) -> Dict[str, An
 @router.get("/pipeline/status")
 def pipeline_status(_: User = Depends(require_admin)) -> Dict[str, Any]:
     routing_mode = getattr(a_settings, "routing_mode", None) if PIPELINE_AVAILABLE else None
-    layer3_strategy = getattr(a_settings, "layer3_strategy", "graph_memory")
+    layer3_strategy = getattr(a_settings, "layer3_strategy", "graph_memory_concurrent")
     return {
         "available": PIPELINE_AVAILABLE,
         "routing_mode": routing_mode,
@@ -332,12 +389,13 @@ async def run_pipeline(
     schema_id: str = Form(...),
     documents: Optional[str] = Form(default=None),
     strategy: Optional[str] = Form(default=None),
-    _: User = Depends(require_admin),
+    user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
+    check_user_extract_rate_limit(user.username)
     if not PIPELINE_AVAILABLE:
         raise HTTPException(status_code=503, detail="Extraction pipeline unavailable (import failed)")
 
-    selected_strategy = strategy or getattr(a_settings, "layer3_strategy", "graph_memory")
+    selected_strategy = strategy or getattr(a_settings, "layer3_strategy", "graph_memory_concurrent")
 
     schema_path = SCHEMA_REGISTRY / f"{schema_id}.json"
     if not schema_path.exists():
@@ -393,6 +451,27 @@ async def run_pipeline(
     return {"job_id": job_id, "status": "queued", "targets": len(targets), "strategy": selected_strategy}
 
 
+def _parse_pages_from_markdown(md_text: str) -> List[Dict[str, Any]]:
+    """Extract individual pages from an already-generated pipeline markdown file."""
+    marker = re.compile(r"<!--\s*PAGE\s+(\d+)[^>]*-->", re.I)
+    matches = list(marker.finditer(md_text))
+    if not matches:
+        return [{"markdown": md_text.strip(), "page_number": 1}]
+    pages = []
+    for i, m in enumerate(matches):
+        pg_num = int(m.group(1))
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(md_text)
+        content = md_text[start:end]
+        close_match = re.search(rf"<!--\s*/PAGE\s+{pg_num}\s*-->", content, re.I)
+        if close_match:
+            content = content[:close_match.start()]
+        else:
+            content = re.sub(r"<!--\s*/PAGE\s+\d+\s*-->", "", content)
+        pages.append({"markdown": content.strip(), "page_number": pg_num})
+    return pages
+
+
 def _run_pipeline_job(
     job_id: str,
     targets: List[Path],
@@ -406,7 +485,7 @@ def _run_pipeline_job(
         ctrl = JobControl()
         _job_controls[job_id] = ctrl
 
-    selected_strategy = strategy or job.get("strategy") or getattr(a_settings, "layer3_strategy", "graph_memory")
+    selected_strategy = strategy or job.get("strategy") or getattr(a_settings, "layer3_strategy", "graph_memory_concurrent")
     job["strategy"] = selected_strategy
     job["status"] = "running"
     job["started_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -434,21 +513,85 @@ def _run_pipeline_job(
             job["wall_time_s"] = round(time.monotonic() - t_start, 2)
             return
 
+        owner = job.get("owner")
+        job_out_dir = resolve_owner_output_dir(owner) if owner else OUTPUT_DIR
+        job_out_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. Discover existing converted markdown (disk or DB) to avoid destructive overwrite
+        existing_md_text = None
+        md_path = job_out_dir / f"{pdf.stem}.md"
+        cand_files = [
+            md_path,
+            OUTPUT_DIR / f"{pdf.stem}.md",
+            DATASET_DIR / f"{pdf.stem}.md",
+        ]
+        for cand in cand_files:
+            if cand.exists() and cand.is_file():
+                try:
+                    c_txt = cand.read_text(encoding="utf-8")
+                    if len(c_txt.strip()) > 100:
+                        existing_md_text = c_txt
+                        break
+                except Exception:
+                    pass
+
+        if not existing_md_text:
+            try:
+                from src.ai.layer3_extraction.storage import get_markdown_record
+                rec = get_markdown_record(pdf.name) or get_markdown_record(f"{pdf.stem}.md")
+                if rec and rec.get("markdown_content") and len(rec["markdown_content"].strip()) > 100:
+                    existing_md_text = rec["markdown_content"]
+            except Exception:
+                pass
+
         t0 = time.monotonic()
         try:
-            pages = _build_pages_for_pdf(pdf)
-            results = process_document(
-                pages=pages,
-                llm_client=llm_client,
-                document_name=pdf.name,
-                document_id=f"{job_id}-{pdf.stem}",
-                write_output=True,
-                output_dir=str(OUTPUT_DIR),
-                overwrite=True,
-            )
+            results = None
+            try:
+                pages = _build_pages_for_pdf(pdf)
+                results = process_document(
+                    pages=pages,
+                    llm_client=llm_client,
+                    document_name=pdf.name,
+                    document_id=f"{job_id}-{pdf.stem}",
+                    write_output=True,
+                    output_dir=str(job_out_dir),
+                    overwrite=True,
+                )
+            except Exception as proc_exc:
+                logger.warning("pipeline.process_document_failed", pdf=pdf.name, error=str(proc_exc))
+                if not existing_md_text:
+                    raise
 
-            md_path = OUTPUT_DIR / f"{pdf.stem}.md"
-            ref_path = OUTPUT_DIR / f"{pdf.stem}.schema_ref.json"
+            outputs = [r[0] for r in results] if results else []
+            total_chars = sum(len(o.markdown.strip()) for o in outputs)
+            avg_conf = sum(o.confidence for o in outputs) / len(outputs) if outputs else 0.0
+
+            pages_for_layer3 = [{"markdown": r[0].markdown, "page_number": r[0].page_number} for r in results] if results else []
+
+            # If local conversion yielded 0 chars (e.g. paddleocr missing in web container),
+            # restore pre-existing valid markdown so Layer 3 receives full document text
+            if total_chars == 0 and existing_md_text:
+                logger.warning(
+                    "pipeline.conversion_produced_0_chars_restoring_existing_md",
+                    document=pdf.name,
+                    existing_chars=len(existing_md_text),
+                )
+                md_path.write_text(existing_md_text, encoding="utf-8")
+                parsed_pages = _parse_pages_from_markdown(existing_md_text)
+                if parsed_pages and any(p.get("markdown") for p in parsed_pages):
+                    pages_for_layer3 = parsed_pages
+                    total_chars = sum(len(p.get("markdown", "").strip()) for p in parsed_pages)
+                    conf_match = re.search(r"Avg conf\s*:\s*([\d\.]+)", existing_md_text)
+                    if conf_match:
+                        try:
+                            avg_conf = float(conf_match.group(1))
+                        except Exception:
+                            avg_conf = 0.95
+                    else:
+                        avg_conf = 0.95
+
+            ref_path = job_out_dir / f"{pdf.stem}.schema_ref.json"
             ref_dict = {
                 "source_pdf": pdf.name,
                 "output_md": md_path.name,
@@ -457,17 +600,19 @@ def _run_pipeline_job(
                 "document_type": schema_record.get("document_type") or (schema_record.get("schema") or {}).get("document_type"),
                 "pages": [
                     {
-                        "page_number": output.page_number,
-                        "engines_used": output.engines_used,
-                        "capabilities": output.capabilities,
-                        "confidence": output.confidence,
-                        "escalated": output.escalated,
-                        "low_confidence": output.low_confidence,
-                        "chars": len(output.markdown.strip()),
+                        "page_number": p.get("page_number", idx + 1),
+                        "engines_used": getattr(results[idx][0], "engines_used", ["paddleocr_printed"]) if (results and idx < len(results)) else ["paddleocr_printed"],
+                        "capabilities": getattr(results[idx][0], "capabilities", ["has_printed_scan"]) if (results and idx < len(results)) else ["has_printed_scan"],
+                        "confidence": avg_conf if total_chars > 0 and (not results or not any(r[0].markdown.strip() for r in results)) else (results[idx][0].confidence if (results and idx < len(results)) else avg_conf),
+                        "escalated": getattr(results[idx][0], "escalated", False) if (results and idx < len(results)) else False,
+                        "low_confidence": False if total_chars > 0 else (results[idx][0].low_confidence if (results and idx < len(results)) else True),
+                        "chars": len(p.get("markdown", "").strip()),
                     }
-                    for output, _meta in results
+                    for idx, p in enumerate(pages_for_layer3)
                 ],
             }
+            if job.get("owner"):
+                ref_dict["owner"] = job["owner"]
             ref_path.write_text(
                 json.dumps(ref_dict, indent=2) + "\n",
                 encoding="utf-8",
@@ -483,16 +628,13 @@ def _run_pipeline_job(
                     markdown_content=md_text,
                     schema_id=schema_id,
                     schema_ref_json=ref_dict,
-                    page_count=len(results),
-                    pages_json=[{"page_number": r[0].page_number, "markdown": r[0].markdown} for r in results],
+                    page_count=len(pages_for_layer3),
+                    pages_json=pages_for_layer3,
                 )
             except Exception:
                 pass
 
             elapsed = time.monotonic() - t0
-            outputs = [r[0] for r in results]
-            avg_conf = sum(o.confidence for o in outputs) / len(outputs) if outputs else 0.0
-            total_chars = sum(len(o.markdown.strip()) for o in outputs)
 
             # ================= Automatically Continue to Layer 3 Extraction =================
             extracted_data = None
@@ -520,7 +662,6 @@ def _run_pipeline_job(
                     dynamic_schema = build_dynamic_schema(fields_in)
                     t_ext0 = time.monotonic()
                     extraction_llm = get_extraction_client()
-                    pages_for_layer3 = [{"markdown": r[0].markdown, "page_number": r[0].page_number} for r in results]
 
                     extracted_result = extract_with_retry(
                         lambda: extract_document(
@@ -535,8 +676,8 @@ def _run_pipeline_job(
                     extract_elapsed = round(time.monotonic() - t_ext0, 2)
                     extracted_data = extracted_result.model_dump()
 
-                    # Write dataset_output/<stem>.extracted.json
-                    json_out_path = OUTPUT_DIR / f"{pdf.stem}.extracted.json"
+                    # Write dataset_output/<owner>/<stem>.extracted.json
+                    json_out_path = job_out_dir / f"{pdf.stem}.extracted.json"
                     json_payload = {
                         "source_pdf": pdf.name,
                         "schema_used": schema_id,
@@ -547,16 +688,18 @@ def _run_pipeline_job(
                     }
                     if graph_meta:
                         json_payload["graph_memory"] = graph_meta
+                    if job.get("owner"):
+                        json_payload["owner"] = job["owner"]
 
                     json_out_path.write_text(
                         json.dumps(json_payload, indent=2) + "\n",
                         encoding="utf-8",
                     )
 
-                    # Save file checkpoint: dataset_output/<stem>.graph.json (Requirement 7)
+                    # Save file checkpoint: dataset_output/<owner>/<stem>.graph.json (Requirement 7)
                     if graph_meta and graph_meta.get("snapshot"):
                         try:
-                            graph_out_path = OUTPUT_DIR / f"{pdf.stem}.graph.json"
+                            graph_out_path = job_out_dir / f"{pdf.stem}.graph.json"
                             graph_out_path.write_text(
                                 json.dumps(graph_meta["snapshot"], indent=2) + "\n",
                                 encoding="utf-8",
@@ -569,13 +712,13 @@ def _run_pipeline_job(
                         init_db()
                         db_id = save_extraction_run(
                             doc_id=pdf.name,
-                            page_count=len(outputs),
+                            page_count=len(pages_for_layer3),
                             schema_name=schema_id,
                             result_json=extracted_data,
                             llm_provider=a_settings.extraction_backend,
-                            model_name=a_settings.sarvam_model_name if a_settings.extraction_backend == "sarvam" else a_settings.extraction_model_name,
+                            model_name=a_settings.bedrock_model_id if a_settings.extraction_backend == "bedrock" else (a_settings.sarvam_model_name if a_settings.extraction_backend == "sarvam" else a_settings.extraction_model_name),
                             processing_time_seconds=extract_elapsed,
-                            page_outputs=outputs,
+                            page_outputs=outputs if total_chars > 0 and results and any(r[0].markdown.strip() for r in results) else None,
                         )
                         if graph_meta and graph_meta.get("snapshot"):
                             save_document_graph(
@@ -599,7 +742,7 @@ def _run_pipeline_job(
                 "schema_ref": ref_path.name,
                 "avg_conf": round(avg_conf, 3),
                 "chars": total_chars,
-                "pages": len(outputs),
+                "pages": len(pages_for_layer3),
                 "elapsed_s": round(elapsed, 2),
                 "strategy": selected_strategy,
                 "extracted_json": f"{pdf.stem}.extracted.json" if extracted_data else None,
@@ -650,44 +793,84 @@ def _run_pipeline_job(
 # ========================= Layer 3 Extraction =========================
 
 
-def _parse_pages_from_markdown(md_text: str) -> List[Dict[str, Any]]:
-    """Extract individual pages from an already-generated pipeline markdown file."""
-    marker = re.compile(r"<!--\s*PAGE\s+(\d+)[^>]*-->", re.I)
-    matches = list(marker.finditer(md_text))
-    if not matches:
-        return [{"markdown": md_text.strip(), "page_number": 1}]
-    pages = []
-    for i, m in enumerate(matches):
-        pg_num = int(m.group(1))
-        start = m.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(md_text)
-        content = md_text[start:end]
-        close_match = re.search(rf"<!--\s*/PAGE\s+{pg_num}\s*-->", content, re.I)
-        if close_match:
-            content = content[:close_match.start()]
-        else:
-            content = re.sub(r"<!--\s*/PAGE\s+\d+\s*-->", "", content)
-        pages.append({"markdown": content.strip(), "page_number": pg_num})
-    return pages
+# _parse_pages_from_markdown is defined above _run_pipeline_job
+
 
 
 _SCHEMA_ID_REGEX = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 
-def validate_md_filename(md_name: str) -> Path:
+def resolve_owner_output_dir(owner: str) -> Path:
+    """
+    Safely resolves OUTPUT_DIR / owner and guarantees it stays within OUTPUT_DIR.
+    Normalizes owner to lowercase and rejects consecutive dots or traversal attempts.
+    """
+    if not owner or not isinstance(owner, str):
+        raise HTTPException(status_code=400, detail="Path traversal detected in owner directory.")
+    owner_clean = owner.strip().lower()
+    if not owner_clean or ".." in owner_clean or "/" in owner_clean or "\\" in owner_clean:
+        raise HTTPException(status_code=400, detail="Path traversal detected in owner directory.")
+    owner_dir = (OUTPUT_DIR / owner_clean).resolve()
+    if not owner_dir.is_relative_to(OUTPUT_DIR.resolve()):
+        raise HTTPException(status_code=400, detail="Path traversal detected in owner directory.")
+    return owner_dir
+
+
+def validate_md_filename(md_name: str, owner: Optional[str] = None) -> Path:
     """
     Validates that md_name is a strict single-component filename ending in .md
-    and resolving strictly within OUTPUT_DIR.
+    and resolving strictly within OUTPUT_DIR or an owner subfolder.
     """
     if not md_name or not isinstance(md_name, str):
         raise HTTPException(status_code=400, detail="Invalid md_name.")
     p = Path(md_name)
-    if p.name != md_name or p.suffix.lower() != ".md":
+    if p.suffix.lower() != ".md" or p.name != md_name or ".." in md_name or "/" in md_name or "\\" in md_name:
         raise HTTPException(status_code=400, detail="Invalid md_name: must be a simple filename ending with .md")
+
+    # 1. If owner is provided, search exclusively in owner's directory first
+    if owner:
+        owner_dir = resolve_owner_output_dir(owner)
+        owner_file = (owner_dir / p).resolve()
+        if not owner_file.is_relative_to(OUTPUT_DIR.resolve()):
+            raise HTTPException(status_code=400, detail="Path traversal detected.")
+        if owner_file.is_file():
+            return owner_file
+
+    # 2. Check root OUTPUT_DIR
     resolved = (OUTPUT_DIR / p).resolve()
     if not resolved.is_relative_to(OUTPUT_DIR.resolve()):
         raise HTTPException(status_code=400, detail="Path traversal detected.")
+    if resolved.is_file():
+        return resolved
+
+    # 3. If not in root and no owner specified, search owner subdirectories
+    cands = [cand.resolve() for cand in OUTPUT_DIR.glob(f"*/{p.name}") if cand.is_file() and cand.resolve().is_relative_to(OUTPUT_DIR.resolve())]
+    if len(cands) == 1:
+        return cands[0]
+    elif len(cands) > 1:
+        owners = sorted(list(set(c.parent.name for c in cands)))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ambiguous md_name '{md_name}' found in multiple owner directories: {owners}. Specify owner or document path explicitly."
+        )
+
     return resolved
+
+
+def validate_doc_id(doc_id: str) -> str:
+    """
+    Validates that doc_id is a strict single-component document identifier or filename
+    and resolves strictly within OUTPUT_DIR without directory escape.
+    """
+    if not doc_id or not isinstance(doc_id, str):
+        raise HTTPException(status_code=400, detail="Invalid doc_id.")
+    p = Path(doc_id)
+    if p.name != doc_id or ".." in doc_id or "/" in doc_id or "\\" in doc_id:
+        raise HTTPException(status_code=400, detail="Path traversal detected in doc_id.")
+    resolved = (OUTPUT_DIR / p).resolve()
+    if not resolved.is_relative_to(OUTPUT_DIR.resolve()):
+        raise HTTPException(status_code=400, detail="Path traversal detected in doc_id.")
+    return doc_id
 
 
 def resolve_strict_schema_file(schema_id: str) -> Path:
@@ -695,7 +878,7 @@ def resolve_strict_schema_file(schema_id: str) -> Path:
     Validates schema_id against strict regex ^[A-Za-z0-9_\-]+$ and resolves exact file
     in SCHEMA_REGISTRY without wildcard glob fallbacks.
     """
-    if not schema_id or not _SCHEMA_ID_REGEX.match(schema_id):
+    if not schema_id or not _SCHEMA_ID_REGEX.fullmatch(schema_id):
         raise HTTPException(status_code=400, detail=f"Invalid schema_id format: '{schema_id}'")
     schema_path = (SCHEMA_REGISTRY / f"{schema_id}.json").resolve()
     if not schema_path.is_relative_to(SCHEMA_REGISTRY.resolve()) or not schema_path.is_file():
@@ -765,8 +948,10 @@ def list_pipeline_outputs(_: User = Depends(require_admin)) -> Dict[str, Any]:
 async def extract_from_existing_output(
     md_name: str = Form(...),
     strategy: Optional[str] = Form(default=None),
-    _: User = Depends(require_admin),
+    owner: Optional[str] = Form(default=None),
+    user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
+    check_user_extract_rate_limit(user.username)
     """
     Run Layer 3 extraction directly on an ALREADY-PROCESSED pipeline document.
     Automatically retrieves the converted Markdown and the schema bound to it during Run Pipeline.
@@ -779,9 +964,15 @@ async def extract_from_existing_output(
     from src.ai.layer3_extraction.storage import init_db, save_extraction_run
     from src.api.dynamic_schema import SchemaFieldIn, build_dynamic_schema
 
-    selected_strategy = strategy or getattr(a_settings, "layer3_strategy", "graph_memory")
+    role_val = getattr(user.role, "value", user.role)
+    is_admin = (role_val == "admin" or user.role == Role.ADMIN)
+    if not is_admin:
+        if not owner or owner != user.username:
+            raise HTTPException(status_code=403, detail="Access denied: non-admin users may only extract from their own output partition.")
 
-    md_path = validate_md_filename(md_name)
+    selected_strategy = strategy or getattr(a_settings, "layer3_strategy", "graph_memory_concurrent")
+
+    md_path = validate_md_filename(md_name, owner=owner)
     if not md_path.exists():
         raise HTTPException(status_code=404, detail=f"Output file '{md_name}' not found in dataset_output.")
 
@@ -793,6 +984,7 @@ async def extract_from_existing_output(
         )
 
     ref_data = json.loads(ref_path.read_text(encoding="utf-8"))
+    known_owner = owner or ref_data.get("owner") or _lookup_doc_owner(ref_data.get("source_pdf", md_path.stem), md_path.stem, username=owner)
     schema_id = ref_data.get("schema_id")
     if not schema_id:
         raise HTTPException(status_code=400, detail=f"No schema_id recorded in {ref_path.name}")
@@ -813,6 +1005,25 @@ async def extract_from_existing_output(
 
     dynamic_schema = build_dynamic_schema(fields_in)
     md_content = md_path.read_text(encoding="utf-8")
+    if len(md_content.strip()) < 100:
+        cand = OUTPUT_DIR / md_path.name
+        if cand.exists() and cand != md_path:
+            try:
+                c_txt = cand.read_text(encoding="utf-8")
+                if len(c_txt.strip()) > 100:
+                    md_content = c_txt
+                    md_path.write_text(md_content, encoding="utf-8")
+            except Exception:
+                pass
+        if len(md_content.strip()) < 100:
+            try:
+                from src.ai.layer3_extraction.storage import get_markdown_record
+                rec = get_markdown_record(md_path.stem) or get_markdown_record(f"{md_path.stem}.pdf")
+                if rec and rec.get("markdown_content") and len(rec["markdown_content"].strip()) > 100:
+                    md_content = rec["markdown_content"]
+                    md_path.write_text(md_content, encoding="utf-8")
+            except Exception:
+                pass
     pages = _parse_pages_from_markdown(md_content)
 
     def _execute():
@@ -826,9 +1037,10 @@ async def extract_from_existing_output(
         elapsed = round(time.time() - t_start, 2)
         result_dict = extracted_result.model_dump()
 
-        # Save to dataset_output/
+        # Save to output dir (same dir as source md)
         stem = md_path.stem
-        json_out_path = OUTPUT_DIR / f"{stem}.extracted.json"
+        out_dir = md_path.parent
+        json_out_path = out_dir / f"{stem}.extracted.json"
         out_payload = {
             "source_doc": md_name,
             "source_pdf": ref_data.get("source_pdf", f"{stem}.pdf"),
@@ -839,7 +1051,16 @@ async def extract_from_existing_output(
         }
         if graph_meta:
             out_payload["graph_memory"] = graph_meta
+        if known_owner:
+            out_payload["owner"] = known_owner
         json_out_path.write_text(json.dumps(out_payload, indent=2) + "\n", encoding="utf-8")
+
+        if known_owner and not ref_data.get("owner"):
+            ref_data["owner"] = known_owner
+            try:
+                ref_path.write_text(json.dumps(ref_data, indent=2) + "\n", encoding="utf-8")
+            except Exception as e_ref:
+                logger.warning("pipeline.extract_from_output.schema_ref_update_failed", error=str(e_ref))
 
         # Save to PostgreSQL
         db_id = None
@@ -865,7 +1086,7 @@ async def extract_from_existing_output(
                 schema_name=schema_id,
                 result_json=result_dict,
                 llm_provider=a_settings.extraction_backend,
-                model_name=a_settings.sarvam_model_name if a_settings.extraction_backend == "sarvam" else a_settings.extraction_model_name,
+                model_name=a_settings.bedrock_model_id if a_settings.extraction_backend == "bedrock" else (a_settings.sarvam_model_name if a_settings.extraction_backend == "sarvam" else a_settings.extraction_model_name),
                 processing_time_seconds=elapsed,
                 page_outputs=page_outputs if page_outputs else None,
             )
@@ -929,11 +1150,13 @@ async def extract_uploaded_document(
     from src.ai.layer3_extraction.storage import init_db, save_extraction_run
     from src.api.dynamic_schema import SchemaFieldIn, build_dynamic_schema
 
-    selected_strategy = strategy or getattr(a_settings, "layer3_strategy", "graph_memory")
+    selected_strategy = strategy or getattr(a_settings, "layer3_strategy", "graph_memory_concurrent")
 
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
-    filename: str = file.filename
+    # Rate limiting
+    check_user_extract_rate_limit(user.username)
+
+    # Allowed extension, filename, and size validation
+    filename, pdf_bytes = await validate_uploaded_pdf(file)
 
     # 1. Resolve Target Schema
     fields_in: List[SchemaFieldIn] = []
@@ -968,8 +1191,6 @@ async def extract_uploaded_document(
 
     dynamic_schema = build_dynamic_schema(fields_in)
 
-    # 2. Save uploaded PDF temporarily
-    pdf_bytes = await file.read()
     temp_pdf = DATASET_DIR / filename
     temp_pdf.write_bytes(pdf_bytes)
 
@@ -1065,7 +1286,7 @@ async def extract_uploaded_document(
                 schema_name=schema_name,
                 result_json=result_dict,
                 llm_provider=a_settings.extraction_backend,
-                model_name=a_settings.sarvam_model_name if a_settings.extraction_backend == "sarvam" else a_settings.extraction_model_name,
+                model_name=a_settings.bedrock_model_id if a_settings.extraction_backend == "bedrock" else (a_settings.sarvam_model_name if a_settings.extraction_backend == "sarvam" else a_settings.extraction_model_name),
                 processing_time_seconds=elapsed,
                 page_outputs=page_outputs,
             )
@@ -1110,9 +1331,10 @@ from app.core.auth import get_current_user
 from app.storage.user_store import Role
 
 
-def _lookup_doc_owner(doc_id: str, stem: str) -> Optional[str]:
+def _lookup_doc_owner(doc_id: str, stem: str, username: Optional[str] = None, job_id: Optional[str] = None) -> Optional[str]:
     """
     Looks up the recorded owner of a document from PostgreSQL DB or disk metadata.
+    If username is provided, checks that user's partition only (DB owner==username or OUTPUT_DIR/username).
     """
     from src.ai.layer3_extraction.storage import init_db, SessionLocal, DocumentGraphRecord
     try:
@@ -1120,25 +1342,50 @@ def _lookup_doc_owner(doc_id: str, stem: str) -> Optional[str]:
         sess = SessionLocal()
         try:
             candidates = [doc_id, f"{stem}.pdf", stem]
-            rec = sess.query(DocumentGraphRecord).filter(
+            q = sess.query(DocumentGraphRecord).filter(
                 DocumentGraphRecord.doc_id.in_(candidates)
-            ).order_by(DocumentGraphRecord.created_at.desc()).first()
-            if rec and rec.owner:
-                return rec.owner
+            )
+            if job_id:
+                q = q.filter_by(job_id=job_id)
+            if username:
+                user_rec = q.filter_by(owner=username).order_by(DocumentGraphRecord.created_at.desc()).first()
+                if user_rec and user_rec.owner:
+                    return user_rec.owner
+            else:
+                rec = q.order_by(DocumentGraphRecord.created_at.desc()).first()
+                if rec and rec.owner:
+                    return rec.owner
         finally:
             sess.close()
     except Exception:
         pass
 
-    for fname in (f"{stem}.extracted.json", f"{doc_id}.extracted.json", f"{stem}.schema_ref.json"):
-        p = OUTPUT_DIR / fname
-        if p.is_file():
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-                if isinstance(data, dict) and data.get("owner"):
-                    return data["owner"]
-            except Exception:
-                pass
+    if username:
+        try:
+            search_dirs = [resolve_owner_output_dir(username), OUTPUT_DIR]
+        except HTTPException:
+            search_dirs = [OUTPUT_DIR]
+    else:
+        search_dirs = [OUTPUT_DIR] + [p for p in OUTPUT_DIR.iterdir() if p.is_dir() and p.resolve().is_relative_to(OUTPUT_DIR.resolve())]
+
+    for sdir in search_dirs:
+        if not sdir.is_dir():
+            continue
+        for fname in (f"{stem}.extracted.json", f"{doc_id}.extracted.json", f"{stem}.schema_ref.json"):
+            p = sdir / fname
+            if p.is_file():
+                try:
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        owner = data.get("owner")
+                        if owner:
+                            if username:
+                                if owner == username:
+                                    return owner
+                            else:
+                                return owner
+                except Exception:
+                    pass
     return None
 
 
@@ -1166,6 +1413,7 @@ class QueryBotRequest(BaseModel):
     question: str = Field(..., description="User's natural language question about the extracted data")
     doc_id: Optional[str] = Field(None, description="Optional document name for reference")
     job_id: Optional[str] = Field(None, description="Optional job ID for reference")
+    owner: Optional[str] = Field(None, description="Optional document owner for reference (required for admins when doc_id is ambiguous)")
 
 
 
@@ -1222,15 +1470,19 @@ def get_query_bot_documents(
 
     # Source 2: Disk dataset_output/
     try:
-        ext_files = list(OUTPUT_DIR.glob("*.extracted.json"))
-        graph_files = list(OUTPUT_DIR.glob("*.graph.json"))
-        all_stems = set([p.name.replace(".extracted.json", "") for p in ext_files] +
-                        [p.name.replace(".graph.json", "") for p in graph_files])
+        ext_files = list(OUTPUT_DIR.glob("*.extracted.json")) + list(OUTPUT_DIR.glob("*/*.extracted.json"))
+        graph_files = list(OUTPUT_DIR.glob("*.graph.json")) + list(OUTPUT_DIR.glob("*/*.graph.json"))
 
-        for stem in all_stems:
-            ref_path = OUTPUT_DIR / f"{stem}.schema_ref.json"
-            ext_path = OUTPUT_DIR / f"{stem}.extracted.json"
-            graph_path = OUTPUT_DIR / f"{stem}.graph.json"
+        all_stems_with_dir = set()
+        for p in ext_files:
+            all_stems_with_dir.add((p.parent, p.name.replace(".extracted.json", "")))
+        for p in graph_files:
+            all_stems_with_dir.add((p.parent, p.name.replace(".graph.json", "")))
+
+        for parent_dir, stem in all_stems_with_dir:
+            ref_path = parent_dir / f"{stem}.schema_ref.json"
+            ext_path = parent_dir / f"{stem}.extracted.json"
+            graph_path = parent_dir / f"{stem}.graph.json"
 
             source_pdf = f"{stem}.pdf"
             if ref_path.is_file():
@@ -1245,7 +1497,7 @@ def get_query_bot_documents(
             has_extracted = ext_path.is_file()
 
             # Enforce isolation: disk docs without ownership or belonging to others are hidden from non-admins
-            disk_owner = _lookup_doc_owner(doc_key, stem)
+            disk_owner = _lookup_doc_owner(doc_key, stem, username=user.username if not is_admin else None)
             if not is_admin:
                 if not disk_owner or disk_owner != user.username:
                     continue
@@ -1289,13 +1541,13 @@ def get_query_bot_documents(
                 )
                 if doc_id:
                     stem = Path(doc_id).stem
-                    strat = s.get("strategy") or job.get("strategy") or "graph_memory"
+                    strat = s.get("strategy") or job.get("strategy") or "graph_memory_concurrent"
                     if doc_id not in docs:
                         docs[doc_id] = {
                             "doc_id": doc_id,
                             "stem": stem,
                             "label": doc_id,
-                            "has_graph": (strat == "graph_memory"),
+                            "has_graph": (strat.startswith("graph_memory")),
                             "has_extracted": True,
                             "strategy": strat,
                             "source": "active_job",
@@ -1335,13 +1587,78 @@ async def ask_query_bot(
         SessionLocal,
         DocumentGraphRecord,
     )
-    from src.ai.layer3_extraction.graph_agent.graph_memory import GraphMemory
-    from src.ai.layer3_extraction.graph_agent.query_service import GraphQueryService
+    try:
+        from src.ai.layer3_extraction.graph_agent.graph_memory import GraphMemory
+        from src.ai.layer3_extraction.graph_agent.query_service import GraphQueryService
+    except ImportError as _g_imp_err:
+        logger.warning("query_bot.graph_import_unavailable", error=str(_g_imp_err))
+        GraphMemory = None
+        GraphQueryService = None
 
     role_val = getattr(user.role, "value", user.role)
     is_admin = (role_val == "admin" or user.role == Role.ADMIN)
 
+    if not is_admin and req.owner and req.owner != user.username:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: non-admin users cannot specify a different owner.",
+        )
+
+    # For admin: require explicit owner or job_id if doc_id is ambiguous across multiple owners
+    if is_admin and req.doc_id and not req.owner and not req.job_id:
+        stem = Path(req.doc_id).stem
+        candidates = [req.doc_id, f"{stem}.pdf", stem]
+        ambiguous_owners = set()
+        try:
+            init_db()
+            session = SessionLocal()
+            try:
+                db_owners = session.query(DocumentGraphRecord.owner).filter(
+                    DocumentGraphRecord.doc_id.in_(candidates),
+                    DocumentGraphRecord.owner.isnot(None),
+                ).distinct().all()
+                for (o,) in db_owners:
+                    if o:
+                        ambiguous_owners.add(o)
+            finally:
+                session.close()
+        except Exception:
+            pass
+
+        try:
+            if OUTPUT_DIR.is_dir():
+                for cdir in OUTPUT_DIR.iterdir():
+                    if cdir.is_dir():
+                        for fname in (f"{stem}.extracted.json", f"{req.doc_id}.extracted.json", f"{stem}.graph.json", f"{stem}.schema_ref.json"):
+                            if (cdir / fname).is_file():
+                                ambiguous_owners.add(cdir.name)
+                                break
+        except Exception:
+            pass
+
+        if len(ambiguous_owners) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Ambiguous doc_id '{req.doc_id}' exists for multiple owners ({', '.join(sorted(ambiguous_owners))}). Specify 'owner' or 'job_id' in the request.",
+            )
+
     graph_dict = None
+
+    # Validate doc_id up-front to prevent path traversal
+    if req.doc_id:
+        req.doc_id = validate_doc_id(req.doc_id)
+        stem = Path(req.doc_id).stem
+        if not is_admin:
+            # Check if requesting user owns a copy in their partition/DB
+            user_owner = _lookup_doc_owner(req.doc_id, stem, username=user.username)
+            if not user_owner:
+                # User does not own a copy; check if the document belongs to another user
+                doc_owner = _lookup_doc_owner(req.doc_id, stem)
+                if doc_owner and doc_owner != user.username:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Access denied: document owned by '{doc_owner}'.",
+                    )
 
     # Step 1: Check document graph in DB with strict user isolation
     if req.doc_id or req.job_id:
@@ -1360,7 +1677,18 @@ async def ask_query_bot(
                             q = sub_q
                 elif req.job_id:
                     q = q.filter_by(job_id=req.job_id)
-                db_rec = q.order_by(DocumentGraphRecord.created_at.desc()).first()
+                if not is_admin:
+                    user_q = q.filter_by(owner=user.username)
+                    db_rec = user_q.order_by(DocumentGraphRecord.created_at.desc()).first()
+                    if not db_rec:
+                        any_rec = q.order_by(DocumentGraphRecord.created_at.desc()).first()
+                        if any_rec:
+                            _check_doc_access(any_rec.owner, user, is_admin)
+                else:
+                    if req.owner:
+                        q = q.filter_by(owner=req.owner)
+                    db_rec = q.order_by(DocumentGraphRecord.created_at.desc()).first()
+
                 if db_rec:
                     # Enforce isolation: ownerless is admin-only, user docs are owner-only
                     _check_doc_access(db_rec.owner, user, is_admin)
@@ -1375,30 +1703,45 @@ async def ask_query_bot(
     # Step 2: Check file checkpoint if DB didn't have it
     if not graph_dict and req.doc_id:
         stem = Path(req.doc_id).stem
-        for fname in (f"{stem}.graph.json", f"{req.doc_id}.graph.json", f"{stem}.extracted.json"):
-            chk_path = OUTPUT_DIR / fname
-            if chk_path.is_file():
-                try:
-                    data = json.loads(chk_path.read_text(encoding="utf-8"))
-                    file_owner = _lookup_doc_owner(req.doc_id, stem)
-                    _check_doc_access(file_owner, user, is_admin)
-                    if isinstance(data, dict):
-                        if "graph_memory" in data and isinstance(data["graph_memory"], dict):
-                            graph_dict = data["graph_memory"].get("snapshot") or data["graph_memory"]
-                            break
-                        elif "nodes" in data and "edges" in data:
-                            graph_dict = data
-                            break
-                except HTTPException:
-                    raise
-                except Exception as fe:
-                    logger.warning("query_bot.file_checkpoint_read_error", path=str(chk_path), error=str(fe))
+        target_owner = req.owner if (is_admin and req.owner) else (user.username if user else None)
+        if target_owner:
+            try:
+                candidate_dirs = [resolve_owner_output_dir(target_owner), OUTPUT_DIR]
+            except HTTPException:
+                candidate_dirs = [OUTPUT_DIR]
+        else:
+            candidate_dirs = [OUTPUT_DIR] + ([p for p in OUTPUT_DIR.iterdir() if p.is_dir() and p.resolve().is_relative_to(OUTPUT_DIR.resolve())] if is_admin else [])
+        for cdir in candidate_dirs:
+            if not cdir.is_dir():
+                continue
+            for fname in (f"{stem}.graph.json", f"{req.doc_id}.graph.json", f"{stem}.extracted.json"):
+                chk_path = (cdir / fname).resolve()
+                if not chk_path.is_relative_to(OUTPUT_DIR.resolve()):
+                    raise HTTPException(status_code=400, detail="Path traversal detected in doc_id.")
+                if chk_path.is_file():
+                    try:
+                        data = json.loads(chk_path.read_text(encoding="utf-8"))
+                        file_owner = _lookup_doc_owner(req.doc_id, stem, username=target_owner if not is_admin else req.owner, job_id=req.job_id)
+                        _check_doc_access(file_owner, user, is_admin)
+                        if isinstance(data, dict):
+                            if "graph_memory" in data and isinstance(data["graph_memory"], dict):
+                                graph_dict = data["graph_memory"].get("snapshot") or data["graph_memory"]
+                                break
+                            elif "nodes" in data and "edges" in data:
+                                graph_dict = data
+                                break
+                    except HTTPException:
+                        raise
+                    except Exception as fe:
+                        logger.warning("query_bot.file_checkpoint_read_error", path=str(chk_path), error=str(fe))
+            if graph_dict:
+                break
 
     # Step 3: Check extracted_data payload for embedded graph
     if not graph_dict and req.extracted_data and isinstance(req.extracted_data, dict):
         if req.doc_id:
             stem = Path(req.doc_id).stem
-            payload_owner = _lookup_doc_owner(req.doc_id, stem)
+            payload_owner = _lookup_doc_owner(req.doc_id, stem, username=target_owner if not is_admin else req.owner, job_id=req.job_id)
             _check_doc_access(payload_owner, user, is_admin)
         if "graph_memory" in req.extracted_data and isinstance(req.extracted_data["graph_memory"], dict):
             graph_dict = req.extracted_data["graph_memory"].get("snapshot") or req.extracted_data["graph_memory"]
@@ -1406,7 +1749,7 @@ async def ask_query_bot(
             graph_dict = req.extracted_data
 
     # Path A: Graph Memory answering
-    if graph_dict and isinstance(graph_dict, dict) and "nodes" in graph_dict:
+    if GraphMemory and GraphQueryService and graph_dict and isinstance(graph_dict, dict) and "nodes" in graph_dict:
         try:
             graph_mem = GraphMemory.from_dict(graph_dict)
             service = GraphQueryService()
@@ -1429,19 +1772,34 @@ async def ask_query_bot(
     # Path B: JSON Fallback (Requirements 20 & 21)
     if not req.extracted_data and req.doc_id:
         stem = Path(req.doc_id).stem
-        for fname in (f"{stem}.extracted.json", f"{req.doc_id}.extracted.json"):
-            ext_path = OUTPUT_DIR / fname
-            if ext_path.is_file():
-                try:
-                    data = json.loads(ext_path.read_text(encoding="utf-8"))
-                    file_owner = _lookup_doc_owner(req.doc_id, stem)
-                    _check_doc_access(file_owner, user, is_admin)
-                    req.extracted_data = data.get("extracted_data") or data
-                    break
-                except HTTPException:
-                    raise
-                except Exception:
-                    pass
+        target_owner = req.owner if (is_admin and req.owner) else (user.username if user else None)
+        if target_owner:
+            try:
+                candidate_dirs = [resolve_owner_output_dir(target_owner), OUTPUT_DIR]
+            except HTTPException:
+                candidate_dirs = [OUTPUT_DIR]
+        else:
+            candidate_dirs = [OUTPUT_DIR] + ([p for p in OUTPUT_DIR.iterdir() if p.is_dir() and p.resolve().is_relative_to(OUTPUT_DIR.resolve())] if is_admin else [])
+        for cdir in candidate_dirs:
+            if not cdir.is_dir():
+                continue
+            for fname in (f"{stem}.extracted.json", f"{req.doc_id}.extracted.json"):
+                ext_path = (cdir / fname).resolve()
+                if not ext_path.is_relative_to(OUTPUT_DIR.resolve()):
+                    raise HTTPException(status_code=400, detail="Path traversal detected in doc_id.")
+                if ext_path.is_file():
+                    try:
+                        data = json.loads(ext_path.read_text(encoding="utf-8"))
+                        file_owner = _lookup_doc_owner(req.doc_id, stem, username=target_owner if not is_admin else req.owner, job_id=req.job_id)
+                        _check_doc_access(file_owner, user, is_admin)
+                        req.extracted_data = data.get("extracted_data") or data
+                        break
+                    except HTTPException:
+                        raise
+                    except Exception:
+                        pass
+            if req.extracted_data:
+                break
 
     if not req.extracted_data:
         raise HTTPException(

@@ -13,14 +13,14 @@ from typing import Any, Dict, List, Optional
 import boto3
 
 try:
-    import engine
-except ImportError:
     from . import engine
+except (ImportError, ValueError):
+    import engine  # type: ignore
 
-_s3_client: Optional[Any] = None
+_s3_client: Any = None
 
 
-def get_s3_client():
+def get_s3_client() -> Any:
     global _s3_client
     if _s3_client is None:
         _s3_client = boto3.client("s3")

@@ -48,13 +48,39 @@ def _check_db_url_password(url: str) -> tuple[bool, str]:
         return False, f"Could not parse DATABASE_URL: {exc}"
 
 
+def resolve_app_env() -> str:
+    """
+    Resolves APP_ENV explicitly.
+    If unset and in an AWS runtime (ECS metadata or Lambda function name),
+    defaults to production (fail-closed).
+    If unset and NOT in an AWS runtime, raises ValueError (dev must opt in explicitly).
+    """
+    env = os.getenv("IDP_APP_ENV") or os.getenv("APP_ENV")
+    if env and env.strip():
+        return env.strip().lower()
+
+    is_aws = bool(
+        os.getenv("ECS_CONTAINER_METADATA_URI")
+        or os.getenv("ECS_CONTAINER_METADATA_URI_V4")
+        or os.getenv("AWS_LAMBDA_FUNCTION_NAME")
+        or os.getenv("AWS_EXECUTION_ENV")
+    )
+    if is_aws:
+        return "production"
+
+    raise ValueError(
+        "APP_ENV environment variable is unset. It must be explicitly configured "
+        "(e.g., APP_ENV=development or APP_ENV=production). Dev must opt in explicitly."
+    )
+
+
 @dataclass(frozen=True)
 class Settings:
     # --- Environment ---
-    app_env: str = field(default_factory=lambda: os.getenv("APP_ENV", "development").lower())
+    app_env: str = field(default_factory=resolve_app_env)
 
-    # Which LLM adapter to use: "ollama" | "bedrock" | "mock"
-    llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "ollama"))
+    # Which LLM adapter to use: "bedrock" | "sarvam" | "ollama" | "mock"
+    llm_provider: str = field(default_factory=lambda: os.getenv("IDP_LLM_PROVIDER") or os.getenv("LLM_PROVIDER") or "bedrock")
 
     # --- Ollama ---
     ollama_host: str = field(default_factory=lambda: os.getenv("OLLAMA_HOST", "http://localhost:11434"))
@@ -62,11 +88,15 @@ class Settings:
     ollama_timeout_s: float = field(default_factory=lambda: float(os.getenv("OLLAMA_TIMEOUT_S", "60")))
 
     # --- Bedrock ---
-    bedrock_region: str = field(default_factory=lambda: os.getenv("BEDROCK_REGION", "ap-south-1"))
+    bedrock_region: str = field(default_factory=lambda: os.getenv("IDP_BEDROCK_REGION") or os.getenv("BEDROCK_REGION") or os.getenv("AWS_DEFAULT_REGION") or "ap-south-1")
     bedrock_model_id: str = field(
         default_factory=lambda: os.getenv(
-            "BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"
+            "IDP_BEDROCK_MODEL_ID",
+            os.getenv("BEDROCK_MODEL_ID", "arn:aws:bedrock:ap-south-1:106611079163:application-inference-profile/qdtz23c8eis1"),
         )
+    )
+    bedrock_reasoning_effort: str = field(
+        default_factory=lambda: os.getenv("IDP_BEDROCK_REASONING_EFFORT") or os.getenv("BEDROCK_REASONING_EFFORT") or "low"
     )
 
     # --- Sarvam AI ---

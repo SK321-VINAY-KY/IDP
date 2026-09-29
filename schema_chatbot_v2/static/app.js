@@ -559,7 +559,6 @@
             const descInput = tr.querySelector('.field-desc-input');
 
             const name = nameInput ? nameInput.value.trim().toLowerCase().replace(/[\s-]+/g, '_') : '';
-            if (!name) return;
 
             let rawType = typeSelect ? typeSelect.value : 'string';
             let itemType = null;
@@ -572,7 +571,7 @@
                 name: name,
                 type: rawType,
                 item_type: itemType,
-                required: reqBtn ? reqBtn.classList.contains('is-req') : true,
+                required: reqBtn ? reqBtn.classList.contains('is-req') : false,
                 description: descInput ? descInput.value.trim() : ''
             });
         });
@@ -915,10 +914,18 @@
         $('schemaPanel').addEventListener('click', (e) => {
             const reqToggle = e.target.closest('.req-toggle');
             if (reqToggle) {
-                reqToggle.classList.toggle('is-req');
-                reqToggle.classList.toggle('is-opt');
-                const isReq = reqToggle.classList.contains('is-req');
-                reqToggle.textContent = isReq ? 'YES' : 'NO';
+                const isCurrentlyReq = reqToggle.classList.contains('is-req');
+                const nextReq = !isCurrentlyReq;
+
+                reqToggle.classList.toggle('is-req', nextReq);
+                reqToggle.classList.toggle('is-opt', !nextReq);
+                reqToggle.textContent = nextReq ? 'YES' : 'NO';
+
+                const tr = reqToggle.closest('tr');
+                const idx = tr ? parseInt(tr.getAttribute('data-idx'), 10) : parseInt(reqToggle.getAttribute('data-idx'), 10);
+                if (!isNaN(idx) && state.currentSchema && state.currentSchema.fields && state.currentSchema.fields[idx]) {
+                    state.currentSchema.fields[idx].required = nextReq;
+                }
                 collectSchemaFromInputs();
                 validateAndRefreshUI();
                 return;
@@ -927,7 +934,7 @@
             const delBtn = e.target.closest('.btn-del-field');
             if (delBtn) {
                 const tr = delBtn.closest('tr');
-                const idx = parseInt(tr.getAttribute('data-idx'), 10);
+                const idx = tr ? parseInt(tr.getAttribute('data-idx'), 10) : parseInt(delBtn.getAttribute('data-idx'), 10);
                 if (!isNaN(idx) && state.currentSchema && state.currentSchema.fields) {
                     state.currentSchema.fields.splice(idx, 1);
                     renderSchemaPanel();
@@ -949,51 +956,6 @@
     }
     if ($('downloadSchemaJsonBtn')) {
         $('downloadSchemaJsonBtn').addEventListener('click', () => downloadSchemaJson());
-    }
-
-    if ($('addSchemaFieldBtn')) {
-        $('addSchemaFieldBtn').addEventListener('click', addNewSchemaField);
-    }
-
-    if ($('schemaPanel')) {
-        $('schemaPanel').addEventListener('input', (e) => {
-            if (e.target.matches('#editDocType, .field-name-input, .field-desc-input')) {
-                scheduleSchemaSync();
-            }
-        });
-
-        $('schemaPanel').addEventListener('change', (e) => {
-            if (e.target.matches('.field-type-select')) {
-                scheduleSchemaSync();
-            }
-        });
-
-        $('schemaPanel').addEventListener('click', (e) => {
-            const toggleBtn = e.target.closest('.req-toggle');
-            if (toggleBtn) {
-                const isReq = toggleBtn.classList.contains('is-req');
-                toggleBtn.classList.toggle('is-req', !isReq);
-                toggleBtn.classList.toggle('is-opt', isReq);
-                toggleBtn.textContent = !isReq ? 'YES' : 'NO';
-                scheduleSchemaSync();
-                return;
-            }
-
-            const delBtn = e.target.closest('.btn-del-field');
-            if (delBtn) {
-                const idx = parseInt(delBtn.getAttribute('data-idx'), 10);
-                if (!isNaN(idx) && state.currentSchema && state.currentSchema.fields) {
-                    state.currentSchema.fields.splice(idx, 1);
-                    renderSchemaPanel();
-                    scheduleSchemaSync();
-                }
-                return;
-            }
-
-            if (e.target.matches('#addFieldInlineBtn')) {
-                addNewSchemaField();
-            }
-        });
     }
 
     // Sample inference upload
@@ -1020,7 +982,7 @@
             files.forEach(f => fd.append('files', f, f.name));
             if (state.sessionId) fd.append('session_id', state.sessionId);
 
-            showStatus('inferStatus', 'Running Sarvam Doc AI + schema inference... expect 60-180s for 2 PDFs. Please be patient.', 'warn');
+            showStatus('inferStatus', 'Running Bedrock document analysis + schema inference... Please be patient.', 'warn');
             run.disabled = true;
             const t0 = Date.now();
             try {
@@ -1357,7 +1319,7 @@
             host.innerHTML = `
                 <div class="job-summary-grid">
                     <div class="summary-box"><div class="lbl">Status</div><div class="val">${escapeHtml(j.status)}</div></div>
-                    <div class="summary-box"><div class="lbl">Strategy</div><div class="val" style="font-size:12px; font-weight:600; color:${j.strategy === 'graph_memory' ? '#c084fc' : '#94a3b8'}">${j.strategy === 'graph_memory' ? '🧠 Graph Memory' : '📄 Page Scan'}</div></div>
+                    <div class="summary-box"><div class="lbl">Strategy</div><div class="val" style="font-size:12px; font-weight:600; color:${(j.strategy || '').startsWith('graph_memory') ? '#c084fc' : '#94a3b8'}">${(j.strategy || '').startsWith('graph_memory') ? ((j.strategy === 'graph_memory_concurrent') ? '⚡ Graph Memory Concurrent' : '🧠 Graph Memory') : '📄 Page Scan'}</div></div>
                     <div class="summary-box"><div class="lbl">Docs</div><div class="val">${sucs.length + fails.length} / ${(j.targets || []).length || 0}</div></div>
                     <div class="summary-box"><div class="lbl">Success</div><div class="val" style="color:#6ee7b7">${sucs.length}</div></div>
                     <div class="summary-box"><div class="lbl">Wall time</div><div class="val">${wall}</div></div>
@@ -1373,8 +1335,8 @@
                                     <div class="result-meta">pages: ${s.pages} • conf: ${(s.avg_conf || 0).toFixed(3)} • Layer 1+2: ${s.elapsed_s}s ${s.extract_elapsed_s ? `• Layer 3 (${s.strategy || 'extract'}): ${s.extract_elapsed_s}s` : ''}</div>
                                 </div>
                                 <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
-                                    ${s.strategy === 'graph_memory'
-                                        ? `<span class="badge badge-primary" style="background:rgba(124,58,237,0.2);color:#c084fc;border:1px solid rgba(124,58,237,0.4)">🧠 Graph Memory (${s.graph_nodes || 0} nodes, ${s.graph_edges || 0} edges)</span>`
+                                    ${(s.strategy || '').startsWith('graph_memory')
+                                        ? `<span class="badge badge-primary" style="background:rgba(124,58,237,0.2);color:#c084fc;border:1px solid rgba(124,58,237,0.4)">${s.strategy === 'graph_memory_concurrent' ? '⚡' : '🧠'} ${s.strategy === 'graph_memory_concurrent' ? 'Graph Memory Concurrent' : 'Graph Memory'} (${s.graph_nodes || 0} nodes, ${s.graph_edges || 0} edges)</span>`
                                         : `<span class="badge badge-mute">📄 Classic Page Scan</span>`}
                                     ${s.db_run_id ? `<span class="badge badge-success">PostgreSQL: Run #${s.db_run_id}</span>` : ''}
                                     <span class="result-meta"><code>${escapeHtml(s.md)}</code></span>
@@ -1497,7 +1459,7 @@
                 const fd = new FormData();
                 fd.append('schema_id', schema_id);
                 fd.append('documents', JSON.stringify(selected));
-                const strategy = ($('layer3StrategySelect') && $('layer3StrategySelect').value) || 'graph_memory';
+                const strategy = ($('layer3StrategySelect') && $('layer3StrategySelect').value) || 'graph_memory_concurrent';
                 fd.append('strategy', strategy);
                 const res = await api('/pipeline/run', { method: 'POST', body: fd });
                 btn.textContent = 'Running (job ' + res.job_id + ')...';
@@ -1539,7 +1501,7 @@
 
         try {
             const fd = new FormData();
-            const strategy = ($('userLayer3StrategySelect') && $('userLayer3StrategySelect').value) || 'graph_memory';
+            const strategy = ($('userLayer3StrategySelect') && $('userLayer3StrategySelect').value) || 'graph_memory_concurrent';
             fd.append('strategy', strategy);
             const res = await api('/me/pipeline/run', { method: 'POST', body: fd });
             showStatus('userAutoRunStatus', `✓ Job ${res.job_id} queued for ${res.targets} document(s).`, 'success');
@@ -1869,7 +1831,7 @@
             modeBadge.style.display = 'none';
             return;
         }
-        const isGraph = m.strategy === 'graph_memory' || m.has_graph;
+        const isGraph = (m.strategy || '').startsWith('graph_memory') || m.has_graph;
         modeBadge.style.display = 'inline-block';
         modeBadge.className = 'badge ' + (isGraph ? 'badge-primary' : 'badge-secondary');
         modeBadge.textContent = isGraph ? '⚡ Graph Memory' : '📄 JSON Fallback';
@@ -1903,7 +1865,7 @@
                     doc_id: d.doc_id,
                     stem: d.stem,
                     label: d.label || d.doc_id,
-                    strategy: d.strategy || (d.has_graph ? 'graph_memory' : 'page_scan'),
+                    strategy: d.strategy || (d.has_graph ? 'graph_memory_concurrent' : 'page_scan'),
                     has_graph: !!d.has_graph,
                     has_extracted: !!d.has_extracted,
                     job_id: d.job_id,
@@ -1926,8 +1888,8 @@
                                 qbDocsMap[docId] = {
                                     doc_id: docId,
                                     job_id: j.job_id,
-                                    strategy: s.strategy || j.strategy || 'graph_memory',
-                                    has_graph: (s.strategy || j.strategy) === 'graph_memory',
+                                    strategy: s.strategy || j.strategy || 'graph_memory_concurrent',
+                                    has_graph: (s.strategy || j.strategy || '').startsWith('graph_memory'),
                                 };
                             }
                             qbDocsMap[docId].extracted_data = s.extracted_data;
@@ -1943,8 +1905,8 @@
                             doc_id: j.job_id,
                             job_id: j.job_id,
                             extracted_data: j.extracted_data,
-                            strategy: j.strategy || 'graph_memory',
-                            has_graph: (j.strategy || 'graph_memory') === 'graph_memory',
+                            strategy: j.strategy || 'graph_memory_concurrent',
+                            has_graph: (j.strategy || '').startsWith('graph_memory'),
                         };
                     }
                 });

@@ -95,6 +95,7 @@ def test_docling_handler_mocked_s3(digital_pdf_path):
 # ==============================================================================
 
 def test_paddle_printed_engine_local_path(scanned_pdf_path):
+    pytest.importorskip("paddleocr", reason="paddleocr is only installed inside container")
     results = paddle_printed_engine.process_pdf_pages(scanned_pdf_path, [1])
     assert len(results) == 1
     res = results[0]
@@ -130,6 +131,7 @@ def test_paddle_printed_handler_mocked_s3(scanned_pdf_path):
 # ==============================================================================
 
 def test_paddle_handwritten_engine_local_path(scanned_pdf_path):
+    pytest.importorskip("paddleocr", reason="paddleocr is only installed inside container")
     results = paddle_hand_engine.process_pdf_pages(scanned_pdf_path, [1])
     assert len(results) == 1
     res = results[0]

@@ -31,7 +31,7 @@ def run_command(cmd, cwd=None):
 
 
 def parse_tags(tags_str: str | None) -> dict[str, str]:
-    raw = tags_str or os.getenv("IDP_AWS_TAGS") or "createdby=vinay.k@shellkode.com,customer=internal"
+    raw = tags_str or os.getenv("IDP_AWS_TAGS") or "createdby=vinay.k@shellkode.com,customer=internal,purpose=internal"
     tags = {}
     for part in raw.strip().split(","):
         if "=" in part:
@@ -119,7 +119,7 @@ def main():
     parser = argparse.ArgumentParser(description="Deploy IDP Layer 2 Container Engines & Step Functions")
     parser.add_argument("--profile", default=os.getenv("AWS_PROFILE", "106611079163_SK-ML-Sandbox-team-Ps"))
     parser.add_argument("--region", default=os.getenv("AWS_REGION", "ap-south-1"))
-    parser.add_argument("--tags", default="createdby=vinay.k@shellkode.com,customer=internal")
+    parser.add_argument("--tags", default="createdby=vinay.k@shellkode.com,customer=internal,purpose=internal")
     args = parser.parse_args()
 
     session = boto3.Session(profile_name=args.profile, region_name=args.region) if args.profile else boto3.Session(region_name=args.region)

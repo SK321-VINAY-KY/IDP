@@ -103,7 +103,7 @@ class InMemoryUserStore(UserStore):
         self._users_by_username: Dict[str, User] = {}
 
     def create(self, username: str, password: str, role: Role = Role.USER) -> User:
-        username_clean = (username or "").strip()
+        username_clean = (username or "").strip().lower()
         if not username_clean:
             raise ValueError("username cannot be empty")
         if not password or not str(password).strip():
@@ -124,13 +124,13 @@ class InMemoryUserStore(UserStore):
             role=role,
         )
         self._users_by_id[user.user_id] = user
-        self._users_by_username[user.username] = user
+        self._users_by_username[username_clean] = user
         return user
 
     def get_by_username(self, username: str) -> Optional[User]:
         if not username:
             return None
-        return self._users_by_username.get(username.strip())
+        return self._users_by_username.get(username.strip().lower())
 
     def get(self, user_id: str) -> Optional[User]:
         if not user_id:
@@ -139,12 +139,12 @@ class InMemoryUserStore(UserStore):
 
     def save(self, user: User) -> None:
         self._users_by_id[user.user_id] = user
-        self._users_by_username[user.username] = user
+        self._users_by_username[user.username.strip().lower()] = user
 
     def delete(self, user_id: str) -> None:
         user = self._users_by_id.pop(user_id, None)
         if user:
-            self._users_by_username.pop(user.username, None)
+            self._users_by_username.pop(user.username.strip().lower(), None)
 
     def list_users(self) -> List[User]:
         return list(self._users_by_id.values())
@@ -181,7 +181,7 @@ class JSONFileUserStore(UserStore):
                 try:
                     user = User(**item)
                     self._users_by_id[user.user_id] = user
-                    self._users_by_username[user.username] = user
+                    self._users_by_username[user.username.strip().lower()] = user
                 except Exception as exc:
                     logger.warning("Skipping invalid user entry in %s: %s", self.file_path, exc)
         except json.JSONDecodeError as exc:
@@ -205,7 +205,7 @@ class JSONFileUserStore(UserStore):
             logger.error("Failed to write users to %s: %s", self.file_path, exc)
 
     def create(self, username: str, password: str, role: Role = Role.USER) -> User:
-        username_clean = (username or "").strip()
+        username_clean = (username or "").strip().lower()
         if not username_clean:
             raise ValueError("username cannot be empty")
         if not password or not str(password).strip():
@@ -226,14 +226,14 @@ class JSONFileUserStore(UserStore):
             role=role,
         )
         self._users_by_id[user.user_id] = user
-        self._users_by_username[user.username] = user
+        self._users_by_username[username_clean] = user
         self._save_to_disk()
         return user
 
     def get_by_username(self, username: str) -> Optional[User]:
         if not username:
             return None
-        return self._users_by_username.get(username.strip())
+        return self._users_by_username.get(username.strip().lower())
 
     def get(self, user_id: str) -> Optional[User]:
         if not user_id:
@@ -242,17 +242,152 @@ class JSONFileUserStore(UserStore):
 
     def save(self, user: User) -> None:
         self._users_by_id[user.user_id] = user
-        self._users_by_username[user.username] = user
+        self._users_by_username[user.username.strip().lower()] = user
         self._save_to_disk()
 
     def delete(self, user_id: str) -> None:
         user = self._users_by_id.pop(user_id, None)
         if user:
-            self._users_by_username.pop(user.username, None)
+            self._users_by_username.pop(user.username.strip().lower(), None)
             self._save_to_disk()
 
     def list_users(self) -> List[User]:
         return list(self._users_by_id.values())
+
+
+class PostgresUserStore(UserStore):
+    """
+    Database-backed user storage implementation (PostgreSQL with SQLite resilience fallback).
+    Persists users to the 'users' table using SQLAlchemy.
+    """
+
+    def __init__(self):
+        try:
+            from src.ai.layer3_extraction.storage import init_db, get_session, UserRecord
+            init_db()
+            self._get_session = get_session
+            self._UserRecord = UserRecord
+        except Exception as exc:
+            logger.error("Failed to initialize database engine for PostgresUserStore: %s", exc)
+            raise
+
+    def create(self, username: str, password: str, role: Role = Role.USER) -> User:
+        username_clean = (username or "").strip().lower()
+        if not username_clean:
+            raise ValueError("username cannot be empty")
+        if not password or not str(password).strip():
+            raise ValueError("password cannot be empty")
+
+        if isinstance(role, str):
+            try:
+                role = Role(role)
+            except ValueError:
+                raise ValueError(f"invalid role '{role}'")
+
+        session = self._get_session()
+        try:
+            existing = session.query(self._UserRecord).filter_by(username=username_clean).first()
+            if existing:
+                raise ValueError(f"user with username '{username_clean}' already exists")
+
+            user_id = str(uuid.uuid4())
+            rec = self._UserRecord(
+                user_id=user_id,
+                username=username_clean,
+                hashed_password=get_password_hash(password),
+                role=role.value if isinstance(role, Role) else str(role),
+            )
+            session.add(rec)
+            session.commit()
+            return User(
+                user_id=rec.user_id,
+                username=rec.username,
+                hashed_password=rec.hashed_password,
+                role=Role(rec.role),
+            )
+        finally:
+            session.close()
+
+    def get_by_username(self, username: str) -> Optional[User]:
+        if not username:
+            return None
+        session = self._get_session()
+        try:
+            rec = session.query(self._UserRecord).filter_by(username=username.strip().lower()).first()
+            if not rec:
+                return None
+            return User(
+                user_id=rec.user_id,
+                username=rec.username,
+                hashed_password=rec.hashed_password,
+                role=Role(rec.role),
+            )
+        finally:
+            session.close()
+
+    def get(self, user_id: str) -> Optional[User]:
+        if not user_id:
+            return None
+        session = self._get_session()
+        try:
+            rec = session.query(self._UserRecord).filter_by(user_id=user_id).first()
+            if not rec:
+                return None
+            return User(
+                user_id=rec.user_id,
+                username=rec.username,
+                hashed_password=rec.hashed_password,
+                role=Role(rec.role),
+            )
+        finally:
+            session.close()
+
+    def save(self, user: User) -> None:
+        session = self._get_session()
+        try:
+            rec = session.query(self._UserRecord).filter_by(user_id=user.user_id).first()
+            if rec:
+                rec.username = user.username.strip().lower()
+                rec.hashed_password = user.hashed_password
+                rec.role = user.role.value if isinstance(user.role, Role) else str(user.role)
+                session.commit()
+            else:
+                rec = self._UserRecord(
+                    user_id=user.user_id,
+                    username=user.username.strip().lower(),
+                    hashed_password=user.hashed_password,
+                    role=user.role.value if isinstance(user.role, Role) else str(user.role),
+                )
+                session.add(rec)
+                session.commit()
+        finally:
+            session.close()
+
+    def delete(self, user_id: str) -> None:
+        session = self._get_session()
+        try:
+            rec = session.query(self._UserRecord).filter_by(user_id=user_id).first()
+            if rec:
+                session.delete(rec)
+                session.commit()
+        finally:
+            session.close()
+
+    def list_users(self) -> List[User]:
+        session = self._get_session()
+        try:
+            records = session.query(self._UserRecord).all()
+            return [
+                User(
+                    user_id=r.user_id,
+                    username=r.username,
+                    hashed_password=r.hashed_password,
+                    role=Role(r.role),
+                )
+                for r in records
+            ]
+        finally:
+            session.close()
 
 
 # Process-wide singleton for the user store.
@@ -269,11 +404,29 @@ def get_user_store(file_path: Optional[str | Path] = None) -> UserStore:
     """
     Returns the singleton UserStore instance. Defaults to JSONFileUserStore (backed by data/users.json).
     Seeds the admin account from ADMIN_USERNAME / ADMIN_PASSWORD only if the store is empty.
+    Refuses USER_STORE_TYPE=memory/file when APP_ENV is production/staging.
     """
     global _user_store
     if _user_store is None:
-        store_type = os.getenv("USER_STORE_TYPE", "").lower()
-        if store_type == "memory" and not file_path and not os.getenv("USER_STORE_FILE"):
+        from app.config import resolve_app_env
+        app_env = resolve_app_env()
+
+        store_type = os.getenv("USER_STORE_TYPE", "").strip().lower()
+        if not store_type and not file_path:
+            store_type = "file"
+
+        allow_file_in_prod = os.getenv("ALLOW_FILE_USER_STORE_IN_PROD", "").strip().lower() in ("true", "1", "yes")
+
+        if app_env in ("production", "staging") and not allow_file_in_prod:
+            if store_type in ("memory", "file", ""):
+                raise ValueError(
+                    f"USER_STORE_TYPE='{store_type or 'file'}' is refused in production/staging. "
+                    "A persistent database-backed store (e.g. 'postgres') is required."
+                )
+
+        if store_type in ("postgres", "db", "database"):
+            store = PostgresUserStore()
+        elif store_type == "memory" and not file_path and not os.getenv("USER_STORE_FILE"):
             store = InMemoryUserStore()
         else:
             if file_path is None:
@@ -291,7 +444,6 @@ def get_user_store(file_path: Optional[str | Path] = None) -> UserStore:
             admin_user = os.getenv("ADMIN_USERNAME", "admin")
             admin_pass = os.getenv("ADMIN_PASSWORD", "changeme")
 
-            app_env = os.getenv("APP_ENV", "development").lower()
             if app_env in ("production", "staging"):
                 if not os.getenv("ADMIN_PASSWORD") or os.getenv("ADMIN_PASSWORD") in ("changeme", "admin", "password", "12345"):
                     raise ValueError("ADMIN_PASSWORD must be explicitly set and cannot be 'changeme' in production/staging.")

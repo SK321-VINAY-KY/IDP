@@ -9,7 +9,11 @@ from src.config.settings import settings
 
 
 def get_extraction_client() -> ExtractionLLMClient:
-    if settings.extraction_backend == "sarvam":
+    backend = (settings.extraction_backend or "").lower()
+    if backend == "bedrock":
+        from src.adapters.llm.bedrock_client import BedrockExtractionClient
+        return BedrockExtractionClient()
+    elif backend == "sarvam":
         from src.adapters.llm.sarvam_client import SarvamExtractionClient
         return SarvamExtractionClient()
     else:

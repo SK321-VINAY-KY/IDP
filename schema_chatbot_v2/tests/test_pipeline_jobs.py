@@ -175,3 +175,68 @@ def test_pipeline_status_includes_layer3_strategy(client, auth_headers):
     assert "layer3_strategy" in data
     assert data["layer3_strategy"] == "graph_memory"
 
+
+def test_pipeline_markdown_recovery_when_conversion_empty(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from pathlib import Path
+    from app.api.pipeline_routes import _run_pipeline_job, _pipeline_jobs, _job_controls, JobControl
+    from src.ai.schemas.page import PageOutput
+
+    job_id = "test_recovery_job"
+    doc_stem = "test_doc"
+    fake_pdf = tmp_path / f"{doc_stem}.pdf"
+    fake_pdf.write_bytes(b"%PDF-1.4 test")
+
+    fake_schema_file = tmp_path / "schema_test.json"
+    fake_schema_file.write_text('{"schema_id": "schema_test", "schema": {"fields": [{"name": "patient_name", "description": "Patient Name"}]}}', encoding="utf-8")
+    schema_record = {"schema_id": "schema_test", "schema": {"fields": [{"name": "patient_name", "description": "Patient Name"}]}}
+
+    existing_md_text = "# Test Doc\n<!-- IDP Pipeline Output\nAvg conf: 0.95\n-->\n<!-- PAGE 1 -->\nPatient: John Doe\n<!-- /PAGE 1 -->\n"
+    existing_md_file = tmp_path / f"{doc_stem}.md"
+    existing_md_file.write_text(existing_md_text, encoding="utf-8")
+
+    _pipeline_jobs[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "created_at": "2026-08-29T10:00:00+00:00",
+        "targets": [fake_pdf.name],
+        "successes": [],
+        "failures": [],
+    }
+    _job_controls[job_id] = JobControl()
+
+    mock_output = PageOutput(
+        page_number=1,
+        markdown="",
+        confidence=0.0,
+        engines_used=["paddleocr_printed"],
+        capabilities=["has_printed_scan"],
+        escalated=False,
+        escalation_attempts=0,
+        low_confidence=True,
+    )
+    mock_meta = MagicMock()
+
+    with patch("app.api.pipeline_routes.OUTPUT_DIR", tmp_path), \
+         patch("app.api.pipeline_routes.resolve_owner_output_dir", return_value=tmp_path), \
+         patch("app.api.pipeline_routes._build_pages_for_pdf", return_value=[{"page": 1}]), \
+         patch("app.api.pipeline_routes.process_document", return_value=[(mock_output, mock_meta)]), \
+         patch("src.adapters.llm.extraction_factory.get_extraction_client"), \
+         patch("src.ai.layer3_extraction.extractor.extract_document") as mock_extract, \
+         patch("src.ai.layer3_extraction.storage.save_extraction_run", return_value=99), \
+         patch("src.ai.layer3_extraction.storage.save_markdown_record", return_value=1):
+
+        mock_extract_result = MagicMock()
+        mock_extract_result.model_dump.return_value = {"patient_name": "John Doe"}
+        mock_extract.return_value = mock_extract_result
+
+        _run_pipeline_job(job_id, [fake_pdf], fake_schema_file, schema_record)
+
+        assert len(_pipeline_jobs[job_id]["successes"]) == 1
+        success = _pipeline_jobs[job_id]["successes"][0]
+        assert success["chars"] > 0
+        assert success["extracted_data"] == {"patient_name": "John Doe"}
+        assert existing_md_file.read_text(encoding="utf-8") == existing_md_text
+
+
+

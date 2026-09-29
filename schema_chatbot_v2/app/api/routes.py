@@ -19,8 +19,8 @@ from app.core.validator import validate_schema
 from app.llm.factory import get_llm_adapter
 from app.models.api_models import ChatRequest, ChatResponse, UpdateSchemaRequest
 from app.output.schema_renderer import render_json, render_pdf
-from app.storage.session_store import get_session_store
-from app.storage.user_store import User
+from app.storage.session_store import Session, get_session_store
+from app.storage.user_store import Role, User
 
 SCHEMA_REGISTRY_DIR = Path(__file__).resolve().parents[3] / "schema_registry"
 if not SCHEMA_REGISTRY_DIR.exists():
@@ -64,6 +64,16 @@ def _to_response(result: TurnResult) -> ChatResponse:
     )
 
 
+def _check_session_access(session: Session, user: User) -> None:
+    role_val = getattr(user.role, "value", user.role)
+    is_admin = (role_val == "admin" or user.role == Role.ADMIN)
+    if session.owner and session.owner != user.username and not is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: session belongs to another user.",
+        )
+
+
 @router.post("/chat", response_model=ChatResponse, response_model_by_alias=True)
 async def chat(
     req: ChatRequest,
@@ -79,6 +89,14 @@ async def chat(
             session.owner = user.username
             manager.store.save(session)
         return _to_response(result)
+
+    session = manager.store.get(req.session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    _check_session_access(session, user)
+    if not session.owner:
+        session.owner = user.username
+        manager.store.save(session)
 
     if not req.message:
         raise HTTPException(status_code=400, detail="message is required when session_id is provided")
@@ -100,6 +118,18 @@ async def infer_schema(
     manager: ConversationManager = Depends(get_conversation_manager),
     user: User = Depends(get_current_user),
 ) -> ChatResponse:
+    from app.api.pipeline_routes import check_user_extract_rate_limit, validate_uploaded_pdf
+    check_user_extract_rate_limit(user.username)
+
+    if session_id is not None:
+        existing_sess = manager.store.get(session_id)
+        if existing_sess is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        _check_session_access(existing_sess, user)
+        if not existing_sess.owner:
+            existing_sess.owner = user.username
+            manager.store.save(existing_sess)
+
     if not (MIN_DOCUMENT_SAMPLES <= len(files) <= MAX_DOCUMENT_SAMPLES):
         raise HTTPException(
             status_code=400,
@@ -108,15 +138,13 @@ async def infer_schema(
 
     samples = []
     for f in files:
-        if not (f.filename or "").lower().endswith(".pdf") and f.content_type != "application/pdf":
-            raise HTTPException(status_code=400, detail=f"'{f.filename}' doesn't look like a PDF")
-        content = await f.read()
+        safe_name, content = await validate_uploaded_pdf(f)
         samples.append(content)
 
         # Store input sample document in PostgreSQL
         try:
             from src.ai.layer3_extraction.storage import save_document
-            save_document(filename=f.filename or f"sample_{len(samples)}.pdf", file_bytes=content, content_type=f.content_type or "application/pdf")
+            save_document(filename=safe_name, file_bytes=content, content_type=f.content_type or "application/pdf")
         except Exception:
             pass
 
@@ -145,6 +173,7 @@ def get_session(
     session = manager.store.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
+    _check_session_access(session, user)
     return ChatResponse(
         session_id=session.session_id,
         message="",
@@ -161,12 +190,16 @@ def reset_session(
     manager: ConversationManager = Depends(get_conversation_manager),
     user: User = Depends(get_current_user),
 ) -> ChatResponse:
+    session = manager.store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    _check_session_access(session, user)
     manager.store.delete(session_id)
     result = manager.start_session()
-    session = manager.store.get(result.session_id)
-    if session:
-        session.owner = user.username
-        manager.store.save(session)
+    new_sess = manager.store.get(result.session_id)
+    if new_sess:
+        new_sess.owner = user.username
+        manager.store.save(new_sess)
     return _to_response(result)
 
 
@@ -177,6 +210,10 @@ def update_schema(
     manager: ConversationManager = Depends(get_conversation_manager),
     user: User = Depends(get_current_user),
 ) -> ChatResponse:
+    session = manager.store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    _check_session_access(session, user)
     try:
         result = manager.update_schema_manually(session_id, req.document_type, req.fields)
     except KeyError:
