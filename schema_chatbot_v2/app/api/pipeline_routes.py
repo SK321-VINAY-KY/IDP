@@ -1854,11 +1854,54 @@ async def ask_query_bot(
             or getattr(a_settings, "extraction_backend", None)
             or os.getenv("IDP_EXTRACTION_BACKEND")
             or os.getenv("LLM_PROVIDER")
-            or "sarvam"
-        )
+            or "bedrock"
+        ).lower()
 
         try:
-            if (backend == "sarvam" or api_key) and api_key:
+            if backend == "bedrock":
+                bedrock_model_id = (
+                    getattr(app_settings, "bedrock_model_id", None)
+                    or getattr(a_settings, "bedrock_model_id", None)
+                    or os.getenv("IDP_BEDROCK_MODEL_ID")
+                    or os.getenv("BEDROCK_MODEL_ID")
+                    or "arn:aws:bedrock:ap-south-1:106611079163:application-inference-profile/qdtz23c8eis1"
+                )
+                bedrock_region = (
+                    getattr(app_settings, "bedrock_region", None)
+                    or getattr(a_settings, "bedrock_region", None)
+                    or os.getenv("IDP_BEDROCK_REGION")
+                    or os.getenv("BEDROCK_REGION")
+                    or os.getenv("AWS_DEFAULT_REGION")
+                    or "ap-south-1"
+                )
+                import boto3
+                profile = os.getenv("AWS_PROFILE") or os.getenv("IDP_AWS_PROFILE")
+                if profile:
+                    b_client = boto3.Session(profile_name=profile, region_name=bedrock_region).client("bedrock-runtime", region_name=bedrock_region)
+                else:
+                    b_client = boto3.client("bedrock-runtime", region_name=bedrock_region)
+
+                kwargs = {
+                    "modelId": bedrock_model_id,
+                    "messages": [{"role": "user", "content": [{"text": prompt}]}],
+                    "inferenceConfig": {"temperature": 0.2, "maxTokens": 600},
+                }
+                effort = getattr(app_settings, "bedrock_reasoning_effort", None) or getattr(a_settings, "bedrock_reasoning_effort", None) or "low"
+                if effort and ("gpt-oss" in bedrock_model_id.lower() or "qdtz23c8eis1" in bedrock_model_id):
+                    kwargs["additionalModelRequestFields"] = {"reasoning_effort": effort}
+
+                try:
+                    b_resp = b_client.converse(**kwargs)
+                except Exception:
+                    kwargs.pop("additionalModelRequestFields", None)
+                    b_resp = b_client.converse(**kwargs)
+
+                content = b_resp.get("output", {}).get("message", {}).get("content", [])
+                text = next((block["text"] for block in content if isinstance(block, dict) and "text" in block), "")
+                if text.strip():
+                    return text.strip()
+
+            elif (backend == "sarvam" or api_key) and api_key:
                 payload = {
                     "model": model_name,
                     "messages": [
@@ -1901,24 +1944,38 @@ async def ask_query_bot(
                 if resp.status_code in (401, 402, 403):
                     return f"Sarvam API Auth Error ({resp.status_code}): {resp.text}"
 
-            # Fallback to Ollama
-            ollama_url = getattr(a_settings, "ollama_base_url", "http://localhost:11434/v1").rstrip("/v1")
-            ollama_model = getattr(a_settings, "extraction_model_name", "llama3.1")
-            resp = httpx.post(
-                f"{ollama_url}/api/generate",
-                json={
-                    "model": ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                },
-                timeout=30.0,
-            )
-            if resp.status_code == 200:
-                return resp.json().get("response", "").strip()
-            return f"LLM error: HTTP {resp.status_code}"
+            elif backend == "ollama":
+                # Fallback to Ollama (only if explicitly requested)
+                ollama_url = getattr(a_settings, "ollama_base_url", "http://localhost:11434/v1").rstrip("/v1")
+                ollama_model = getattr(a_settings, "extraction_model_name", "llama3.1")
+                resp = httpx.post(
+                    f"{ollama_url}/api/generate",
+                    json={
+                        "model": ollama_model,
+                        "prompt": prompt,
+                        "stream": False,
+                    },
+                    timeout=30.0,
+                )
+                if resp.status_code == 200:
+                    return resp.json().get("response", "").strip()
+                return f"LLM error: HTTP {resp.status_code}"
+            else:
+                pass
         except Exception as e:
-            logger.error("query_bot.failed", error=str(e))
-            return f"Error communicating with LLM: {str(e)}"
+            logger.warning("query_bot.llm_call_failed", error=str(e))
+
+        # Deterministic extraction fallback from extracted_data if LLM was unavailable
+        try:
+            extracted_dict = req.extracted_data if isinstance(req.extracted_data, dict) else {}
+            norm_q = req.question.lower()
+            for k, v in extracted_dict.items():
+                if k.replace("_", " ") in norm_q or norm_q in str(v).lower():
+                    return f"{k.replace('_', ' ').title()}: {v}"
+        except Exception:
+            pass
+
+        return f"Error communicating with LLM: {str(e)}" if "e" in locals() else "Unable to answer: no response from primary LLM provider."
 
     try:
         answer = await run_in_threadpool(_query_llm)

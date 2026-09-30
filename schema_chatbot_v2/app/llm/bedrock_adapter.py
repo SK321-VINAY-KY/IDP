@@ -14,6 +14,7 @@ parsing against a real Bedrock account before relying on it in production.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any, Dict, List
 
@@ -92,10 +93,10 @@ class BedrockAdapter(LLMAdapter):
     def __init__(self, region: str | None = None, model_id: str | None = None):
         self.region = region or settings.bedrock_region
         self.model_id = model_id or settings.bedrock_model_id
-        self._client = None  # lazy, so importing this module doesn't require boto3/creds
+        self._client: Any = None  # lazy, so importing this module doesn't require boto3/creds
 
     @property
-    def client(self):
+    def client(self) -> Any:
         if self._client is None:
             import boto3  # local import: keep boto3 optional unless bedrock is actually used
             profile = os.getenv("AWS_PROFILE") or os.getenv("IDP_AWS_PROFILE")
@@ -228,7 +229,7 @@ class BedrockAdapter(LLMAdapter):
         try:
             import fitz
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            texts = [page.get_text() for page in doc]
+            texts: list[str] = [str(page.get_text()) for page in doc]
             return "\n".join(texts)
         except Exception:
             return pdf_bytes.decode("utf-8", errors="replace")[:10000]
@@ -241,8 +242,23 @@ class BedrockAdapter(LLMAdapter):
 
     @staticmethod
     def _extract_tool_input(response: Dict[str, Any]) -> Dict[str, Any]:
-        content = response["output"]["message"]["content"]
+        content = response.get("output", {}).get("message", {}).get("content", [])
         for block in content:
-            if "toolUse" in block:
-                return block["toolUse"]["input"]
-        raise ValueError("no toolUse block in Bedrock response")
+            if isinstance(block, dict) and "toolUse" in block:
+                return block["toolUse"].get("input", {})
+        # Fallback: check if model returned JSON in a text block
+        import json
+        for block in content:
+            if isinstance(block, dict) and "text" in block:
+                raw = block["text"].strip()
+                raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+                raw = re.sub(r"\s*```$", "", raw).strip()
+                start = raw.find("{")
+                end = raw.rfind("}")
+                if start != -1 and end != -1:
+                    try:
+                        return json.loads(raw[start : end + 1])
+                    except Exception:
+                        pass
+        raise ValueError("no toolUse or valid JSON block in Bedrock response")
+

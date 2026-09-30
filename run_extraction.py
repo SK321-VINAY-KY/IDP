@@ -60,8 +60,8 @@ def main():
     parser = argparse.ArgumentParser(description="Run Layer 3 extraction from fixture + schema files")
     parser.add_argument("--doc",      default="sdg_goals_output", help="Fixture doc name (no .md)")
     parser.add_argument("--schema",   default="schema", help="Schema file name (no .json)")
-    parser.add_argument("--strategy", default=getattr(settings, "layer3_strategy", "page_scan"),
-                        choices=["page_scan", "graph_memory"], help="Layer 3 strategy")
+    parser.add_argument("--strategy", default=getattr(settings, "layer3_strategy", "graph_memory_concurrent"),
+                        choices=["page_scan", "graph_memory", "graph_memory_concurrent"], help="Layer 3 strategy")
     args = parser.parse_args()
 
     print(f"Doc      : tests/fixtures/{args.doc}.md")
@@ -94,7 +94,10 @@ def main():
         schema_name=args.schema,
         result_json=result.model_dump(),
         llm_provider=settings.extraction_backend,
-        model_name=settings.extraction_model_name if settings.extraction_backend == "ollama" else settings.sarvam_model_name,
+        model_name=(
+            settings.bedrock_model_id if settings.extraction_backend == "bedrock"
+            else (settings.sarvam_model_name if settings.extraction_backend == "sarvam" else settings.extraction_model_name)
+        ),
         processing_time_seconds=elapsed,
         page_outputs=None,   # fixture run — no real PageOutput objects
     )

@@ -31,7 +31,7 @@ from PIL import Image
 # Silence structured JSON logs for clean output
 logging.disable(logging.CRITICAL)
 
-from src.adapters.llm.ollama_client import OllamaClient
+from src.adapters.llm.bedrock_client import BedrockLLMClient
 from src.ai.layer1_routing.inspect import inspect_page
 from src.ai.layer1_routing.router import route_from_profile
 from src.ai.layer2_conversion.scanned import convert_handwritten_via_paddle
@@ -75,7 +75,7 @@ def section(title: str):
 # Test A — classify_page()
 # ---------------------------------------------------------------------------
 
-def test_a_classify_page(client: OllamaClient, page, png_bytes: bytes) -> bool:
+def test_a_classify_page(client: BedrockLLMClient, page, png_bytes: bytes) -> bool:
     section("TEST A — classify_page() via OllamaClient")
     print(f"  Model    : {settings.vlm_model_name}")
     print(f"  Endpoint : {settings.ollama_base_url}")
@@ -127,7 +127,7 @@ def test_a_classify_page(client: OllamaClient, page, png_bytes: bytes) -> bool:
 # Test B — vlm_transcribe escalation
 # ---------------------------------------------------------------------------
 
-def test_b_vlm_transcribe(client: OllamaClient, arr: np.ndarray, png_bytes: bytes) -> bool:
+def test_b_vlm_transcribe(client: BedrockLLMClient, arr: np.ndarray, png_bytes: bytes) -> bool:
     section("TEST B — vlm_transcribe escalation via OllamaClient")
 
     # Step 1: run PaddleOCR to get a real confidence value
@@ -221,7 +221,7 @@ def main():
     page, arr, png_bytes, doc = render_page(PDF_HW, page_index=0)
 
     # Instantiate client
-    client = OllamaClient()
+    client = BedrockLLMClient()
 
     # Run tests
     result_a = test_a_classify_page(client, page, png_bytes)

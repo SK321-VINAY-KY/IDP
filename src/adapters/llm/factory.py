@@ -17,24 +17,11 @@ logger = get_logger(__name__)
 def get_llm_client() -> Any:
     """Return an `LLMClient` instance for the configured provider.
 
-    Supported providers: 'ollama', 'gemini'.
+    Supported provider: 'bedrock'.
     """
-    provider = (settings.llm_provider or "").lower()
-    if provider == "ollama":
-        from src.adapters.llm.ollama_client import OllamaClient
+    from src.adapters.llm.bedrock_client import BedrockLLMClient
 
-        logger.info("llm.factory.selected", provider="ollama")
-        return OllamaClient()
+    provider = (settings.llm_provider or "bedrock").lower()
+    logger.info("llm.factory.selected", provider=provider)
+    return BedrockLLMClient()
 
-    if provider == "gemini":
-        from src.adapters.llm.gemini_client import GeminiClient
-
-        logger.info("llm.factory.selected", provider="gemini")
-    if provider in ("bedrock", "sarvam"):
-        if getattr(settings, "gemini_api_key", None):
-            from src.adapters.llm.gemini_client import GeminiClient
-            return GeminiClient()
-        from src.adapters.llm.ollama_client import OllamaClient
-        return OllamaClient()
-
-    raise ValueError(f"Unsupported llm_provider: {settings.llm_provider!r}")

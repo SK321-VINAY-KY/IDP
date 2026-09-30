@@ -10,12 +10,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/schema_chatbot_v2:/app
 
-# Install system dependencies required for psycopg2, PyMuPDF, and healthcheck
+# Install system dependencies required for psycopg2, PyMuPDF, PaddleOCR, and healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
     curl \
     ca-certificates \
+    libgl1 \
+    libglib2.0-0 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

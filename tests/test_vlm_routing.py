@@ -9,9 +9,11 @@ from src.ai.schemas.page import PageClassification, PageProfile, VLMAnalysis
 
 
 class FakeLLM(LLMClient):
-    def __init__(self, analysis):
+    def __init__(self, analysis=None, transcribe_result=("vlm fallback text", 0.92)):
         self.analysis = analysis
         self.analysis_calls = 0
+        self.transcribe_result = transcribe_result
+        self.transcribe_calls = 0
 
     def analyze_page(self, image_bytes, page_profile_hint):
         self.analysis_calls += 1
@@ -21,7 +23,8 @@ class FakeLLM(LLMClient):
         raise AssertionError("legacy classifier should not be called")
 
     def transcribe_handwriting(self, image_bytes):
-        raise AssertionError("VLM transcription fallback should not be called")
+        self.transcribe_calls += 1
+        return self.transcribe_result
 
 
 def scanned_profile():
@@ -42,21 +45,75 @@ def run_page(monkeypatch, client, **kwargs):
     )
 
 
-def test_high_confidence_vlm_direct_is_terminal(monkeypatch):
-    client = FakeLLM(VLMAnalysis(
-        can_extract_directly=True, confidence=0.95,
-        detected_capabilities={"ocr"}, required_capabilities={"ocr"},
-        extracted_markdown="printed text",
-    ))
-    monkeypatch.setattr(pipeline, "_run_engine_task", lambda *args: (_ for _ in ()).throw(
-        AssertionError("specialized engine must not run")))
+def test_paddle_is_routed_first_and_vlm_not_called_when_confident(monkeypatch):
+    class NoVlmLLM(FakeLLM):
+        def transcribe_handwriting(self, image_bytes):
+            raise AssertionError("VLM must not be called when PaddleOCR succeeds with confidence >= 0.75")
 
+    client = NoVlmLLM()
+    calls = []
+
+    def fake_engine(task, context, llm):
+        calls.append(task.engine)
+        return "paddle text", 0.90, 1.0
+
+    monkeypatch.setattr(pipeline, "_run_engine_task", fake_engine)
     output, metadata = run_page(monkeypatch, client)
 
-    assert output.markdown == "printed text"
-    assert output.engines_used == ["vlm_direct"]
-    assert metadata.engine_plan == ["vlm_direct"]
-    assert client.analysis_calls == 1
+    assert output.markdown == "paddle text"
+    assert output.confidence == 0.90
+    assert output.engines_used == ["paddleocr_printed"]
+    assert calls == ["paddleocr_printed"]
+    assert output.escalated is False
+    assert client.transcribe_calls == 0
+
+
+def test_escalation_to_vlm_when_paddle_has_low_confidence(monkeypatch):
+    client = FakeLLM(transcribe_result=("vlm clean transcription", 0.95))
+    calls = []
+
+    def fake_engine(task, context, llm):
+        calls.append(task.engine)
+        if task.engine == "paddleocr_printed":
+            return "low conf paddle text", 0.60, 1.0
+        elif task.engine == "vlm_transcribe":
+            text, conf = llm.transcribe_handwriting(context["image_bytes"])
+            return text, conf, 1.0
+        return "", 0.0, 1.0
+
+    monkeypatch.setattr(pipeline, "_run_engine_task", fake_engine)
+    output, metadata = run_page(monkeypatch, client)
+
+    assert output.markdown == "vlm clean transcription"
+    assert output.confidence == 0.95
+    assert "paddleocr_printed" in calls
+    assert "vlm_transcribe" in calls
+    assert "vlm_transcribe" in output.engines_used
+    assert output.escalated is True
+    assert client.transcribe_calls == 1
+
+
+def test_escalation_to_vlm_when_paddle_fails(monkeypatch):
+    client = FakeLLM(transcribe_result=("vlm fallback after failure", 0.92))
+    calls = []
+
+    def fake_engine(task, context, llm):
+        calls.append(task.engine)
+        if task.engine == "paddleocr_printed":
+            return "", 0.0, 1.0  # Paddle failed
+        elif task.engine == "vlm_transcribe":
+            text, conf = llm.transcribe_handwriting(context["image_bytes"])
+            return text, conf, 1.0
+        return "", 0.0, 1.0
+
+    monkeypatch.setattr(pipeline, "_run_engine_task", fake_engine)
+    output, metadata = run_page(monkeypatch, client)
+
+    assert output.markdown == "vlm fallback after failure"
+    assert output.confidence == 0.92
+    assert "vlm_transcribe" in output.engines_used
+    assert output.escalated is True
+    assert client.transcribe_calls == 1
 
 
 def test_low_confidence_vlm_uses_only_required_ocr(monkeypatch):

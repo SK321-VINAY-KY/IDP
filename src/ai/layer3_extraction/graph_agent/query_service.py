@@ -757,19 +757,6 @@ class GraphQueryService:
                                 q_cleaned = self._sanitize_model_output(q_text)
                                 if q_cleaned and len(q_cleaned) > 15 and not q_cleaned.endswith(":"):
                                     return q_cleaned
-
-            # Ollama fallback
-            ollama_url = getattr(a_settings, "ollama_base_url", "http://localhost:11434/v1").rstrip("/v1")
-            ollama_model = getattr(a_settings, "extraction_model_name", "llama3.1")
-            resp = httpx.post(
-                f"{ollama_url}/api/generate",
-                json={"model": ollama_model, "prompt": f"{context_text}\n\nQuestion: {question}\nAnswer:", "stream": False},
-                timeout=15.0,
-            )
-            if resp.status_code == 200:
-                raw_ans = resp.json().get("response", "").strip()
-                if raw_ans:
-                    return self._sanitize_model_output(raw_ans)
         except Exception as exc:
             logger.warning("graph.query_llm.error_falling_back_to_deterministic", error=str(exc))
 

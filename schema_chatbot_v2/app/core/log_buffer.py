@@ -44,9 +44,30 @@ buf_handler = BufferHandler()
 buf_handler.setFormatter(BufferFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
 logging.getLogger().addHandler(buf_handler)
 
+# Attach RotatingFileHandler so web app & frontend logs are also persisted to logs/pipeline.log on disk
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_LOG_FILE = _PROJECT_ROOT / "logs" / "pipeline.log"
+
+try:
+    _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _file_handler = RotatingFileHandler(
+        str(_LOG_FILE),
+        maxBytes=10_000_000,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    _file_handler.setFormatter(BufferFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(_file_handler)
+except Exception:
+    pass
+
 
 def attach_buf_handler(target_logger: logging.Logger) -> None:
     """Attach buf_handler to any logger so its logs reach the web admin console."""
     if buf_handler not in target_logger.handlers:
         target_logger.addHandler(buf_handler)
+
 

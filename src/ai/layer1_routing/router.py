@@ -32,10 +32,11 @@ _PRI_VLM = 4
 # ---------------------------------------------------------------------------
 # Indic script set (engine deferred — see build guide §9)
 # ---------------------------------------------------------------------------
-_INDIC_SCRIPTS = {
+INDIC_SCRIPTS = {
     "devanagari", "tamil", "bengali", "gujarati",
     "gurmukhi", "kannada", "malayalam", "odia", "telugu",
 }
+_INDIC_SCRIPTS = INDIC_SCRIPTS
 
 
 # ---------------------------------------------------------------------------
@@ -124,11 +125,11 @@ def resolve_route_with_classification(
 def next_escalation_route(current_route: str, reason: str) -> str | None:
     """
     Escalation ladder (single-engine retry path).
-        digital -> scanned -> handwritten -> vlm_transcribe -> None
+    Directly routes to vlm_transcribe when the primary engine fails or has low confidence.
     """
     ladder = {
-        "digital":        "scanned",
-        "scanned":        "handwritten",
+        "digital":        "vlm_transcribe",
+        "scanned":        "vlm_transcribe",
         "handwritten":    "vlm_transcribe",
         "vlm_transcribe": None,
     }

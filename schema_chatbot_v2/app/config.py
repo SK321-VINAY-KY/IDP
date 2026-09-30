@@ -10,9 +10,11 @@ import urllib.parse
 
 from dotenv import load_dotenv
 
-# Load from CWD first, then schema_chatbot_v2 root so env vars are found regardless of launch location
+# Load from CWD first, then schema_chatbot_v2 root and project root so env vars are found regardless of launch location
 load_dotenv()
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+
 
 logger = logging.getLogger(__name__)
 

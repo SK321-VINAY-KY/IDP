@@ -4,7 +4,6 @@ Purpose: Layer 1 Step A — programmatic page inspection (PyMuPDF, no GPU, ~10ms
 Owner: engineer-a@idp-pilot
 Created: 2026-08-19 | Deps: pymupdf (fitz)
 """
-import unicodedata
 from typing import Any
 
 from src.ai.schemas.page import PageProfile
@@ -45,29 +44,30 @@ def detect_unicode_script(words: list) -> str:
 
     if not script_counts:
         return "latin"
-    return max(script_counts, key=script_counts.get)
+    return max(script_counts, key=script_counts.__getitem__)
 
 
 def _detect_tables(page: Any) -> bool:
-    """Heuristic: multiple horizontal + vertical vector lines suggest a table grid."""
-    drawings = page.get_drawings()
-    h_lines = sum(1 for d in drawings if d.get("type") == "l" and _is_horizontal(d))
-    v_lines = sum(1 for d in drawings if d.get("type") == "l" and _is_vertical(d))
-    return h_lines >= 2 and v_lines >= 2
-
-
-def _is_horizontal(drawing: dict) -> bool:
-    items = drawing.get("items", [])
-    if not items:
-        return False
-    return True  # placeholder — real geometry check goes here in full impl
-
-
-def _is_vertical(drawing: dict) -> bool:
-    items = drawing.get("items", [])
-    if not items:
-        return False
-    return True  # placeholder — real geometry check goes here in full impl
+    """Heuristic: multiple horizontal and vertical vector lines or table cell rects suggest a grid."""
+    h_lines = 0
+    v_lines = 0
+    for d in page.get_drawings():
+        for item in d.get("items", []):
+            cmd = item[0]
+            if cmd == "l":  # Line segment: ("l", Point, Point)
+                p1, p2 = item[1], item[2]
+                if abs(p1.y - p2.y) <= 2.0 and abs(p1.x - p2.x) >= 10.0:
+                    h_lines += 1
+                elif abs(p1.x - p2.x) <= 2.0 and abs(p1.y - p2.y) >= 10.0:
+                    v_lines += 1
+            elif cmd == "re":  # Rectangle: ("re", Rect)
+                rect = item[1]
+                if rect.width >= 10.0 and rect.height >= 10.0:
+                    h_lines += 1
+                    v_lines += 1
+            if h_lines >= 2 and v_lines >= 2:
+                return True
+    return False
 
 
 def inspect_page(page: Any, page_number: int) -> PageProfile:

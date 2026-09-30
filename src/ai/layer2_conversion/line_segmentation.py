@@ -30,13 +30,13 @@ def _deskew(
     is negligible (<0.5°) or the rotation fails for any reason, the originals
     are returned unchanged with angle=0.0 — deskew is best-effort.
     """
-    coords = cv2_coords_from_binary(binary)
-    if coords.shape[0] < 50:
-        # Too few text pixels to get a reliable angle estimate
-        return gray, binary, 0.0
-
     try:
         import cv2
+
+        coords = cv2_coords_from_binary(binary)
+        if coords.shape[0] < 50:
+            # Too few text pixels to get a reliable angle estimate
+            return gray, binary, 0.0
 
         rect = cv2.minAreaRect(coords)
         angle = rect[-1]

@@ -173,7 +173,7 @@ def test_pipeline_status_includes_layer3_strategy(client, auth_headers):
     assert resp.status_code == 200
     data = resp.json()
     assert "layer3_strategy" in data
-    assert data["layer3_strategy"] == "graph_memory"
+    assert data["layer3_strategy"] in ("graph_memory", "graph_memory_concurrent")
 
 
 def test_pipeline_markdown_recovery_when_conversion_empty(tmp_path):

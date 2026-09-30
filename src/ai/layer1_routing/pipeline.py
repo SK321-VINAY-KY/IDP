@@ -50,6 +50,7 @@ _ROUTE_TO_ENGINE: dict[str, str] = {
     "vlm_transcribe": "vlm_transcribe",
     "skip":           "skip",
 }
+_ENGINE_TO_ROUTE: dict[str, str] = {v: k for k, v in _ROUTE_TO_ENGINE.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -76,14 +77,16 @@ def _run_engine_task(
 
         elif task.engine == "paddleocr_printed":
             text, conf = convert_scanned_page(
-                page_context["image_array"],
+                page_context.get("image_array"),
                 page_context["page_number"],
+                image_bytes=page_context.get("image_bytes"),
             )
 
         elif task.engine == "paddleocr_handwritten":
             text, conf = convert_handwritten_via_paddle(
-                page_context["image_array"],
+                page_context.get("image_array"),
                 page_context["page_number"],
+                image_bytes=page_context.get("image_bytes"),
             )
 
         elif task.engine == "vlm_transcribe":
@@ -124,13 +127,13 @@ def _run_plan(
     llm_client: LLMClient,
 ) -> list[tuple[EngineTask, str, float, float]]:
     """
-    Execute every task in the plan in priority order.
-    Returns a list of (task, markdown, confidence, latency_ms) for all tasks
-    that produced non-empty output. Empty results are excluded so the merge
-    step only works with real content.
+    Execute the primary task in the plan.
+    Only 1 engine runs initially. If it fails or confidence is below threshold,
+    the pipeline escalates directly to VLM without chaining intermediate OCR engines.
     """
     results: list[tuple[EngineTask, str, float, float]] = []
-    for task in plan:
+    if plan:
+        task = plan[0]
         markdown, confidence, latency_ms = _run_engine_task(task, page_context, llm_client)
         logger.info(
             "pipeline.engine_task_complete",
@@ -142,6 +145,8 @@ def _run_plan(
         )
         if markdown.strip():
             results.append((task, markdown, confidence, latency_ms))
+        else:
+            results.append((task, "", confidence, latency_ms))
     return results
 
 
@@ -327,56 +332,8 @@ def process_page(
     metadata.complexity_score = float(profile.complexity_score)
 
     # ── Steps 2–4: route resolution + engine plan ────────────────────────────
-    specialized_plan = None
     if settings.routing_mode == "capability_based":
         caps = capabilities_from_profile(profile)
-
-        needs_vlm = (
-            not caps.is_blank
-            and not caps.has_indic_script
-            and (caps.has_printed_scan or caps.has_handwriting)
-            and (profile.is_scanned or profile.complexity_score >= 4 or
-                 profile.image_coverage > settings.mixed_content_min_image_coverage)
-        )
-        if needs_vlm:
-            try:
-                analysis = _analyze_with_vlm(llm_client, page_image_bytes, profile)
-                metadata.classification = (
-                    "vlm_direct" if analysis.can_extract_directly else "specialized"
-                )
-                metadata.classification_confidence = analysis.confidence
-                logger.info(
-                    "pipeline.vlm_analysis",
-                    page_number=page_number,
-                    can_extract_directly=analysis.can_extract_directly,
-                    confidence=analysis.confidence,
-                    capabilities=sorted(analysis.required_capabilities),
-                )
-                exact_required = bool(
-                    (extraction_requirements or {}).get("exact_transcription")
-                )
-                if (
-                    analysis.can_extract_directly
-                    and analysis.confidence
-                    >= settings.vlm_direct_extraction_confidence_threshold
-                    and not exact_required
-                    and not analysis.exact_transcription_required
-                    and analysis.extracted_markdown.strip()
-                ):
-                    return _finalize_direct_vlm(
-                        page_number, metadata, analysis, caps, page_start
-                    )
-                caps = capabilities_from_vlm_analysis(profile, analysis)
-                specialized_plan = build_engine_plan(caps)
-            except Exception as exc:
-                logger.warning(
-                    "pipeline.vlm_classify_unavailable",
-                    page_number=page_number,
-                    error=str(exc),
-                    fallback="scanned",
-                )
-                caps = PageCapabilities(has_printed_scan=True)
-
         plan = build_engine_plan(caps)
 
         if not plan:
@@ -393,52 +350,18 @@ def process_page(
     else:
         single_route = route_from_profile(profile)
         if single_route is None:
-            try:
-                analysis = _analyze_with_vlm(llm_client, page_image_bytes, profile)
-                metadata.classification = (
-                    "vlm_direct" if analysis.can_extract_directly else "specialized"
-                )
-                metadata.classification_confidence = analysis.confidence
-                exact_required = bool(
-                    (extraction_requirements or {}).get("exact_transcription")
-                )
-                if (
-                    analysis.can_extract_directly
-                    and analysis.confidence
-                    >= settings.vlm_direct_extraction_confidence_threshold
-                    and not exact_required
-                    and not analysis.exact_transcription_required
-                    and analysis.extracted_markdown.strip()
-                ):
-                    return _finalize_direct_vlm(
-                        page_number,
-                        metadata,
-                        analysis,
-                        capabilities_from_profile(profile),
-                        page_start,
-                    )
-                caps = capabilities_from_vlm_analysis(profile, analysis)
-                planned = build_engine_plan(caps)
-                specialized_plan = planned
-                engine_to_route = {v: k for k, v in _ROUTE_TO_ENGINE.items()}
-                single_route = (
-                    engine_to_route.get(planned[0].engine, "scanned")
-                    if planned
-                    else "scanned"
-                )
-            except Exception as exc:
-                logger.warning(
-                    "pipeline.vlm_classify_unavailable",
-                    page_number=page_number,
-                    error=str(exc),
-                    fallback="scanned",
-                )
+            # Default: route scanned, complex, or image-heavy pages directly to PaddleOCR first
+            if (
+                profile.is_scanned
+                or profile.complexity_score >= 4
+                or profile.image_coverage > settings.mixed_content_min_image_coverage
+            ):
                 single_route = "scanned"
+            else:
+                single_route = "digital"
 
-        if specialized_plan is None:
-            caps = capabilities_from_profile(profile)
-
-        plan = specialized_plan or [EngineTask(
+        caps = capabilities_from_profile(profile)
+        plan = [EngineTask(
             engine=_ROUTE_TO_ENGINE.get(single_route, single_route),
             priority=1,
             reason=f"single_engine:{single_route}",
@@ -455,10 +378,12 @@ def process_page(
     for cap in caps.active_capabilities():
         metadata.add_capability(cap)
 
+    primary_task = plan[0] if plan else None
+    planned_engines = [primary_task.engine] if primary_task else []
     metadata.set_routing(
-        engine_plan=[t.engine for t in plan],
+        engine_plan=planned_engines,
         routing_mode=settings.routing_mode,
-        selected_engine=plan[0].engine if plan else None,
+        selected_engine=primary_task.engine if primary_task else None,
     )
 
     # ── Step 5 + 6: run plan and merge ──────────────────────────────────────
@@ -477,30 +402,22 @@ def process_page(
     markdown, confidence, engines_used = _merge_results(raw_results)
 
     # ── Step 7: escalation fallback ─────────────────────────────────────────
+    # Only 1 engine runs initially; if confidence < threshold or text is empty,
+    # route directly to VLM without chaining intermediate OCR rungs.
     escalation_attempts = 0
     escalated = False
 
-    _engine_to_route = {v: k for k, v in _ROUTE_TO_ENGINE.items()}
-    primary_engine = plan[0].engine if plan else "skip"
-    current_route = _engine_to_route.get(primary_engine, "scanned")
+    primary_engine = primary_task.engine if primary_task else "skip"
+    current_route = _ENGINE_TO_ROUTE.get(primary_engine, "scanned")
+    engines_attempted = {primary_engine} | set(engines_used)
 
     while (
-        confidence < settings.escalation_confidence_threshold
+        (confidence < settings.escalation_confidence_threshold or not markdown.strip())
         and escalation_attempts < settings.max_escalation_attempts
     ):
         next_route = next_escalation_route(
-            current_route, reason=f"merged_confidence={confidence:.2f}"
+            current_route, reason=f"confidence={confidence:.2f} < threshold={settings.escalation_confidence_threshold}"
         )
-        tried_rungs = 0
-        while next_route is not None and tried_rungs < 4:
-            escalation_engine = _ROUTE_TO_ENGINE.get(next_route, next_route)
-            if escalation_engine not in engines_used:
-                break
-            next_route = next_escalation_route(
-                next_route, reason=f"skip_already_ran={escalation_engine}"
-            )
-            tried_rungs += 1
-
         if next_route is None:
             logger.warning(
                 "pipeline.escalation_terminal",
@@ -511,6 +428,9 @@ def process_page(
             break
 
         escalation_engine = _ROUTE_TO_ENGINE.get(next_route, next_route)
+        if escalation_engine in engines_attempted:
+            break
+        engines_attempted.add(escalation_engine)
 
         esc_task = EngineTask(
             engine=escalation_engine,
@@ -539,8 +459,20 @@ def process_page(
         )
 
         if esc_markdown.strip():
-            all_results = raw_results + [(esc_task, esc_markdown, esc_confidence, esc_latency)]
-            markdown, confidence, engines_used = _merge_results(all_results)
+            if escalation_engine == "vlm_transcribe":
+                # VLM provides full-page transcription. When escalating because Paddle OCR failed
+                # or had low confidence (< 0.75), VLM's markdown takes precedence.
+                if esc_confidence >= confidence or not markdown.strip():
+                    markdown = esc_markdown
+                    confidence = esc_confidence
+                    if escalation_engine not in engines_used:
+                        engines_used.append(escalation_engine)
+                else:
+                    if escalation_engine not in engines_used:
+                        engines_used.append(escalation_engine)
+            else:
+                all_results = raw_results + [(esc_task, esc_markdown, esc_confidence, esc_latency)]
+                markdown, confidence, engines_used = _merge_results(all_results)
 
         escalation_attempts += 1
         escalated = True
@@ -601,6 +533,7 @@ def process_document(
     write_output: bool = False,
     output_dir: str | None = None,
     overwrite: bool = True,
+    extraction_requirements: dict | None = None,
 ) -> list[tuple[PageOutput, PageMetadata]]:
     """
     Process every page in a document.
@@ -616,17 +549,46 @@ def process_document(
     Returns a list of (PageOutput, PageMetadata) pairs, one per page.
     """
     results: list[tuple[PageOutput, PageMetadata]] = []
-    for page_data in pages:
-        output, metadata = process_page(
-            page=page_data["page"],
-            page_number=page_data["page_number"],
-            page_context=page_data["context"],
-            llm_client=page_data.get("llm_client", llm_client),
-            page_image_bytes=page_data["image_bytes"],
-            document_name=document_name,
-            document_id=document_id,
+    concurrency_limit = max(1, getattr(settings, "page_concurrency_limit", 25))
+
+    if len(pages) <= 1 or concurrency_limit == 1:
+        for page_data in pages:
+            output, metadata = process_page(
+                page=page_data["page"],
+                page_number=page_data["page_number"],
+                page_context=page_data["context"],
+                llm_client=page_data.get("llm_client", llm_client),
+                page_image_bytes=page_data["image_bytes"],
+                document_name=document_name,
+                document_id=document_id,
+                extraction_requirements=page_data.get("extraction_requirements", extraction_requirements),
+            )
+            results.append((output, metadata))
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _worker(page_data: dict) -> tuple[PageOutput, PageMetadata]:
+            return process_page(
+                page=page_data["page"],
+                page_number=page_data["page_number"],
+                page_context=page_data["context"],
+                llm_client=page_data.get("llm_client", llm_client),
+                page_image_bytes=page_data["image_bytes"],
+                document_name=document_name,
+                document_id=document_id,
+                extraction_requirements=page_data.get("extraction_requirements", extraction_requirements),
+            )
+
+        max_workers = min(len(pages), concurrency_limit)
+        logger.info(
+            "pipeline.concurrent_pages_start",
+            page_count=len(pages),
+            workers=max_workers,
+            document=document_name,
         )
-        results.append((output, metadata))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Map preserves original page ordering (page 1, 2, 3...)
+            results = list(executor.map(_worker, pages))
 
     outputs  = [r[0] for r in results]
     multi_engine_pages = sum(1 for o in outputs if len(o.engines_used) > 1)

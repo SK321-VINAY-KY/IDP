@@ -290,8 +290,12 @@ def run_layer3_only(
             page_count=len(pages),
             schema_name=schema_name,
             result_json=extracted_dict,
-            llm_provider=getattr(settings, "extraction_backend", "sarvam"),
-            model_name=getattr(settings, "sarvam_model_name", "sarvam-105b"),
+            llm_provider=getattr(settings, "extraction_backend", "bedrock"),
+            model_name=(
+                getattr(settings, "bedrock_model_id", "arn:aws:bedrock:ap-south-1:106611079163:application-inference-profile/qdtz23c8eis1")
+                if getattr(settings, "extraction_backend", "bedrock") == "bedrock"
+                else getattr(settings, "sarvam_model_name", "sarvam-105b")
+            ),
             processing_time_seconds=elapsed,
             page_outputs=None,
         )
@@ -367,11 +371,7 @@ def ask_query_bot(
         }
 
     # Mode 2: Extracted JSON Fallback assistant
-    import httpx
-    api_key = os.getenv("IDP_SARVAM_API_KEY") or os.getenv("SARVAM_API_KEY") or ""
-    base_url = (os.getenv("IDP_SARVAM_BASE_URL") or os.getenv("SARVAM_BASE_URL") or "https://api.sarvam.ai/v1").rstrip("/")
-    model_name = os.getenv("IDP_SARVAM_MODEL_NAME") or os.getenv("SARVAM_MODEL") or "sarvam-105b"
-
+    backend = getattr(settings, "extraction_backend", "bedrock").lower()
     data_json = json.dumps(extracted_data or {}, indent=2)
     prompt = (
         "You are a factual document QA assistant. Answer the user's question directly based on the extracted data below.\n\n"
@@ -380,7 +380,42 @@ def ask_query_bot(
         "Provide a concise, direct answer in 1 or 2 sentences."
     )
 
-    if api_key:
+    if backend == "bedrock":
+        try:
+            import boto3
+            bedrock_model_id = getattr(settings, "bedrock_model_id", "arn:aws:bedrock:ap-south-1:106611079163:application-inference-profile/qdtz23c8eis1")
+            bedrock_region = getattr(settings, "bedrock_region", "ap-south-1")
+            profile = os.getenv("AWS_PROFILE") or os.getenv("IDP_AWS_PROFILE")
+            if profile:
+                b_client = boto3.Session(profile_name=profile, region_name=bedrock_region).client("bedrock-runtime", region_name=bedrock_region)
+            else:
+                b_client = boto3.client("bedrock-runtime", region_name=bedrock_region)
+            kwargs = {
+                "modelId": bedrock_model_id,
+                "messages": [{"role": "user", "content": [{"text": prompt}]}],
+                "inferenceConfig": {"temperature": 0.0, "maxTokens": 400},
+            }
+            effort = getattr(settings, "bedrock_reasoning_effort", "low")
+            if effort and ("gpt-oss" in bedrock_model_id.lower() or "qdtz23c8eis1" in bedrock_model_id):
+                kwargs["additionalModelRequestFields"] = {"reasoning_effort": effort}
+            try:
+                b_resp = b_client.converse(**kwargs)
+            except Exception:
+                kwargs.pop("additionalModelRequestFields", None)
+                b_resp = b_client.converse(**kwargs)
+            content = b_resp.get("output", {}).get("message", {}).get("content", [])
+            text = next((block["text"] for block in content if isinstance(block, dict) and "text" in block), "")
+            if text.strip():
+                return {"question": question, "answer": text.strip(), "sources": [], "mode": "bedrock_json_fallback"}
+        except Exception:
+            pass
+
+    import httpx
+    api_key = os.getenv("IDP_SARVAM_API_KEY") or os.getenv("SARVAM_API_KEY") or ""
+    base_url = (os.getenv("IDP_SARVAM_BASE_URL") or os.getenv("SARVAM_BASE_URL") or "https://api.sarvam.ai/v1").rstrip("/")
+    model_name = os.getenv("IDP_SARVAM_MODEL_NAME") or os.getenv("SARVAM_MODEL") or "sarvam-105b"
+
+    if api_key and backend == "sarvam":
         try:
             resp = httpx.post(
                 f"{base_url}/chat/completions",

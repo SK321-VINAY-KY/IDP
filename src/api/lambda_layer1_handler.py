@@ -141,21 +141,22 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             ]
             active_caps = caps.active_capabilities()
             primary_route = plan[0].engine if plan else "skip"
-            needs_vlm = (
-                not caps.is_blank
-                and not caps.has_indic_script
-                and (caps.has_printed_scan or caps.has_handwriting)
-                and (profile.is_scanned or profile.complexity_score >= 4 or
-                     profile.image_coverage > lambda_settings.mixed_content_min_image_coverage)
-            )
+            needs_vlm = False
         else:
             single_route = route_from_profile(profile)
-            primary_route = single_route or "vlm_transcribe"
+            if single_route is None:
+                single_route = "scanned" if (
+                    profile.is_scanned
+                    or profile.complexity_score >= 4
+                    or profile.image_coverage > lambda_settings.mixed_content_min_image_coverage
+                ) else "digital"
+            primary_route = single_route
             tasks = [
                 {"engine": primary_route, "priority": 1, "reason": "single_engine_route"}
             ]
-            active_caps = ["has_digital_text"] if profile.has_text else ["has_printed_scan"]
-            needs_vlm = (single_route is None or profile.complexity_score >= 4)
+            caps = capabilities_from_profile(profile)
+            active_caps = caps.active_capabilities()
+            needs_vlm = False
 
         logger.info(
             "layer1.page_routed",

@@ -23,15 +23,12 @@ from src.ai.schemas.page import PageClassification, PageProfile
 from src.config.settings import settings
 from src.utils.logger import get_logger
 
-logger = get_logger(__name__)
+from src.ai.layer1_routing.router import (
+    INDIC_SCRIPTS as _INDIC_SCRIPTS,
+    is_mixed_content as _is_mixed_content_signal,
+)
 
-# Skip and Indic decisions sit outside the capability vocabulary (skip needs
-# no processor; Indic engine is deferred). Public (no leading underscore) so
-# tests and future pipeline phases can re-use the same thresholds.
-_INDIC_SCRIPTS = {
-    "devanagari", "tamil", "bengali", "gujarati",
-    "gurmukhi", "kannada", "malayalam", "odia", "telugu",
-}
+logger = get_logger(__name__)
 
 
 def precheck_skip_or_indic(profile) -> str | None:
@@ -40,12 +37,6 @@ def precheck_skip_or_indic(profile) -> str | None:
     Returns a route string ("skip" or "scanned") if the decision is
     conclusive without entering the capability vocabulary, or None to
     continue with full capability detection.
-
-    Mirrors the skip/Indic branch of router.route_from_profile() exactly.
-    Two tests in test_capability_router.py assert this copy stays in
-    agreement with the original:
-        test_precheck_agrees_with_router_on_skip
-        test_precheck_agrees_with_router_on_indic
     """
     if (
         profile.char_count < settings.skip_char_count_threshold
@@ -62,26 +53,6 @@ def precheck_skip_or_indic(profile) -> str | None:
         return "scanned"
 
     return None
-
-
-def _is_mixed_content_signal(profile: PageProfile) -> bool:
-    """
-    Mirrors router.is_mixed_content() exactly. Duplicated rather than
-    imported to keep this module self-contained and avoid any risk of
-    circular imports when router.py later imports from capability_router.py.
-
-    ANY threshold change to is_mixed_content() in router.py MUST be mirrored
-    here. Two tests in test_capability_router.py assert both copies stay in
-    agreement on the same inputs — run those if you touch either copy:
-        test_precheck_agrees_with_router_on_skip
-        test_precheck_agrees_with_router_on_indic
-    """
-    return (
-        profile.char_count > settings.mixed_content_min_char_count
-        and settings.mixed_content_min_image_coverage
-        < profile.image_coverage
-        < settings.mixed_content_max_image_coverage
-    )
 
 
 # ---------------------------------------------------------------------------

@@ -29,13 +29,14 @@ class Settings(BaseSettings):
 
     # --- LLM / VLM (provider selection) ---
     # Set `llm_provider` to the concrete provider you want to use.
-    # Supported values: "bedrock", "sarvam", "ollama", "gemini".
+    # Supported values: "bedrock", "sarvam".
     llm_provider: str = "bedrock"
 
     # Bedrock settings
     bedrock_region: str = "ap-south-1"
     bedrock_model_id: str = "arn:aws:bedrock:ap-south-1:106611079163:application-inference-profile/qdtz23c8eis1"
     bedrock_reasoning_effort: str = "low"
+    bedrock_vlm_model_id: str = "arn:aws:bedrock:ap-south-1:106611079163:application-inference-profile/lmbukv3mwnhm"
 
     # Ollama (local) settings (kept for backwards compatibility)
     ollama_base_url: str = "http://localhost:11434/v1"
@@ -46,12 +47,11 @@ class Settings(BaseSettings):
     gemini_base_url: str = ""
     gemini_api_key: str = ""
 
-    # Default VLM model name (provider-specific). For Ollama this was
-    # `qwen2-vl:2b`; for Gemini use your chosen model like `models/gemini-1.5-mini`.
-    # Use a Google Gemini model name by default when `llm_provider` is "gemini".
-    vlm_model_name: str = "qwen2.5vl:7b"
+    # Default VLM model name (provider-specific).
+    # For Bedrock, points to the Qwen3-VL-235B-A22B application inference profile.
+    vlm_model_name: str = "arn:aws:bedrock:ap-south-1:106611079163:application-inference-profile/lmbukv3mwnhm"
 
-    # --- Layer 3 — Extraction LLM (Bedrock / Sarvam / Ollama) ---
+    # --- Layer 3 — Extraction LLM (Bedrock / Sarvam) ---
     extraction_backend: str = "bedrock"
     sarvam_base_url: str = "https://api.sarvam.ai/v1"
     sarvam_model_name: str = "sarvam-105b"
@@ -65,9 +65,17 @@ class Settings(BaseSettings):
     graph_concurrency_limit: int = 8
     graph_anchor_max_k: int = 5
     graph_anchor_types: list[str] = []
+    page_concurrency_limit: int = 25
 
     # --- PostgreSQL Storage ---
     database_url: str = "postgresql://postgres:password@localhost:5432/idp"
+
+    @field_validator("page_concurrency_limit")
+    @classmethod
+    def _validate_page_concurrency_limit(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("page_concurrency_limit must be >= 1")
+        return v
 
     @field_validator("graph_concurrency_limit")
     @classmethod
@@ -87,6 +95,18 @@ class Settings(BaseSettings):
     @classmethod
     def _fallback_unprefixed_env(cls, data: Any) -> Any:
         if isinstance(data, dict):
+            if not data.get("page_concurrency_limit"):
+                raw_page_limit = os.getenv("IDP_PAGE_CONCURRENCY_LIMIT") or os.getenv("PAGE_CONCURRENCY_LIMIT")
+                if raw_page_limit:
+                    data["page_concurrency_limit"] = int(raw_page_limit)
+            if not data.get("escalation_confidence_threshold"):
+                raw_thresh = os.getenv("IDP_ESCALATION_CONFIDENCE_THRESHOLD") or os.getenv("ESCALATION_CONFIDENCE_THRESHOLD")
+                if raw_thresh:
+                    data["escalation_confidence_threshold"] = float(raw_thresh)
+            if not data.get("max_escalation_attempts"):
+                raw_max_esc = os.getenv("IDP_MAX_ESCALATION_ATTEMPTS") or os.getenv("MAX_ESCALATION_ATTEMPTS")
+                if raw_max_esc:
+                    data["max_escalation_attempts"] = int(raw_max_esc)
             if not data.get("layer3_strategy"):
                 data["layer3_strategy"] = os.getenv("IDP_LAYER3_STRATEGY") or os.getenv("LAYER3_STRATEGY") or "graph_memory_concurrent"
             if not data.get("graph_concurrency_limit"):
@@ -123,6 +143,19 @@ class Settings(BaseSettings):
                 data["bedrock_model_id"] = os.getenv("IDP_BEDROCK_MODEL_ID") or os.getenv("BEDROCK_MODEL_ID") or "arn:aws:bedrock:ap-south-1:106611079163:application-inference-profile/qdtz23c8eis1"
             if not data.get("bedrock_reasoning_effort"):
                 data["bedrock_reasoning_effort"] = os.getenv("IDP_BEDROCK_REASONING_EFFORT") or os.getenv("BEDROCK_REASONING_EFFORT") or "low"
+            if not data.get("bedrock_vlm_model_id"):
+                data["bedrock_vlm_model_id"] = (
+                    os.getenv("IDP_BEDROCK_VLM_MODEL_ID")
+                    or os.getenv("BEDROCK_VLM_MODEL_ID")
+                    or os.getenv("VLM_MODEL_ID")
+                    or "arn:aws:bedrock:ap-south-1:106611079163:application-inference-profile/lmbukv3mwnhm"
+                )
+            if not data.get("vlm_model_name") or data.get("vlm_model_name") == "qwen2.5vl:7b":
+                data["vlm_model_name"] = (
+                    os.getenv("IDP_VLM_MODEL_NAME")
+                    or os.getenv("VLM_MODEL_NAME")
+                    or data["bedrock_vlm_model_id"]
+                )
             if not data.get("extraction_backend"):
                 data["extraction_backend"] = os.getenv("IDP_EXTRACTION_BACKEND") or os.getenv("EXTRACTION_BACKEND") or "bedrock"
             if not data.get("llm_provider"):
@@ -134,6 +167,31 @@ class Settings(BaseSettings):
             env_routing = os.getenv("IDP_ROUTING_MODE") or os.getenv("ROUTING_MODE")
             if env_routing:
                 data["routing_mode"] = env_routing.strip()
+            if not data.get("paddle_lambda_region"):
+                data["paddle_lambda_region"] = (
+                    os.getenv("IDP_PADDLE_LAMBDA_REGION")
+                    or os.getenv("PADDLE_LAMBDA_REGION")
+                    or os.getenv("AWS_DEFAULT_REGION")
+                    or "ap-south-1"
+                )
+            if not data.get("paddle_printed_lambda_function"):
+                data["paddle_printed_lambda_function"] = (
+                    os.getenv("IDP_PADDLE_PRINTED_LAMBDA_FUNCTION")
+                    or os.getenv("PADDLE_PRINTED_LAMBDA_FUNCTION")
+                    or "arn:aws:lambda:ap-south-1:106611079163:function:idp-engine-paddle-printed"
+                )
+            if not data.get("paddle_handwritten_lambda_function"):
+                data["paddle_handwritten_lambda_function"] = (
+                    os.getenv("IDP_PADDLE_HANDWRITTEN_LAMBDA_FUNCTION")
+                    or os.getenv("PADDLE_HANDWRITTEN_LAMBDA_FUNCTION")
+                    or "arn:aws:lambda:ap-south-1:106611079163:function:idp-engine-paddle-handwritten"
+                )
+            if "paddle_prefer_lambda" not in data or data.get("paddle_prefer_lambda") is None:
+                val = os.getenv("IDP_PADDLE_PREFER_LAMBDA") or os.getenv("PADDLE_PREFER_LAMBDA")
+                if val is not None:
+                    data["paddle_prefer_lambda"] = val.lower() in ("true", "1", "yes")
+                else:
+                    data["paddle_prefer_lambda"] = True
             if not data.get("app_env"):
                 env = os.getenv("IDP_APP_ENV") or os.getenv("APP_ENV")
                 if env and env.strip():
@@ -150,7 +208,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_secrets(self) -> "Settings":
-        if self.app_env in ("production", "staging"):
+        if self.app_env in ("production", "staging") and not os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
             weak_passwords = {"password", "12345", "changeme", "admin", "postgres", "root", "secret"}
             import urllib.parse
             parsed = urllib.parse.urlparse(self.database_url)
@@ -167,6 +225,12 @@ class Settings(BaseSettings):
     # false-positive detections on noisy backgrounds.
     paddle_handwriting_det_db_thresh: float = 0.2
 
+    # --- PaddleOCR AWS Lambda offload ---
+    paddle_prefer_lambda: bool = True
+    paddle_lambda_region: str = "ap-south-1"
+    paddle_printed_lambda_function: str = "arn:aws:lambda:ap-south-1:106611079163:function:idp-engine-paddle-printed"
+    paddle_handwritten_lambda_function: str = "arn:aws:lambda:ap-south-1:106611079163:function:idp-engine-paddle-handwritten"
+
     # --- Core routing thresholds (tunable without redeploy) ---
     digital_char_count_threshold: int = 100
     scanned_char_count_threshold: int = 30
@@ -176,13 +240,11 @@ class Settings(BaseSettings):
     handwriting_pct_scanned_ceiling: float = 0.10
     handwriting_pct_handwritten_floor: float = 0.30
     vlm_direct_extraction_confidence_threshold: float = 0.85
+    enable_vlm_direct: bool = False  # Disabled: pages route to Paddle first; VLM is only invoked on failure or confidence < 0.75
 
     # --- Escalation ladder ---
-    # NOTE: After replacing TrOCR with PaddleOCR the confidence distribution
-    # shifted — PaddleOCR reports genuine per-word scores (0.7–0.99 on legible
-    # text). For testing you can raise this threshold to force the escalation
-    # ladder to run the VLM fallback. Production default should be ~0.70.
-    # For demo/testing we'll set a high threshold so pages will escalate.
+    # Pages first run OCR (PaddleOCR). If PaddleOCR fails or confidence < 0.75,
+    # the escalation ladder invokes the VLM fallback (vlm_transcribe).
     escalation_confidence_threshold: float = 0.70
     max_escalation_attempts: int = 1
 

@@ -10,12 +10,9 @@ from src.config.settings import settings
 
 def get_extraction_client() -> ExtractionLLMClient:
     backend = (settings.extraction_backend or "").lower()
-    if backend == "bedrock":
-        from src.adapters.llm.bedrock_client import BedrockExtractionClient
-        return BedrockExtractionClient()
-    elif backend == "sarvam":
+    if backend == "sarvam":
         from src.adapters.llm.sarvam_client import SarvamExtractionClient
         return SarvamExtractionClient()
-    else:
-        from src.adapters.llm.extraction_client import OllamaExtractionClient
-        return OllamaExtractionClient()
+    # Default to Bedrock in AWS / cloud environment
+    from src.adapters.llm.bedrock_client import BedrockExtractionClient
+    return BedrockExtractionClient()

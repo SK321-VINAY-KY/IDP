@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir -U pip setuptools wheel && \
 
 # Pre-download and cache model weights into the container image
 RUN mkdir -p /opt/paddleocr /opt/paddle /opt/paddlex && \
-    python -c "from paddleocr import PaddleOCR; PaddleOCR(lang='en', device='cpu', enable_mkldnn=False, use_textline_orientation=True, text_det_thresh=0.2)" && \
+    python -c "from paddleocr import PaddleOCR; PaddleOCR(ocr_version='PP-OCRv4', lang='en', device='cpu', enable_mkldnn=False, use_doc_unwarping=False, use_doc_orientation_classify=False, use_textline_orientation=False, text_det_thresh=0.2)" && \
     (cp -r /tmp/.paddlex/* /opt/paddlex/ 2>/dev/null || true) && \
     (cp -r /tmp/.paddleocr/* /opt/paddleocr/ 2>/dev/null || true) && \
     chmod -R 755 /opt/paddleocr /opt/paddle /opt/paddlex

@@ -6,6 +6,7 @@ Deployment automation script for IDP Layer 3 (Schema Discovery & Web Console):
 - Waits for healthy deployment, queries public ENI IP, and verifies /health
 """
 import argparse
+import base64
 import json
 import os
 import subprocess
@@ -33,19 +34,62 @@ DEFAULT_SUBNETS = [
 ]
 
 
-def run_command(cmd, cwd=None):
-    print(f"  [EXEC] {' '.join(cmd) if isinstance(cmd, list) else cmd}")
-    res = subprocess.run(cmd, cwd=cwd, shell=True, capture_output=True, text=True)
-    if res.returncode != 0:
-        print(f"  [ERROR] {res.stderr.strip()}")
-        raise RuntimeError(f"Command failed with code {res.returncode}: {res.stderr}")
-    return res.stdout.strip()
+def run_command(cmd, cwd=None, capture: bool = False):
+    print(f"  [EXEC] {' '.join(cmd) if isinstance(cmd, list) else cmd}", flush=True)
+    if capture:
+        res = subprocess.run(
+            cmd,
+            cwd=cwd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if res.returncode != 0:
+            print(f"  [ERROR] {res.stderr.strip()}", flush=True)
+            raise RuntimeError(f"Command failed with code {res.returncode}: {res.stderr}")
+        return res.stdout.strip()
+    else:
+        res = subprocess.run(cmd, cwd=cwd, shell=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"Command failed with code {res.returncode}")
+        return ""
 
 
 def get_session(profile: str | None, region: str) -> boto3.Session:
     if profile:
         return boto3.Session(profile_name=profile, region_name=region)
     return boto3.Session(region_name=region)
+
+
+def docker_build_and_push(
+    session: boto3.Session,
+    region: str,
+    account_id: str,
+    repo_name: str = DEFAULT_ECR_REPO,
+    image_tag: str = "latest",
+) -> str:
+    print(f"\n[0/3] Building & Pushing Docker Image to ECR ({repo_name}:{image_tag})...")
+    ecr = session.client("ecr")
+    auth_token = ecr.get_authorization_token()
+    auth_data = auth_token["authorizationData"][0]
+    token = base64.b64decode(auth_data["authorizationToken"]).decode("utf-8")
+    username, password = token.split(":")
+    endpoint = auth_data["proxyEndpoint"]
+
+    login_cmd = f"docker login -u {username} -p {password} {endpoint}"
+    run_command(login_cmd)
+
+    repo_uri = f"{account_id}.dkr.ecr.{region}.amazonaws.com/{repo_name}"
+    full_image = f"{repo_uri}:{image_tag}"
+    build_cmd = f"docker build --platform linux/amd64 -f schema_chatbot_v2/Dockerfile -t {full_image} ."
+    run_command(build_cmd, cwd=str(ROOT_DIR))
+
+    push_cmd = f"docker push {full_image}"
+    run_command(push_cmd)
+    print(f"  Successfully pushed image to {full_image}")
+    return full_image
 
 
 def register_task_definition(ecs_client, task_def_path: Path) -> str:
@@ -65,6 +109,7 @@ def register_task_definition(ecs_client, task_def_path: Path) -> str:
         tags=[
             {"key": "createdby", "value": "vinay.k@shellkode.com"},
             {"key": "customer", "value": "internal"},
+            {"key": "purpose", "value": "internal"},
         ],
     )
     task_def_arn = resp["taskDefinition"]["taskDefinitionArn"]
@@ -127,6 +172,7 @@ def wait_and_get_public_ip(
     ec2_client,
     cluster_name: str,
     service_name: str,
+    task_def_arn: str | None = None,
     timeout_s: int = 300,
 ) -> str | None:
     print(f"\n[3/3] Waiting for Fargate task to reach RUNNING state (timeout: {timeout_s}s)...")
@@ -141,8 +187,9 @@ def wait_and_get_public_ip(
             tasks = desc.get("tasks", [])
             for t in tasks:
                 status = t.get("lastStatus")
-                print(f"  Task {t['taskArn'].split('/')[-1]} status: {status}")
-                if status == "RUNNING":
+                t_def = t.get("taskDefinitionArn")
+                print(f"  Task {t['taskArn'].split('/')[-1]} ({t_def.split('/')[-1] if t_def else 'unknown'}) status: {status}")
+                if status == "RUNNING" and (task_def_arn is None or t_def == task_def_arn):
                     task_arn = t["taskArn"]
                     break
             if task_arn:
@@ -185,11 +232,17 @@ def main():
     parser.add_argument("--region", default=DEFAULT_REGION)
     parser.add_argument("--cluster", default=DEFAULT_CLUSTER)
     parser.add_argument("--service", default=DEFAULT_SERVICE)
+    parser.add_argument("--skip-build", action="store_true", help="Skip Docker build and push to ECR")
     args = parser.parse_args()
 
     session = get_session(args.profile, args.region)
+    sts = session.client("sts")
+    account_id = sts.get_caller_identity()["Account"]
     ecs = session.client("ecs")
     ec2 = session.client("ec2")
+
+    if not args.skip_build:
+        docker_build_and_push(session, args.region, account_id)
 
     task_def_arn = register_task_definition(ecs, TASK_DEF_FILE)
     deploy_ecs_service(
@@ -200,7 +253,7 @@ def main():
         DEFAULT_SUBNETS,
         [DEFAULT_SECURITY_GROUP],
     )
-    wait_and_get_public_ip(ecs, ec2, args.cluster, args.service)
+    wait_and_get_public_ip(ecs, ec2, args.cluster, args.service, task_def_arn=task_def_arn)
 
 
 if __name__ == "__main__":

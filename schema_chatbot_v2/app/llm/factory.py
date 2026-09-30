@@ -7,10 +7,6 @@ from app.llm.base import LLMAdapter
 def get_llm_adapter(provider: str | None = None) -> LLMAdapter:
     provider = (provider or settings.llm_provider).lower()
 
-    if provider == "ollama":
-        from app.llm.ollama_adapter import OllamaAdapter
-        return OllamaAdapter()
-
     if provider == "bedrock":
         from app.llm.bedrock_adapter import BedrockAdapter
         return BedrockAdapter()
@@ -23,4 +19,7 @@ def get_llm_adapter(provider: str | None = None) -> LLMAdapter:
         from app.llm.mock_adapter import MockLLMAdapter
         return MockLLMAdapter()
 
-    raise ValueError(f"Unknown LLM_PROVIDER: {provider!r}")
+    # Default to Bedrock on AWS / cloud
+    from app.llm.bedrock_adapter import BedrockAdapter
+    return BedrockAdapter()
+

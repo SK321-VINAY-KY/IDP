@@ -141,6 +141,7 @@ def build_package():
         ("src/ai/layer1_routing/__init__.py", "src/ai/layer1_routing/__init__.py"),
         ("src/ai/layer1_routing/inspect.py", "src/ai/layer1_routing/inspect.py"),
         ("src/ai/layer1_routing/router.py", "src/ai/layer1_routing/router.py"),
+        ("src/ai/layer1_routing/pipeline.py", "src/ai/layer1_routing/pipeline.py"),
         ("src/ai/layer1_routing/capability_router.py", "src/ai/layer1_routing/capability_router.py"),
         ("src/ai/layer1_routing/capability_types.py", "src/ai/layer1_routing/capability_types.py"),
         ("src/ai/schemas/__init__.py", "src/ai/schemas/__init__.py"),

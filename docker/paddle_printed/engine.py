@@ -32,10 +32,14 @@ def get_paddle_engine() -> Any:
     if _paddle_engine is None:
         from paddleocr import PaddleOCR
         _paddle_engine = PaddleOCR(
+            ocr_version="PP-OCRv4",
             lang="en",
             device="cpu",
             enable_mkldnn=False,
-            use_textline_orientation=True,
+            use_doc_unwarping=False,
+            use_doc_orientation_classify=False,
+            use_textline_orientation=False,
+            text_recognition_batch_size=16,
         )
     return _paddle_engine
 
@@ -153,3 +157,7 @@ def process_pdf_pages(pdf_stream_or_path: Any, page_numbers: List[int]) -> List[
         doc.close()
 
     return results
+
+
+# Unified interface alias
+process_pages = process_pdf_pages

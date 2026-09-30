@@ -82,15 +82,13 @@ def test_dead_zone_resolves_to_handwritten():
 
 def test_escalation_ladder_full():
     """
-    Walk the full updated ladder: digital→scanned→handwritten→vlm_transcribe→None.
-    Previously this test asserted handwritten→None (stale); updated to reflect
-    the vlm_transcribe tier added in the Stage 1 upgrade.
+    Walk the direct escalation ladder: digital/scanned/handwritten → vlm_transcribe → None.
     """
-    assert next_escalation_route("digital", "broken_parse") == "scanned"
-    assert next_escalation_route("scanned", "low_confidence") == "handwritten"
+    assert next_escalation_route("digital", "broken_parse") == "vlm_transcribe"
+    assert next_escalation_route("scanned", "low_confidence") == "vlm_transcribe"
     assert next_escalation_route("handwritten", "still_low") == "vlm_transcribe"
     assert next_escalation_route("vlm_transcribe", "still_low") is None
-    print("PASS: escalation ladder full walk digital→scanned→handwritten→vlm_transcribe→None")
+    print("PASS: escalation ladder full walk digital/scanned/handwritten→vlm_transcribe→None")
 
 
 def test_indic_script_detected():
