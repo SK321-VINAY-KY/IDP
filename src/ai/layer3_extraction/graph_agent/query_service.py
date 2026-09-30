@@ -126,33 +126,65 @@ class GraphQueryService:
         stems = {self._clean_stem(t) for t in tokens}
 
         # Domain synonym expansion for common question intents
+        # Universal cross-domain synonym expansion for common question intents
         SYNONYMS: Dict[str, List[str]] = {
-            "candidate": ["applicant", "person", "full_name", "employee", "name"],
+            # Identity & People
+            "name": ["person", "candidate", "applicant", "patient", "employee", "author", "client", "customer", "vendor", "full_name", "contact_person"],
+            "person": ["candidate", "applicant", "employee", "patient", "client", "customer", "doctor", "signatory", "guardian", "officer"],
+            "candidate": ["applicant", "person", "employee", "full_name", "name"],
             "applicant": ["candidate", "person", "full_name", "name"],
-            "name": ["person", "candidate", "applicant", "patient", "doctor", "full_name", "patient_name"],
-            "patient": ["person", "patient_name", "full_name", "insured"],
-            "doctor": ["physician", "consultant", "provider", "doctor_name", "dr", "treating_doctor", "reference_doctor", "specialist", "surgeon"],
-            "doctors": ["doctor", "physician", "consultant", "provider", "doctor_name", "dr", "specialist"],
-            "physician": ["doctor", "consultant", "treating_doctor"],
-            "consultant": ["doctor", "physician", "specialist"],
-            "consulted": ["doctor", "consultant", "physician", "reference", "specialist"],
-            "treat": ["doctor", "physician", "consultant", "treating_doctor"],
-            "treated": ["doctor", "physician", "consultant", "treating_doctor"],
-            "treating": ["doctor", "physician", "consultant", "treating_doctor"],
-            "age": ["patient_age", "years", "dob", "birth"],
-            "claim": ["claimed", "claimed_amount", "sanctioned_amount", "settlement", "insurance_claim"],
-            "claimed": ["claim", "claimed_amount", "total_hospital_bill"],
-            "bill": ["total_bill", "gross_amount", "claimed_amount", "payable_amount", "hospital_bill"],
-            "payable": ["amount_to_be_paid_by_insured", "patient_payable_amount", "net_payable", "sanctioned_amount", "patient_payable"],
-            "pocket": ["patient_payable", "patient_payable_amount", "amount_to_be_paid_by_insured", "copay", "non_payable", "deduction"],
-            "deducted": ["deduction", "deductions", "non_medical_deductions", "non_payable", "copay", "disallowed"],
-            "deduction": ["deducted", "deductions", "non_medical_deductions", "non_payable", "copay", "disallowed"],
-            "deductions": ["deducted", "deduction", "non_medical_deductions", "non_payable", "copay", "disallowed"],
-            "sanctioned": ["approved", "settled", "sanctioned_amount", "final_claim"],
-            "approved": ["sanctioned", "sanctioned_amount", "settled"],
-            "insured": ["patient", "policyholder", "amount_to_be_paid_by_insured"],
-            "insurer": ["insurance_company", "sponsor", "tpa", "policy_number", "insurance_policy_number"],
-            "insurance": ["insurance_company", "sponsor", "tpa", "policy_number", "insurance_policy_number"],
+            "patient": ["person", "patient_name", "insured", "policyholder"],
+            "doctor": ["physician", "consultant", "provider", "specialist", "surgeon", "treating_doctor", "reference_doctor", "dr"],
+            "doctors": ["doctor", "physician", "consultant", "provider", "specialist", "dr"],
+            "physician": ["doctor", "consultant", "specialist"],
+            "consultant": ["doctor", "physician", "specialist", "advisor"],
+            "vendor": ["supplier", "seller", "provider", "merchant", "company", "issuer"],
+            "customer": ["client", "buyer", "recipient", "purchaser", "consumer", "insured", "patient"],
+            "employer": ["company", "organization", "workplace", "firm"],
+            "employee": ["staff", "worker", "candidate", "person"],
+            "age": ["dob", "birth", "years", "date_of_birth"],
+            # Organizations & Institutions
+            "company": ["organization", "vendor", "issuer", "bank", "hospital", "firm", "insurer", "institution", "agency", "supplier"],
+            "organization": ["company", "institution", "agency", "firm", "hospital", "bank", "vendor"],
+            "hospital": ["clinic", "healthcare", "facility", "provider", "institution"],
+            "bank": ["financial_institution", "lender", "bank_name", "issuer"],
+            "insurer": ["insurance_company", "sponsor", "tpa", "underwriter", "carrier"],
+            "insurance": ["insurance_company", "sponsor", "tpa", "policy", "coverage", "carrier"],
+            # Financials, Invoices, Billing
+            "amount": ["total", "sum", "cost", "price", "fee", "rate", "subtotal", "balance", "charge", "value", "payable", "paid"],
+            "total": ["gross", "net", "subtotal", "grand_total", "total_amount", "total_bill", "overall_amount", "sum"],
+            "bill": ["invoice", "statement", "receipt", "charge", "total_bill", "fee"],
+            "invoice": ["bill", "statement", "receipt", "tax_invoice", "proforma"],
+            "claimed": ["claim", "claimed_amount", "total_bill", "requested_amount"],
+            "claim": ["claimed_amount", "settlement", "sanctioned_amount", "insurance_claim"],
+            "payable": ["due", "net_payable", "amount_due", "balance_due", "paid_by_insured", "patient_payable", "outstanding"],
+            "pocket": ["out_of_pocket", "patient_payable", "copay", "non_payable", "deduction", "uncovered"],
+            "paid": ["settled", "disbursed", "remitted", "cleared", "amount_paid"],
+            "tax": ["gst", "vat", "sales_tax", "cgst", "sgst", "igst", "service_tax", "cess", "withholding"],
+            "discount": ["rebate", "concession", "reduction", "deduction"],
+            "deduction": ["deducted", "deductions", "non_medical", "non_payable", "disallowed", "copay", "withholding"],
+            "deductions": ["deducted", "deduction", "non_medical", "non_payable", "disallowed", "copay", "withholding"],
+            "deducted": ["deduction", "deductions", "disallowed", "non_payable"],
+            "sanctioned": ["approved", "settled", "sanctioned_amount", "authorized_amount", "final_claim"],
+            "approved": ["sanctioned", "authorized", "settled", "granted"],
+            "fee": ["cost", "charge", "price", "rate", "tariff", "tuition", "premium"],
+            "salary": ["wages", "compensation", "stipend", "pay", "ctc", "remuneration"],
+            # Identifiers & Numbers
+            "number": ["id", "identifier", "code", "reference", "ref_no", "no"],
+            "id": ["identifier", "number", "code", "reference"],
+            "policy": ["policy_number", "insurance_policy", "policy_no", "contract_number"],
+            "account": ["account_number", "acc_no", "bank_account"],
+            # Dates & Temporal
+            "date": ["time", "period", "day", "month", "year", "timestamp", "validity", "expiry"],
+            "expiry": ["expiration", "valid_until", "validity", "due_date"],
+            # Items & Details
+            "item": ["line_item", "product", "description", "service", "goods", "article"],
+            "items": ["line_items", "products", "services", "goods", "articles"],
+            "service": ["procedure", "operation", "treatment", "item", "offering"],
+            "skills": ["technologies", "competencies", "tools", "expertise", "qualifications"],
+            "education": ["degree", "qualification", "university", "college", "school", "academic"],
+            "experience": ["work_experience", "employment", "history", "career"],
+            "address": ["location", "place", "city", "state", "country", "pin", "zipcode", "residence"],
         }
         syn_tokens: Set[str] = set()
         for tok in tokens:
@@ -162,29 +194,23 @@ class GraphQueryService:
             if stem_tok in SYNONYMS:
                 syn_tokens.update(SYNONYMS[stem_tok])
 
-        # Interrogative target focus: determine the core subject being queried
+        # Dynamic Interrogative Target Focus:
+        # Detect target focus by scanning query tokens & expanded synonyms against all entity types and node labels present in the graph memory.
         target_focus_types: Set[str] = set()
         target_focus_labels: Set[str] = set()
 
-        if any(w in norm_q for w in ["doctor", "dr", "physician", "consultant", "surgeon", "treated by", "who treated", "who was the doctor", "which doctor", "which all doctor", "doctors"]):
-            target_focus_types.update(["doctor", "physician", "consultant"])
-            target_focus_labels.update(["doctor", "consultant", "physician", "treating_doctor", "consulting_doctor", "ref_by", "reference"])
+        for t in getattr(graph, "_type_index", {}).keys():
+            t_norm = self._normalize(t)
+            if t_norm in norm_q or any(tok in t_norm or self._clean_stem(tok) in t_norm for tok in tokens):
+                target_focus_types.add(t_norm)
+            for syn in syn_tokens:
+                if syn in t_norm or t_norm in syn:
+                    target_focus_types.add(t_norm)
 
-        if any(w in norm_q for w in ["deduct", "deduction", "deductions", "non payable", "non-payable", "non medical", "non-medical", "disallow"]):
-            target_focus_types.update(["amount", "deduction", "claim"])
-            target_focus_labels.update(["deduction", "deductions", "non_medical_deduction", "non_payable", "non_medical", "disallowed", "copay"])
-
-        if any(w in norm_q for w in ["pocket", "patient payable", "payable from patient", "payable from the patient", "paid by insured", "patient pay", "patient has to pay"]):
-            target_focus_types.update(["amount", "claim"])
-            target_focus_labels.update(["patient_payable_amount", "patient_payable", "paid_by_insured", "amount_to_be_paid_by_insured", "non_medical_deduction", "copay"])
-
-        if any(w in norm_q for w in ["insurance company", "insurer", "sanctioned", "approved", "tpa", "sponsor"]):
-            target_focus_types.update(["amount", "claim", "organization"])
-            target_focus_labels.update(["sanctioned_amount", "approved", "authorized", "requested_amount", "insurance_company", "sponsor", "tpa"])
-
-        if any(w in norm_q for w in ["patient name", "name of the patient", "who is the patient", "patient's name", "whats the patient name", "what is the patient name"]):
-            target_focus_types.update(["person", "patient", "identifier"])
-            target_focus_labels.update(["patient", "patient_name", "name"])
+        for n in graph._nodes.values():
+            lbl_norm = self._normalize(n.label)
+            if any(tok in lbl_norm or self._clean_stem(tok) in lbl_norm for tok in tokens if len(tok) >= 3):
+                target_focus_labels.add(lbl_norm)
 
         scored_candidates: List[Tuple[float, int, int, int, int, int, GraphNode]] = []
 
@@ -203,13 +229,10 @@ class GraphQueryService:
             score = 0.0
             matched_tokens = 0
 
-            # Target focus boost: ensures the actual entity being asked for is not crowded out by background context
+            # Target focus boost: ensures the actual entity being asked for is prioritized
             if target_focus_types or target_focus_labels:
                 if type_norm in target_focus_types or any(tfl in lbl_norm for tfl in target_focus_labels) or (schema_field and any(tfl in schema_field for tfl in target_focus_labels)):
                     score += 5.0
-                    matched_tokens += 2
-                elif "doctor" in target_focus_types and ("dr" in val_norm.lower() or "dr." in val_norm.lower()):
-                    score += 4.5
                     matched_tokens += 2
 
             # Substantial exact value match in question
@@ -277,7 +300,7 @@ class GraphQueryService:
                 ntype = node.type.lower()
                 nlbl = node.label.lower()
                 if node.id not in seen_ids:
-                    if ntype in target_focus_types or any(tfl in nlbl for tfl in target_focus_labels) or ("doctor" in target_focus_types and "dr" in node.value.lower()):
+                    if ntype in target_focus_types or any(tfl in nlbl for tfl in target_focus_labels):
                         seen_ids.add(node.id)
                         seeds.append(node)
                         type_counts[ntype] = type_counts.get(ntype, 0) + 1
@@ -484,7 +507,7 @@ class GraphQueryService:
         # If no seeds found directly, check if question is asking for all entities of a type
         if not seeds:
             q_norm = self._normalize(question)
-            for t, node_ids in graph._type_index.items():
+            for t, node_ids in getattr(graph, "_type_index", {}).items():
                 if t in q_norm:
                     for nid in node_ids:
                         n = graph.get_node(nid)
@@ -552,12 +575,12 @@ class GraphQueryService:
 
             # Try to extract explicit concluding statement
             m_concl = re.search(
-                r"(?:(?:So|Therefore|In summary|Hence),?\s*(?:the patient name is|the answer is|the claimed amount is|the age is|the deducted amount is|the doctor is|the patient is)|(?:The patient name is|The amount claimed is|The deducted amount is|The age of the patient is|The doctor treating the patient is|The patient underwent|Dr\.))\s*([^\n]+)",
+                r"(?:(?:So|Therefore|In summary|Hence|In conclusion),?\s*([^\n]+))",
                 content,
                 re.IGNORECASE,
             )
             if m_concl:
-                candidate = m_concl.group(0).strip()
+                candidate = m_concl.group(1).strip()
                 if len(candidate) > 10 and not candidate.endswith(":") and len(candidate.split()) >= 3:
                     return candidate
 
@@ -597,179 +620,87 @@ class GraphQueryService:
         nodes: List[GraphNode],
         sources: List[Dict[str, Any]],
     ) -> str:
-        """Accurate deterministic answering using structured graph entities when LLM generation is unavailable or noisy."""
+        """Universal, graph-grounded deterministic answering when LLM generation is unavailable."""
         q = question.lower()
+        tokens = self._extract_query_tokens(question)
+        stems = {self._clean_stem(t) for t in tokens}
 
-        # 0. Person role & relationship queries (e.g. "Who is Manu Kochhar and what is his relationship to the patient?")
-        if any(w in q for w in ["who is", "relationship", "relation", "relative", "guardian", "card holder", "guarantor", "son"]):
-            for n in nodes:
-                if n.type == "Person" and n.value and n.value.lower() in q and not self._is_garbage_node(n):
+        if not nodes:
+            return "The requested information could not be found in the document graph."
+
+        valid_nodes = [n for n in nodes if not self._is_garbage_node(n)]
+        if not valid_nodes:
+            return "The requested information could not be found in the document graph."
+
+        # Dynamic scoring of nodes based on query token & stem overlap
+        scored: List[Tuple[float, GraphNode]] = []
+        for n in valid_nodes:
+            val_norm = self._normalize(n.value)
+            lbl_norm = self._normalize(n.label)
+            type_norm = self._normalize(n.type)
+            score = 0.0
+
+            for tok in tokens:
+                if len(tok) >= 3:
+                    if tok in val_norm:
+                        score += 2.0
+                    if tok in lbl_norm:
+                        score += 1.8
+                    if tok in type_norm:
+                        score += 0.8
+            for st in stems:
+                if len(st) >= 3:
+                    if st in lbl_norm:
+                        score += 1.2
+                    if st in val_norm:
+                        score += 1.0
+
+            # Match against evidence text
+            for ev in (n.evidence or []):
+                ev_norm = self._normalize(getattr(ev, "text", ""))
+                for tok in tokens:
+                    if len(tok) >= 4 and tok in ev_norm:
+                        score += 0.5
+
+            if score > 0.0:
+                scored.append((score, n))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top_nodes = [s[1] for s in scored] if scored else valid_nodes
+
+        # 1. Multi-entity list queries (e.g. "which all doctors", "what are the items", "list all skills...")
+        if any(w in q for w in ["which all", "all", "list", "what are the", "what are all"]):
+            primary_type = top_nodes[0].type
+            matching_list = [n for n in top_nodes if n.type == primary_type]
+            seen_values = set()
+            unique_list = []
+            for n in matching_list:
+                v_clean = n.value.strip().lower()
+                if v_clean not in seen_values:
+                    seen_values.add(v_clean)
                     page = n.source_pages[0] if n.source_pages else 1
-                    role = n.label.replace("_", " ")
-                    return f"{n.value} is recorded as the {role} for the patient. (Source: Page {page})"
-            for n in nodes:
-                if any(w in n.label.lower() for w in ["guardian", "card_holder", "responsible_person", "guarantor"]) and not self._is_garbage_node(n):
+                    lbl = n.label.replace("_", " ")
+                    unique_list.append(f"{n.value} ({lbl}, Source: Page {page})")
+            if unique_list:
+                return f"The {primary_type.lower()}s recorded in the document are: {'; '.join(unique_list)}."
+
+        # 2. Comparative / multi-part queries (e.g. payable from X and from Y, totals and subtotals)
+        if len(top_nodes) >= 2 and any(w in q for w in ["and", "from", "between", "payable", "versus", "vs"]):
+            items_formatted = []
+            seen_v = set()
+            for n in top_nodes[:3]:
+                if n.value.strip().lower() not in seen_v:
+                    seen_v.add(n.value.strip().lower())
                     page = n.source_pages[0] if n.source_pages else 1
-                    role = n.label.replace("_", " ")
-                    return f"{n.value} is recorded as the {role}. (Source: Page {page})"
+                    items_formatted.append(f"{n.label.replace('_', ' ')} is {n.value} (Source: Page {page})")
+            if items_formatted:
+                return f"Based on the document: {', and '.join(items_formatted)}."
 
-        # 1. Patient Name
-        if any(w in q for w in ["patient name", "name of the patient", "who is the patient", "patient's name"]):
-            for n in nodes:
-                if n.type in ["Person", "Identifier"] and not self._is_garbage_node(n):
-                    if any("patient" in getattr(ev, "text", "").lower() for ev in (n.evidence or [])):
-                        page = n.source_pages[0] if n.source_pages else 1
-                        return f"The patient name is {n.value}. (Source: Page {page})"
-            for n in nodes:
-                if n.type in ["Person", "Identifier"] and any(w in n.label.lower() for w in ["patient_name", "patient"]) and not self._is_garbage_node(n):
-                    page = n.source_pages[0] if n.source_pages else 1
-                    return f"The patient name is {n.value}. (Source: Page {page})"
-
-        # 2. Patient Age
-        if any(w in q for w in ["age", "how old"]):
-            for n in nodes:
-                if (n.type == "Age" or "age" in n.label.lower()) and not self._is_garbage_node(n):
-                    page = n.source_pages[0] if n.source_pages else 1
-                    return f"The age of the patient is {n.value}. (Source: Page {page})"
-
-        # 3. Claimed / Bill Amount
-        if any(w in q for w in ["total bill", "bill amount", "total bill amount", "claimed", "amount claimed", "claim amount"]):
-            for n in nodes:
-                lbl_low = n.label.lower()
-                if ("bill" in lbl_low or "claim" in lbl_low) and n.type == "Amount" and not self._is_garbage_node(n):
-                    page = n.source_pages[0] if n.source_pages else 1
-                    return f"The total bill amount is Rs. {n.value}. (Source: Page {page})"
-            for s in sources:
-                ev = s.get("evidence", "")
-                if "total bill" in ev.lower():
-                    return f"The total bill amount is {ev}. (Source: Page {s.get('page')})"
-
-        # 4. Deductions / Non-payable Expenses
-        if any(w in q for w in ["deduct", "deduction", "deductions", "non payable", "non-payable", "non medical", "non-medical"]):
-            for n in nodes:
-                lbl_clean = n.label.replace("_", " ")
-                if any(w in n.label.lower() for w in ["deduct", "non_medical", "non_payable"]) and not self._is_garbage_node(n):
-                    page = n.source_pages[0] if n.source_pages else 1
-                    return f"The non-payable deductions are Rs. {n.value} ({lbl_clean}). (Source: Page {page})"
-            for s in sources:
-                ev = s.get("evidence", "")
-                if any(dw in ev.lower() for dw in ["deduct", "non-medical", "non payable"]):
-                    return f"The deduction noted in the document is {ev}. (Source: Page {s.get('page')})"
-
-        # 5. Out-of-pocket Patient Payable / Share Breakdown
-        if any(w in q for w in ["pocket", "patient payable", "payable from patient", "payable from the patient", "paid by insured", "patient pay", "patient has to pay"]):
-            for s in sources:
-                ev = s.get("evidence", "")
-                if "amount to be paid by insured" in ev.lower():
-                    return f"The amount to be paid by the patient (insured) from pocket is {ev}. (Source: Page {s.get('page')})"
-            for n in nodes:
-                lbl_low = n.label.lower()
-                if any(pw in lbl_low for pw in ["patient_payable", "paid_by_insured", "insured_payable"]) and not self._is_garbage_node(n):
-                    page = n.source_pages[0] if n.source_pages else 1
-                    return f"The amount to be paid by the patient is Rs. {n.value}. (Source: Page {page})"
-
-        # 6. Combined Insurer & Patient Payable
-        if ("patient" in q or "insured" in q) and ("insurance" in q or "insurer" in q) and "payable" in q:
-            insured_amt = "109,073"
-            insurer_amt = "80,698"
-            for s in sources:
-                ev = s.get("evidence", "")
-                if "amount to be paid by insured" in ev.lower():
-                    m = re.search(r"(\d[\d,]+(?:\.\d+)?)", ev)
-                    if m:
-                        insured_amt = m.group(1)
-                elif "authorize" in ev.lower() and "80698" in ev:
-                    insurer_amt = "80,698"
-            return f"The amount to be paid by the patient (insured) is Rs. {insured_amt} (Source: Page 7), and the amount authorized/paid by the insurance company (insurer) is Rs. {insurer_amt} (Source: Page 7, Page 9)."
-
-        # 7. Insured / Sanctioned Amount
-        if any(w in q for w in ["insured", "sum insured", "insurance amount"]):
-            sanctioned = None
-            exhausted = None
-            for n in nodes:
-                if "sanction" in n.label.lower() and not self._is_garbage_node(n):
-                    sanctioned = n
-                if "payable" in n.label.lower() and not self._is_garbage_node(n):
-                    exhausted = n
-            if sanctioned and exhausted:
-                return (
-                    f"The sanctioned (approved) insurance amount is Rs. {sanctioned.value}, and the balance sum insured exhausted was Rs. {exhausted.value}. (Source: Page 9)"
-                )
-            if sanctioned:
-                return f"The sanctioned (approved) insurance amount is Rs. {sanctioned.value}. (Source: Page {sanctioned.source_pages[0]})"
-
-        # 8. Sanctioned Amount
-        if any(w in q for w in ["sanction", "approved amount", "amount approved"]):
-            for n in nodes:
-                if "sanction" in n.label.lower() and n.type == "Amount" and not self._is_garbage_node(n):
-                    page = n.source_pages[0] if n.source_pages else 1
-                    return f"The sanctioned (approved) amount is Rs. {n.value}. (Source: Page {page})"
-
-        # 9. Doctor Queries (Treating, Consulted, Reference, All)
-        if any(w in q for w in ["doctor", "physician", "consultant", "surgeon"]):
-            doc_nodes: List[GraphNode] = []
-            seen_doc_names = set()
-            for n in nodes:
-                v_clean = n.value.strip()
-                v_low = v_clean.lower()
-                lbl_low = n.label.lower()
-                type_low = n.type.lower()
-                is_doc = (
-                    type_low in ["doctor", "physician", "consultant"]
-                    or any(dw in lbl_low for dw in ["doctor", "consultant", "physician", "ref_by", "reference"])
-                    or "dr" in v_low
-                    or "dr." in v_low
-                )
-                if is_doc and not self._is_garbage_node(n) and v_low not in seen_doc_names:
-                    seen_doc_names.add(v_low)
-                    doc_nodes.append(n)
-
-            # Check sources as well if graph node traversal missed any
-            for s in sources:
-                ev = s.get("evidence", "")
-                m_doc = re.search(r"(?:Doctor|Consultant|Ref\.?\s*by|Reference)\s*:?\s*(DR\.?\s*[A-Z\s]+)", ev, re.IGNORECASE)
-                if m_doc:
-                    d_name = m_doc.group(1).strip()
-                    if d_name.lower() not in seen_doc_names and len(d_name) > 4:
-                        seen_doc_names.add(d_name.lower())
-                        doc_nodes.append(GraphNode(
-                            id=f"doc_{len(doc_nodes)}",
-                            type="Doctor",
-                            label="consultant",
-                            value=d_name,
-                            source_pages=[s.get("page", 1)],
-                        ))
-
-            if doc_nodes:
-                if any(w in q for w in ["which all", "all doctors", "list doctors", "what doctors", "doctors have"]):
-                    docs_formatted = [f"{d.value} ({d.label.replace('_', ' ')}, Source: Page {d.source_pages[0] if d.source_pages else 1})" for d in doc_nodes]
-                    return f"The doctors recorded for the patient are: {'; '.join(docs_formatted)}."
-                primary_doc = doc_nodes[0]
-                page = primary_doc.source_pages[0] if primary_doc.source_pages else 1
-                role = primary_doc.label.replace("_", " ")
-                return f"The doctor is {primary_doc.value} ({role}). (Source: Page {page})"
-
-        # 10. Procedure / Surgery
-        if any(w in q for w in ["procedure", "surgery", "operation", "undergo", "underwent"]):
-            for n in nodes:
-                if (n.type in ["Procedure", "Event"] or "procedure" in n.label.lower()) and not self._is_garbage_node(n):
-                    page = n.source_pages[0] if n.source_pages else 1
-                    return f"The patient underwent {n.value}. (Source: Page {page})"
-
-        # 11. Diagnosis / Ailment
-        if any(w in q for w in ["diagnosis", "diagnosed", "ailment", "condition"]):
-            for n in nodes:
-                if (n.type in ["Diagnosis", "Condition"] or "diagnosis" in n.label.lower()) and not self._is_garbage_node(n):
-                    page = n.source_pages[0] if n.source_pages else 1
-                    return f"The diagnosis was {n.value}. (Source: Page {page})"
-
-        # Generic best node match
-        for n in nodes:
-            if not self._is_garbage_node(n):
-                page = n.source_pages[0] if n.source_pages else 1
-                return f"{n.value} ({n.label.replace('_', ' ')}). (Source: Page {page})"
-
-        return "The requested information could not be found in the document graph."
+        # 3. Best single entity match
+        best_node = top_nodes[0]
+        page = best_node.source_pages[0] if best_node.source_pages else 1
+        lbl_clean = best_node.label.replace("_", " ")
+        return f"The {lbl_clean} is {best_node.value}. (Source: Page {page})"
 
     def _generate_answer(
         self,
@@ -831,16 +762,13 @@ class GraphQueryService:
 
         system_prompt = (
             "You are a factual, concise Document QA assistant. "
-            "Answer the user's question directly in 1 or 2 plain sentences based strictly on the provided Document Knowledge Graph evidence. "
-            "Always cite the exact source page number where the answer is found (e.g. 'Source: Page 6').\n\n"
-            "CRITICAL DOMAIN RULES FOR HEALTHCARE & INSURANCE CLAIMS:\n"
-            "1. 'Insured' refers to the Patient / Policyholder. 'Amount to be paid by Insured' means the patient's out-of-pocket payable amount, NOT the insurance company's payment.\n"
-            "2. 'Insurer', 'TPA', or 'Sponsor' refers to the Insurance Company (e.g. ICICI Lombard). 'Sanctioned Amount', 'Approved Amount', or 'Authorized Amount' means the amount paid by the insurance company.\n"
-            "3. 'Total Bill' or 'Gross Payable Amount' is the hospital's overall bill before insurance settlement. Do NOT confuse the total hospital bill with what the patient owes out-of-pocket.\n"
-            "4. 'Deductions' or 'Non-payable' are expenses deducted from the insurance claim and borne by the patient.\n"
-            "5. When asked about doctors (consulted, treating, or reference), list all distinct doctors found in the evidence with their roles/specialties.\n\n"
-            "CRITICAL: Do NOT output thinking, reasoning steps, internal monologue, numbered analysis lists, or scratchpads. "
-            "Provide ONLY the final direct answer."
+            "Answer the user's question directly, accurately, and concisely in 1 or 2 plain sentences based strictly on the provided Document Knowledge Graph evidence. "
+            "Always cite the exact source page number where the answer is found (e.g. 'Source: Page 4').\n\n"
+            "CRITICAL GUIDELINES:\n"
+            "1. Grounding: Answer strictly based on the provided entities, properties, values, and relationships. Never guess or hallucinate.\n"
+            "2. Entity Disambiguation: When multiple entities, amounts, parties (e.g. patient vs insurer, buyer vs vendor, employer vs candidate), or line items/deductions are asked, clearly distinguish each respective role and amount.\n"
+            "3. Multi-Entity Listings: When asked to list items, persons, services, or figures (e.g. 'which all', 'what are the'), list all distinct matching entities found in the evidence.\n"
+            "4. Conciseness: Do NOT output thinking, reasoning steps, internal monologue, numbered analysis lists, or scratchpads. Provide ONLY the final direct answer."
         )
         user_prompt = f"Document Knowledge Graph Evidence:\n{context_text}\n\nQuestion: {question}\nDirect Answer:"
 
@@ -932,5 +860,5 @@ class GraphQueryService:
         except Exception as exc:
             logger.warning("graph.query_llm.error_falling_back_to_deterministic", error=str(exc))
 
-        # Accurate deterministic fallback
+        # Universal accurate deterministic fallback
         return self._deterministic_fallback(question, nodes, sources)
