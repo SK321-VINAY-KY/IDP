@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -16,10 +17,31 @@ import app.core.log_buffer  # Attach BufferHandler to root logger
 
 logging.basicConfig(level=settings.log_level)
 
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: initialise DB tables and user store eagerly."""
+    try:
+        from src.ai.layer3_extraction.storage import init_db
+        init_db()
+        logger.info("DB tables initialised on startup")
+    except Exception as exc:
+        logger.warning("startup.init_db failed: %s", exc)
+    try:
+        from app.storage.user_store import get_user_store
+        get_user_store()  # bootstraps admin user
+        logger.info("User store bootstrapped on startup")
+    except Exception as exc:
+        logger.warning("startup.user_store failed: %s", exc)
+    yield
+
 app = FastAPI(
     title="Schema Discovery & Extraction Pipeline",
     description="Interviews non-technical users to build an IDP target schema and run the extraction pipeline.",
     version="0.2.0",
+    lifespan=lifespan,
 )
 
 import os
