@@ -7,14 +7,14 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>IDP — Extraction Pipeline Console</title>
-    <link rel="stylesheet" href="style.css?v=24">
+    <link rel="stylesheet" href="style.css?v=26">
 </head>
 <body>
     <!-- =========================== LOGIN OVERLAY =========================== -->
     <div id="loginOverlay" class="login-overlay hidden">
         <div class="login-card">
             <div class="login-header">
-                <h2>🔐 IDP Console Login</h2>
+                <h2>IDP Console Login</h2>
                 <p class="muted small">Sign in with your admin or user credentials.</p>
             </div>
             <form id="loginForm" class="login-form">
@@ -41,11 +41,9 @@
         </div>
         <div class="header-right">
             <button id="themeToggleBtn" class="theme-toggle-btn" type="button" title="Toggle Light/Dark Theme">
-                <span class="theme-toggle-icon" id="themeIcon">☀️</span>
+                <span class="theme-toggle-icon" id="themeIcon"></span>
                 <span id="themeLabel">Light Mode</span>
             </button>
-            <span id="healthBadge" class="badge badge-info">connecting…</span>
-            <span id="llmBadge" class="badge badge-mute">—</span>
             <div id="userHeaderSection" class="user-header-section hidden">
                 <span id="userBadge" class="badge badge-primary">user</span>
                 <button id="logoutBtn" class="btn btn-ghost btn-sm" title="Log out">Logout</button>
@@ -55,12 +53,12 @@
 
     <!-- =========================== NAVIGATION TABS =========================== -->
     <nav class="tabs" id="mainTabs">
-        <button class="tab-btn active" data-tab="chatbot" id="tabBtnChatbot">📋 Schema Builder &amp; Pipeline</button>
-        <button class="tab-btn admin-only" data-tab="documents" id="tabBtnDocuments">📁 Shared Dataset</button>
-        <button class="tab-btn user-only hidden" data-tab="user-documents" id="tabBtnUserDocuments">📁 My Documents</button>
-        <button class="tab-btn admin-only" data-tab="logs" id="tabBtnLogs">📜 Logs</button>
-        <button class="tab-btn admin-only" data-tab="users" id="tabBtnUsers">👥 User Management</button>
-        <button class="tab-btn admin-only" data-tab="querybot" id="tabBtnQueryBot">💬 Query Bot</button>
+        <button class="tab-btn active" data-tab="chatbot" id="tabBtnChatbot">Schema Builder &amp; Pipeline</button>
+        <button class="tab-btn admin-only" data-tab="documents" id="tabBtnDocuments">Shared Dataset</button>
+        <button class="tab-btn user-only hidden" data-tab="user-documents" id="tabBtnUserDocuments">My Documents</button>
+        <button class="tab-btn admin-only" data-tab="logs" id="tabBtnLogs">Logs</button>
+        <button class="tab-btn admin-only" data-tab="users" id="tabBtnUsers">User Management</button>
+        <button class="tab-btn admin-only" data-tab="querybot" id="tabBtnQueryBot">Query Bot</button>
     </nav>
 
     <main class="content">
@@ -70,14 +68,13 @@
                 <div class="card schema-builder-card">
                     <div class="card-header">
                         <div class="header-titles">
-                            <h2>📋 Interactive Schema Builder</h2>
+                            <h2>Interactive Schema Builder</h2>
                             <p class="muted small">Define custom target extraction schema: specify document type, configure fields, data types, and extraction guidance.</p>
                         </div>
                         <div class="card-actions">
-                            <button type="button" class="btn btn-primary btn-sm" id="addSchemaFieldBtn">+ Add Field</button>
-                            <button type="button" class="btn btn-outline btn-sm" id="copySchemaBtn" title="Copy schema JSON">📋 Copy JSON</button>
-                            <button type="button" class="btn btn-outline btn-sm" id="toggleJsonPreviewBtn" title="Toggle JSON view">👁 Preview JSON</button>
-                            <button type="button" class="btn btn-ghost btn-sm" id="clearSchemaBtn" title="Clear all fields">🗑 Clear</button>
+                            <button type="button" class="btn btn-outline btn-sm" id="copySchemaBtn" title="Copy schema JSON">Copy JSON</button>
+                            <button type="button" class="btn btn-outline btn-sm" id="toggleJsonPreviewBtn" title="Toggle JSON view">Preview JSON</button>
+                            <button type="button" class="btn btn-ghost btn-sm" id="clearSchemaBtn" title="Clear all fields">Clear</button>
                         </div>
                     </div>
 
@@ -109,13 +106,13 @@
                         <div class="preview-header" style="display:flex; justify-content:space-between; align-items:center; padding: 4px 8px;">
                             <span class="muted small font-mono">Payload JSON Preview:</span>
                         </div>
-                        <pre id="schemaJsonView" class="json-code-block" style="margin: 0; padding: 10px; background: rgba(0,0,0,0.3); border-radius: 4px; overflow-x: auto; max-height: 240px; font-size: 11px;"></pre>
+                        <pre id="schemaJsonView" class="json-code-block" style="margin: 0; padding: 10px; border-radius: 4px; overflow-x: auto; max-height: 240px; font-size: 11px;"></pre>
                     </div>
 
                     <!-- Save & Confirm Action -->
                     <div class="schema-confirm-bar mt-2">
                         <button type="button" class="btn btn-success btn-lg btn-full" id="confirmBtn">
-                            ✓ Save &amp; Confirm Schema
+                            Save &amp; Confirm Schema
                         </button>
                         <p class="muted small mt-1" style="text-align: center;">
                             Validates and saves the schema directly to <code>schema_registry/</code> and PostgreSQL. Immediately ready for pipeline extraction below.
@@ -126,20 +123,20 @@
                     <!-- Post-Confirmation Actions Bar -->
                     <div id="postConfirmBox" class="post-confirm-actions-box mt-2 hidden">
                         <div class="success-banner" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: rgba(34, 197, 94, 0.12); border: 1px solid rgba(34, 197, 94, 0.35); border-radius: var(--radius-sm);">
-                            <span style="font-weight: 600; color: #22c55e;">✓ Schema Confirmed &amp; Saved to Registry</span>
+                            <span style="font-weight: 600; color: #22c55e;">Schema Confirmed &amp; Saved to Registry</span>
                             <span class="schema-confirmed-id font-mono small" id="confirmedSchemaIdText"></span>
                         </div>
                         <div class="pipeline-actions mt-1">
                             <button type="button" class="btn btn-success btn-lg btn-full" id="quickRunPipelineBtn">
-                                ⚡ Run Extraction Pipeline Now
+                                Run Extraction Pipeline Now
                             </button>
                         </div>
                         <div class="schema-download-actions mt-1" style="display: flex; gap: 8px;">
                             <button type="button" class="btn btn-outline btn-sm btn-full" id="downloadSchemaPdfBtn">
-                                📄 Download Schema PDF
+                                Download Schema PDF
                             </button>
                             <button type="button" class="btn btn-outline btn-sm btn-full" id="downloadSchemaJsonBtn">
-                                📥 Download Schema JSON
+                                Download Schema JSON
                             </button>
                         </div>
                         <p class="muted small mt-1">
@@ -163,17 +160,17 @@
                             <select id="schemaSelect" disabled>
                                 <option value="">— load schemas first —</option>
                             </select>
-                            <button class="btn btn-ghost btn-sm mt-1" id="refreshSchemasBtn">↻ Refresh Schemas</button>
+                            <button class="btn btn-ghost btn-sm mt-1" id="refreshSchemasBtn">Refresh Schemas</button>
                         </label>
                     </div>
 
                     <div class="form-row">
                         <label for="layer3StrategySelect">
                             <strong>Layer 3 Extraction Strategy</strong>
-                            <select id="layer3StrategySelect" style="width: 100%; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text); border: 1px solid var(--border); font-size: 13px; font-weight: 500;">
-                                <option value="graph_memory_concurrent" selected>⚡ Graph Memory Concurrent (High Speed, 8x Parallel)</option>
-                                <option value="graph_memory">🧠 Graph Memory Sequential (Ordered Context)</option>
-                                <option value="page_scan">📄 Classic Page Scan (Independent Page-by-Page Scratchpad)</option>
+                            <select id="layer3StrategySelect" class="themed-select" style="width: 100%; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--input-bg); color: var(--fg); border: 1px solid var(--border); font-size: 13px; font-weight: 500;">
+                                <option value="graph_memory_concurrent" selected>Graph Memory Concurrent (High Speed, 8x Parallel)</option>
+                                <option value="graph_memory">Graph Memory Sequential (Ordered Context)</option>
+                                <option value="page_scan">Classic Page Scan (Independent Page-by-Page Scratchpad)</option>
                             </select>
                             <span class="muted small mt-1" style="display:block;">
                                 <strong>Graph Memory Concurrent (Recommended):</strong> Parallel delta extraction across pages (8x speedup) with dispatch-time snapshots and post-merge reconciliation. Best for multi-page documents.
@@ -196,7 +193,7 @@
 
                     <div class="pipeline-actions">
                         <button class="btn btn-primary btn-lg btn-full" id="runPipelineBtn" disabled>
-                            ⚡ Run Extraction Pipeline
+                            Run Extraction Pipeline
                         </button>
                     </div>
                     <p class="muted small mt-1">
@@ -207,7 +204,7 @@
                 <div class="card">
                     <div class="card-header">
                         <h2>Job Output &amp; History (All Users)</h2>
-                        <button class="btn btn-ghost btn-sm" id="refreshJobsBtn">↻ Refresh</button>
+                        <button class="btn btn-ghost btn-sm" id="refreshJobsBtn">Refresh</button>
                     </div>
                     <div id="jobList">
                         <p class="muted">No jobs yet.</p>
@@ -219,9 +216,9 @@
                         <h2>Job Detail: <span id="detailJobId">—</span></h2>
                         <div class="card-actions">
                             <span id="detailStatus" class="badge">—</span>
-                            <button class="btn btn-sm btn-warn hidden" id="jobPauseBtn" title="Pause active job">⏸ Pause</button>
-                            <button class="btn btn-sm btn-primary hidden" id="jobResumeBtn" title="Resume paused job">▶ Resume</button>
-                            <button class="btn btn-sm btn-danger hidden" id="jobKillBtn" title="Kill / cancel job">✕ Kill</button>
+                            <button class="btn btn-sm btn-warn hidden" id="jobPauseBtn" title="Pause active job">Pause</button>
+                            <button class="btn btn-sm btn-primary hidden" id="jobResumeBtn" title="Resume paused job">Resume</button>
+                            <button class="btn btn-sm btn-danger hidden" id="jobKillBtn" title="Kill / cancel job">Kill</button>
                         </div>
                     </div>
                     <div id="jobDetail"></div>
@@ -240,16 +237,16 @@
                     <div class="form-row mt-1">
                         <label for="userLayer3StrategySelect">
                             <strong>Layer 3 Strategy</strong>
-                            <select id="userLayer3StrategySelect" style="width: 100%; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text); border: 1px solid var(--border); font-size: 13px;">
-                                <option value="graph_memory_concurrent" selected>⚡ Graph Memory Concurrent (High Speed, 8x Parallel)</option>
-                                <option value="graph_memory">🧠 Graph Memory Sequential (Ordered Context)</option>
-                                <option value="page_scan">📄 Classic Page Scan (Scratchpad)</option>
+                            <select id="userLayer3StrategySelect" class="themed-select" style="width: 100%; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--input-bg); color: var(--fg); border: 1px solid var(--border); font-size: 13px;">
+                                <option value="graph_memory_concurrent" selected>Graph Memory Concurrent (High Speed, 8x Parallel)</option>
+                                <option value="graph_memory">Graph Memory Sequential (Ordered Context)</option>
+                                <option value="page_scan">Classic Page Scan (Scratchpad)</option>
                             </select>
                         </label>
                     </div>
                     <div class="pipeline-actions mt-1">
                         <button class="btn btn-primary btn-lg btn-full" id="userAutoRunPipelineBtn">
-                            ⚡ Run Pipeline on My Documents
+                            Run Pipeline on My Documents
                         </button>
                     </div>
                     <div id="userAutoRunStatus" class="status-box hidden"></div>
@@ -258,7 +255,7 @@
                 <div class="card">
                     <div class="card-header">
                         <h2>My Extraction Jobs</h2>
-                        <button class="btn btn-ghost btn-sm" id="refreshUserJobsBtn">↻ Refresh</button>
+                        <button class="btn btn-ghost btn-sm" id="refreshUserJobsBtn">Refresh</button>
                     </div>
                     <div id="userJobList">
                         <p class="muted">No jobs yet.</p>
@@ -270,9 +267,9 @@
                         <h2>Job Detail: <span id="userDetailJobId">—</span></h2>
                         <div class="card-actions">
                             <span id="userDetailStatus" class="badge">—</span>
-                            <button class="btn btn-sm btn-warn hidden" id="userJobPauseBtn" title="Pause active job">⏸ Pause</button>
-                            <button class="btn btn-sm btn-primary hidden" id="userJobResumeBtn" title="Resume paused job">▶ Resume</button>
-                            <button class="btn btn-sm btn-danger hidden" id="userJobKillBtn" title="Kill / cancel job">✕ Kill</button>
+                            <button class="btn btn-sm btn-warn hidden" id="userJobPauseBtn" title="Pause active job">Pause</button>
+                            <button class="btn btn-sm btn-primary hidden" id="userJobResumeBtn" title="Resume paused job">Resume</button>
+                            <button class="btn btn-sm btn-danger hidden" id="userJobKillBtn" title="Kill / cancel job">Kill</button>
                         </div>
                     </div>
                     <div id="userJobDetail"></div>
@@ -288,7 +285,7 @@
                 <div class="upload-zone" id="uploadZone">
                     <input type="file" id="fileInput" multiple accept="application/pdf,.pdf" hidden>
                     <div class="upload-inner">
-                        <p class="upload-icon">📄</p>
+                        <p class="upload-icon"></p>
                         <p><strong>Drag &amp; drop PDFs here</strong> or <a href="#" id="browseBtn">browse</a></p>
                         <p class="muted small">Multi-select supported. Files go into <code>dataset/</code>.</p>
                     </div>
@@ -299,7 +296,7 @@
             <div class="card">
                 <div class="card-header">
                     <h2>Dataset (<span id="docCount">0</span>)</h2>
-                    <button class="btn btn-ghost" id="refreshDocsBtn">↻ Refresh</button>
+                    <button class="btn btn-ghost" id="refreshDocsBtn">Refresh</button>
                 </div>
                 <div id="docList" class="doc-list">
                     <p class="muted">Loading…</p>
@@ -324,7 +321,7 @@
                 <div class="upload-zone" id="userUploadZone">
                     <input type="file" id="userFileInput" multiple accept="application/pdf,.pdf" hidden>
                     <div class="upload-inner">
-                        <p class="upload-icon">📄</p>
+                        <p class="upload-icon"></p>
                         <p><strong>Drag &amp; drop PDFs here</strong> or <a href="#" id="userBrowseBtn">browse</a></p>
                         <p class="muted small">Multi-select supported. Files are saved in your private workspace.</p>
                     </div>
@@ -335,7 +332,7 @@
             <div class="card">
                 <div class="card-header">
                     <h2>My Documents (<span id="userDocCount">0</span>)</h2>
-                    <button class="btn btn-ghost" id="refreshUserDocsBtn">↻ Refresh</button>
+                    <button class="btn btn-ghost" id="refreshUserDocsBtn">Refresh</button>
                 </div>
                 <div id="userDocList" class="doc-list">
                     <p class="muted">Loading…</p>
@@ -351,7 +348,7 @@
                     <div class="card-actions">
                         <button class="btn btn-primary btn-sm" id="logSubTabUsersBtn">User Activity</button>
                         <button class="btn btn-outline btn-sm" id="logSubTabSystemBtn">System Logs</button>
-                        <button class="btn btn-ghost btn-sm" id="refreshLogsBtn">↻ Refresh</button>
+                        <button class="btn btn-ghost btn-sm" id="refreshLogsBtn">Refresh</button>
                     </div>
                 </div>
 
@@ -406,7 +403,7 @@
             <div class="card">
                 <div class="card-header">
                     <h2>System Users</h2>
-                    <button class="btn btn-ghost btn-sm" id="refreshUsersListBtn">↻ Refresh</button>
+                    <button class="btn btn-ghost btn-sm" id="refreshUsersListBtn">Refresh</button>
                 </div>
                 <div id="usersListTable">
                     <p class="muted">Loading users...</p>
@@ -419,7 +416,7 @@
                 <div class="card-header">
                     <h2>Query Bot</h2>
                     <div class="card-actions">
-                        <button class="btn btn-ghost btn-sm" id="qbClearBtn">🗑 Clear Chat</button>
+                        <button class="btn btn-ghost btn-sm" id="qbClearBtn">Clear Chat</button>
                     </div>
                 </div>
 
@@ -448,6 +445,6 @@
         </section>
     </main>
 
-    <script src="app.js?v=21"></script>
+    <script src="app.js?v=23"></script>
 </body>
 </html>

@@ -223,7 +223,7 @@
         localStorage.setItem(THEME_KEY, theme);
         const icon = $('themeIcon');
         const label = $('themeLabel');
-        if (icon) icon.textContent = theme === 'dark' ? '☀️' : '🌙';
+        if (icon) icon.textContent = theme === 'dark' ? '' : '';
         if (label) label.textContent = theme === 'dark' ? 'Light Mode' : 'Dark Mode';
     }
 
@@ -265,14 +265,9 @@
 
     async function checkHealth() {
         try {
-            const data = await api('/health');
-            $('healthBadge').textContent = 'online';
-            $('healthBadge').className = 'badge badge-success';
-            $('llmBadge').textContent = 'LLM: ' + (data.llm_provider || 'unknown');
+            await api('/health');
         } catch (e) {
-            $('healthBadge').textContent = 'offline';
-            $('healthBadge').className = 'badge badge-danger';
-            $('llmBadge').textContent = '--';
+            /* health check failed; status badges removed from UI */
         }
     }
 
@@ -304,7 +299,7 @@
                 const row = el('div', 'doc-item');
                 const info = el('div', 'doc-item-info');
                 info.innerHTML = `
-                    <span class="doc-icon">📄</span>
+                    <span class="doc-icon"></span>
                     <div>
                         <div class="doc-name">${escapeHtml(d.name)}</div>
                         <div class="doc-meta">${fmtSize(d.size)} • ${new Date(d.modified).toLocaleString()}</div>
@@ -332,7 +327,7 @@
                 const info = el('div', 'doc-item-info');
                 const schema = o.schema_ref ? ` • schema: <code>${escapeHtml(o.schema_ref.schema_id || '--')}</code>` : '';
                 info.innerHTML = `
-                    <span class="doc-icon">📝</span>
+                    <span class="doc-icon"></span>
                     <div>
                         <div class="doc-name">${escapeHtml(o.name)}</div>
                         <div class="doc-meta">${fmtSize(o.size)} • ${new Date(o.modified).toLocaleString()}${schema}</div>
@@ -368,7 +363,7 @@
                 const row = el('div', 'doc-item');
                 const info = el('div', 'doc-item-info');
                 info.innerHTML = `
-                    <span class="doc-icon">📄</span>
+                    <span class="doc-icon"></span>
                     <div>
                         <div class="doc-name">${escapeHtml(d.name)}</div>
                         <div class="doc-meta">${fmtSize(d.size)} • ${new Date(d.modified).toLocaleString()}</div>
@@ -623,7 +618,7 @@
         state.currentErrors = errors;
         if (errors.length) {
             if (errs) {
-                errs.innerHTML = '<strong>⚠️ Schema issues:</strong><ul>' + errors.map(e => '<li>' + escapeHtml(e) + '</li>').join('') + '</ul>';
+                errs.innerHTML = '<strong>Schema issues:</strong><ul>' + errors.map(e => '<li>' + escapeHtml(e) + '</li>').join('') + '</ul>';
                 errs.classList.remove('hidden');
             }
         } else {
@@ -665,7 +660,7 @@
             panel.innerHTML = `
                 <div style="padding: 24px; text-align: center; background: rgba(0,0,0,0.1); border-radius: var(--radius-sm); border: 1px dashed var(--border);">
                     <p class="muted" style="margin-bottom: 8px;">No fields defined yet. Choose a Quick Preset above or click below to add your first field.</p>
-                    <button type="button" class="btn btn-outline btn-sm" id="addFieldInlineBtn">➕ Add First Field</button>
+                    <button type="button" class="btn btn-outline btn-sm" id="addFieldInlineBtn">Add First Field</button>
                 </div>
             `;
             const inlineBtn = $('addFieldInlineBtn');
@@ -718,7 +713,7 @@
                         <input type="text" class="schema-input field-desc-input" data-field="description" value="${escapeHtml(f.description || '')}" placeholder="Instructions for Layer 3 extraction...">
                     </td>
                     <td style="text-align: center;">
-                        <button type="button" class="btn-del-field" data-idx="${idx}" title="Delete field">✕</button>
+                        <button type="button" class="btn-del-field" data-idx="${idx}" title="Delete field"></button>
                     </td>
                 </tr>
             `;
@@ -728,7 +723,7 @@
                 </tbody>
             </table>
             <div class="schema-bottom-actions mt-1" style="display: flex; justify-content: space-between; align-items: center;">
-                <button type="button" class="btn btn-ghost btn-sm" id="addFieldInlineBtn">➕ Add Field</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="addFieldInlineBtn">Add Field</button>
                 <span class="muted small">${fields.length} field(s) configured</span>
             </div>
         `;
@@ -768,7 +763,7 @@
             const btn = $('copySchemaBtn');
             if (btn) {
                 const orig = btn.textContent;
-                btn.textContent = '✓ Copied!';
+                btn.textContent = 'Copied!';
                 setTimeout(() => { btn.textContent = orig; }, 1500);
             }
         } catch (e) {
@@ -780,11 +775,17 @@
         collectSchemaFromInputs();
         const box = $('schemaJsonPreviewBox');
         if (!box) return;
-        box.classList.toggle('hidden');
         const view = $('schemaJsonView');
         if (view && state.currentSchema) {
             view.textContent = JSON.stringify(state.currentSchema, null, 2);
         }
+        // Always reveal the JSON on click (never hide) so the button behaves
+        // like a "show me this" action: click -> JSON shows and scrolls into
+        // view, centered in the viewport. Clicking again keeps it shown.
+        box.classList.remove('hidden');
+        requestAnimationFrame(() => {
+            box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
     }
 
     async function saveCustomSchema() {
@@ -805,7 +806,7 @@
         const btn = $('confirmBtn');
         if (btn) {
             btn.disabled = true;
-            btn.textContent = '⏳ Saving & Registering...';
+            btn.textContent = 'Saving & Registering...';
         }
 
         try {
@@ -830,7 +831,7 @@
             state.lastConfirmedSchemaId = data.schema_id;
             state.completed = true;
 
-            showStatus('confirmStatus', `🎉 Schema saved and confirmed! Schema ID: <code>${escapeHtml(data.schema_id)}</code>`, 'success');
+            showStatus('confirmStatus', `Schema saved and confirmed! Schema ID: <code>${escapeHtml(data.schema_id)}</code>`, 'success');
 
             const confIdText = $('confirmedSchemaIdText');
             if (confIdText) confIdText.textContent = `ID: ${data.schema_id}`;
@@ -860,7 +861,7 @@
         } finally {
             if (btn) {
                 btn.disabled = false;
-                btn.textContent = '✓ Save & Confirm Schema';
+                btn.textContent = 'Save & Confirm Schema';
             }
         }
     }
@@ -1090,10 +1091,10 @@
             const badge = $('pipelineAvail');
             if (badge) {
                 if (data.available) {
-                    badge.textContent = '✓ available • ' + (data.routing_mode || '');
+                    badge.textContent = 'available • ' + (data.routing_mode || '');
                     badge.className = 'badge badge-success';
                 } else {
-                    badge.textContent = '✕ unavailable';
+                    badge.textContent = 'unavailable';
                     badge.className = 'badge badge-danger';
                 }
             }
@@ -1173,13 +1174,13 @@
                 let actionButtons = '';
                 if (j.status === 'running' || j.status === 'queued') {
                     actionButtons = `
-                        <button class="btn btn-ghost btn-sm" title="Pause job" data-action="pause" data-job="${escapeHtml(j.job_id)}">⏸</button>
-                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}">✕</button>
+                        <button class="btn btn-ghost btn-sm" title="Pause job" data-action="pause" data-job="${escapeHtml(j.job_id)}"></button>
+                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}"></button>
                     `;
                 } else if (j.status === 'paused') {
                     actionButtons = `
-                        <button class="btn btn-ghost btn-sm" title="Resume job" style="color:#6ee7b7" data-action="resume" data-job="${escapeHtml(j.job_id)}">▶</button>
-                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}">✕</button>
+                        <button class="btn btn-ghost btn-sm" title="Resume job" style="color:#6ee7b7" data-action="resume" data-job="${escapeHtml(j.job_id)}"></button>
+                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}"></button>
                     `;
                 }
 
@@ -1319,14 +1320,14 @@
             host.innerHTML = `
                 <div class="job-summary-grid">
                     <div class="summary-box"><div class="lbl">Status</div><div class="val">${escapeHtml(j.status)}</div></div>
-                    <div class="summary-box"><div class="lbl">Strategy</div><div class="val" style="font-size:12px; font-weight:600; color:${(j.strategy || '').startsWith('graph_memory') ? '#c084fc' : '#94a3b8'}">${(j.strategy || '').startsWith('graph_memory') ? ((j.strategy === 'graph_memory_concurrent') ? '⚡ Graph Memory Concurrent' : '🧠 Graph Memory') : '📄 Page Scan'}</div></div>
+                    <div class="summary-box"><div class="lbl">Strategy</div><div class="val" style="font-size:12px; font-weight:600; color:${(j.strategy || '').startsWith('graph_memory') ? '#c084fc' : '#94a3b8'}">${(j.strategy || '').startsWith('graph_memory') ? ((j.strategy === 'graph_memory_concurrent') ? 'Graph Memory Concurrent' : 'Graph Memory') : 'Page Scan'}</div></div>
                     <div class="summary-box"><div class="lbl">Docs</div><div class="val">${sucs.length + fails.length} / ${(j.targets || []).length || 0}</div></div>
                     <div class="summary-box"><div class="lbl">Success</div><div class="val" style="color:#6ee7b7">${sucs.length}</div></div>
                     <div class="summary-box"><div class="lbl">Wall time</div><div class="val">${wall}</div></div>
                 </div>
                 ${sucs.length ? `
                 <div class="job-section">
-                    <h3>✓ Successful (${sucs.length})</h3>
+                    <h3>Successful (${sucs.length})</h3>
                     ${sucs.map((s, idx) => `
                         <div class="result-row ok" style="flex-direction: column; align-items: stretch; gap: 8px;">
                             <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
@@ -1336,8 +1337,8 @@
                                 </div>
                                 <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
                                     ${(s.strategy || '').startsWith('graph_memory')
-                                        ? `<span class="badge badge-primary" style="background:rgba(124,58,237,0.2);color:#c084fc;border:1px solid rgba(124,58,237,0.4)">${s.strategy === 'graph_memory_concurrent' ? '⚡' : '🧠'} ${s.strategy === 'graph_memory_concurrent' ? 'Graph Memory Concurrent' : 'Graph Memory'} (${s.graph_nodes || 0} nodes, ${s.graph_edges || 0} edges)</span>`
-                                        : `<span class="badge badge-mute">📄 Classic Page Scan</span>`}
+                                        ? `<span class="badge badge-primary" style="background:rgba(124,58,237,0.2);color:#c084fc;border:1px solid rgba(124,58,237,0.4)">${s.strategy === 'graph_memory_concurrent' ? '' : ''} ${s.strategy === 'graph_memory_concurrent' ? 'Graph Memory Concurrent' : 'Graph Memory'} (${s.graph_nodes || 0} nodes, ${s.graph_edges || 0} edges)</span>`
+                                        : `<span class="badge badge-mute">Classic Page Scan</span>`}
                                     ${s.db_run_id ? `<span class="badge badge-success">PostgreSQL: Run #${s.db_run_id}</span>` : ''}
                                     <span class="result-meta"><code>${escapeHtml(s.md)}</code></span>
                                 </div>
@@ -1345,8 +1346,8 @@
                             ${s.extracted_data ? `
                             <div class="extracted-json-box">
                                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                                    <strong class="extracted-json-title">⚡ Layer 3 Extracted JSON (${escapeHtml(s.extracted_json || 'record.json')})</strong>
-                                    <button class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(JSON.stringify(${escapeHtml(JSON.stringify(s.extracted_data))}, null, 2)); this.textContent='✓ Copied!'; setTimeout(()=>this.textContent='Copy JSON', 1500)">Copy JSON</button>
+                                    <strong class="extracted-json-title">Layer 3 Extracted JSON (${escapeHtml(s.extracted_json || 'record.json')})</strong>
+                                    <button class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(JSON.stringify(${escapeHtml(JSON.stringify(s.extracted_data))}, null, 2)); this.textContent='Copied!'; setTimeout(()=>this.textContent='Copy JSON', 1500)">Copy JSON</button>
                                 </div>
                                 <pre class="extracted-json-pre">${escapeHtml(JSON.stringify(s.extracted_data, null, 2))}</pre>
                             </div>
@@ -1354,7 +1355,7 @@
                             ${s.graph_memory && s.graph_memory.snapshot ? `
                             <details class="graph-memory-details" style="margin-top: 6px; background: rgba(124,58,237,0.08); border: 1px solid rgba(124,58,237,0.25); border-radius: 6px; padding: 8px 12px;">
                                 <summary style="cursor: pointer; font-weight: 600; color: #c084fc; font-size: 12px; user-select: none;">
-                                    🧠 Document Knowledge Graph (${s.graph_nodes || 0} Entities, ${s.graph_edges || 0} Relationships)
+                                    Document Knowledge Graph (${s.graph_nodes || 0} Entities, ${s.graph_edges || 0} Relationships)
                                 </summary>
                                 <div style="margin-top: 8px; font-size: 11px;">
                                     <div style="display: flex; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;">
@@ -1398,7 +1399,7 @@
                 ` : ''}
                 ${fails.length ? `
                 <div class="job-section">
-                    <h3>✕ Failed (${fails.length})</h3>
+                    <h3>Failed (${fails.length})</h3>
                     ${fails.map(f => `
                         <div class="result-row fail">
                             <div>
@@ -1415,9 +1416,9 @@
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
                         <h3 style="margin:0;">Full JSON</h3>
                         <div style="display:flex; gap:8px; align-items:center;">
-                            <button class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(JSON.stringify(window.__currentJobDetail, null, 2)); this.textContent='✓ Copied!'; setTimeout(()=>this.textContent='📋 Copy JSON', 1500)">📋 Copy JSON</button>
-                            <button class="btn btn-sm btn-outline" onclick="downloadJobJson()">📥 Download JSON</button>
-                            <button class="btn btn-sm btn-primary" onclick="downloadJobPdf('${j.job_id}')">📄 Download PDF</button>
+                            <button class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText(JSON.stringify(window.__currentJobDetail, null, 2)); this.textContent='Copied!'; setTimeout(()=>this.textContent='Copy JSON', 1500)">Copy JSON</button>
+                            <button class="btn btn-sm btn-outline" onclick="downloadJobJson()">Download JSON</button>
+                            <button class="btn btn-sm btn-primary" onclick="downloadJobPdf('${j.job_id}')">Download PDF</button>
                         </div>
                     </div>
                     <pre id="fullJsonView" class="job-full-json-pre">${escapeHtml(JSON.stringify(j, null, 2))}</pre>
@@ -1504,7 +1505,7 @@
             const strategy = ($('userLayer3StrategySelect') && $('userLayer3StrategySelect').value) || 'graph_memory_concurrent';
             fd.append('strategy', strategy);
             const res = await api('/me/pipeline/run', { method: 'POST', body: fd });
-            showStatus('userAutoRunStatus', `✓ Job ${res.job_id} queued for ${res.targets} document(s).`, 'success');
+            showStatus('userAutoRunStatus', `Job ${res.job_id} queued for ${res.targets} document(s).`, 'success');
             loadUserJobs();
         } catch (e) {
             showStatus('userAutoRunStatus', 'Failed to run pipeline: ' + e.message, 'error');
@@ -1557,18 +1558,18 @@
                 let actionButtons = '';
                 if (j.status === 'running' || j.status === 'queued') {
                     actionButtons = `
-                        <button class="btn btn-ghost btn-sm" title="Pause job" data-action="pause" data-job="${escapeHtml(j.job_id)}">⏸ Pause</button>
-                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}">✕ Kill</button>
+                        <button class="btn btn-ghost btn-sm" title="Pause job" data-action="pause" data-job="${escapeHtml(j.job_id)}">Pause</button>
+                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}">Kill</button>
                     `;
                 } else if (j.status === 'paused') {
                     actionButtons = `
-                        <button class="btn btn-ghost btn-sm" title="Resume job" style="color:#6ee7b7" data-action="resume" data-job="${escapeHtml(j.job_id)}">▶ Resume</button>
-                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}">✕ Kill</button>
+                        <button class="btn btn-ghost btn-sm" title="Resume job" style="color:#6ee7b7" data-action="resume" data-job="${escapeHtml(j.job_id)}">Resume</button>
+                        <button class="btn btn-ghost btn-sm" title="Kill job" style="color:#fca5a5" data-action="kill" data-job="${escapeHtml(j.job_id)}">Kill</button>
                     `;
                 } else if (j.status === 'completed' || j.succeeded > 0) {
                     actionButtons = `
-                        <button class="btn btn-outline btn-sm" title="Download JSON report" data-action="download-json" data-job="${escapeHtml(j.job_id)}">📥 JSON</button>
-                        <button class="btn btn-primary btn-sm" title="Download PDF report" data-action="download-pdf" data-job="${escapeHtml(j.job_id)}">📄 PDF</button>
+                        <button class="btn btn-outline btn-sm" title="Download JSON report" data-action="download-json" data-job="${escapeHtml(j.job_id)}">JSON</button>
+                        <button class="btn btn-primary btn-sm" title="Download PDF report" data-action="download-pdf" data-job="${escapeHtml(j.job_id)}">PDF</button>
                     `;
                 }
 
@@ -1803,7 +1804,7 @@
                     method: 'POST',
                     json: { username, password, role },
                 });
-                showStatus('createUserStatus', `✓ User '${res.username}' created successfully with role '${res.role}'!`, 'success');
+                showStatus('createUserStatus', `User '${res.username}' created successfully with role '${res.role}'!`, 'success');
                 $('newUsername').value = '';
                 $('newPassword').value = '';
                 loadUsersList();
@@ -1834,7 +1835,7 @@
         const isGraph = (m.strategy || '').startsWith('graph_memory') || m.has_graph;
         modeBadge.style.display = 'inline-block';
         modeBadge.className = 'badge ' + (isGraph ? 'badge-primary' : 'badge-secondary');
-        modeBadge.textContent = isGraph ? '⚡ Graph Memory' : '📄 JSON Fallback';
+        modeBadge.textContent = isGraph ? 'Graph Memory' : 'JSON Fallback';
     }
 
     async function loadAllExtractedData() {
@@ -2009,14 +2010,14 @@
                 res.sources.forEach(s => {
                     const pg = s.page ? `Page ${s.page}` : 'Document';
                     const ev = s.evidence ? `: "${escapeHtml(s.evidence)}"` : '';
-                    ansHtml += `<div style="margin-top: 2px;">📍 <strong>[Source: ${escapeHtml(pg)}]</strong>${ev}</div>`;
+                    ansHtml += `<div style="margin-top: 2px;"><strong>[Source: ${escapeHtml(pg)}]</strong>${ev}</div>`;
                 });
                 ansHtml += '</div>';
             }
 
             const isGraph = res.mode === 'graph';
             const badgeClass = isGraph ? 'badge-primary' : 'badge-secondary';
-            const badgeText = isGraph ? '⚡ Graph Memory' : '📄 JSON Fallback';
+            const badgeText = isGraph ? 'Graph Memory' : 'JSON Fallback';
             ansHtml += `<div style="margin-top: 6px;"><span class="badge ${badgeClass}" style="font-size: 10px; font-weight: 500;">${badgeText}</span></div>`;
 
             botDiv.innerHTML = ansHtml;

@@ -532,10 +532,11 @@ h2 {
 }
 
 .schema-builder-card {
-    background: var(--card-bg, #1e293b);
-    border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
-    border-radius: var(--radius-md, 8px);
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius, 8px);
     padding: 20px;
+    box-shadow: var(--card-shadow);
 }
 
 .schema-presets-bar {
@@ -544,8 +545,8 @@ h2 {
     gap: 8px;
     flex-wrap: wrap;
     padding: 8px 12px;
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid var(--border-light, rgba(255, 255, 255, 0.08));
+    background: var(--bg-3);
+    border: 1px solid var(--border-light);
     border-radius: var(--radius-sm, 6px);
     margin-bottom: 14px;
 }
@@ -570,9 +571,9 @@ h2 {
 }
 
 .json-preview-box {
-    border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+    border: 1px solid var(--border);
     border-radius: var(--radius-sm, 6px);
-    background: rgba(0, 0, 0, 0.25);
+    background: var(--code-bg);
     margin-top: 12px;
 }
 
@@ -981,6 +982,29 @@ h2 {
     font-family: inherit;
     font-size: 13px;
     outline: none;
+}
+
+/* Make native <select> dropdown options readable in both themes.
+   Without explicit colors the browser renders the popup with default
+   white background, which hides light-colored text in dark mode. */
+select,
+.themed-select {
+    color: var(--fg);
+    background-color: var(--input-bg);
+}
+
+select option,
+.themed-select option {
+    color: var(--fg);
+    background-color: var(--bg-2);
+}
+
+select option:checked,
+select option:hover,
+.themed-select option:checked,
+.themed-select option:hover {
+    background-color: var(--accent);
+    color: #ffffff;
 }
 
 .form-row select:focus,
@@ -1597,4 +1621,4 @@ h2 {
     background: #2563eb;
     border-color: #2563eb;
     color: #ffffff;
-}
+}
