@@ -440,22 +440,25 @@ def get_user_store(file_path: Optional[str | Path] = None) -> UserStore:
 
             store = JSONFileUserStore(path)
 
-        if not store.list_users():
-            admin_user = os.getenv("ADMIN_USERNAME", "admin")
-            admin_pass = os.getenv("ADMIN_PASSWORD", "changeme")
+        admin_user = (os.getenv("ADMIN_USERNAME") or "admin").strip().lower()
+        admin_pass = os.getenv("ADMIN_PASSWORD") or "changeme"
 
-            if app_env in ("production", "staging"):
-                if not os.getenv("ADMIN_PASSWORD") or os.getenv("ADMIN_PASSWORD") in ("changeme", "admin", "password", "12345"):
-                    raise ValueError("ADMIN_PASSWORD must be explicitly set and cannot be 'changeme' in production/staging.")
+        if app_env in ("production", "staging"):
+            if not os.getenv("ADMIN_PASSWORD") or os.getenv("ADMIN_PASSWORD") in ("changeme", "admin", "password", "12345"):
+                raise ValueError("ADMIN_PASSWORD must be explicitly set and cannot be 'changeme' in production/staging.")
 
-            if os.getenv("ADMIN_USERNAME") is None or os.getenv("ADMIN_PASSWORD") is None:
-                logger.warning(
-                    "ADMIN_USERNAME and/or ADMIN_PASSWORD environment variables not set; "
-                    "seeding default admin account '%s' with default password.",
-                    admin_user,
-                )
-
+        # Ensure admin account exists with the configured active password
+        existing_admin = store.get_by_username(admin_user)
+        if existing_admin:
+            if admin_pass and not verify_password(admin_pass, existing_admin.hashed_password):
+                logger.info("Updating existing admin account '%s' password to match ADMIN_PASSWORD.", admin_user)
+                existing_admin.hashed_password = get_password_hash(admin_pass)
+                existing_admin.role = Role.ADMIN
+                store.save(existing_admin)
+        else:
+            logger.info("Seeding admin account '%s'.", admin_user)
             store.create(username=admin_user, password=admin_pass, role=Role.ADMIN)
+
         _user_store = store
     return _user_store
 
