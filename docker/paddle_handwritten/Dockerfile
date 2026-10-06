@@ -18,19 +18,33 @@ RUN dnf install -y mesa-libGL glib2 libgomp && \
 WORKDIR ${LAMBDA_TASK_ROOT}
 
 # Install Python dependencies
-COPY requirements.txt .
+COPY docker/paddle_handwritten/requirements.txt .
 RUN pip install --no-cache-dir -U pip setuptools wheel && \
     pip install --no-cache-dir -r requirements.txt
 
 # Pre-download and cache model weights into the container image
 RUN mkdir -p /opt/paddleocr /opt/paddle /opt/paddlex && \
-    python -c "from paddleocr import PaddleOCR; PaddleOCR(ocr_version='PP-OCRv4', lang='en', device='cpu', enable_mkldnn=False, use_doc_unwarping=False, use_doc_orientation_classify=False, use_textline_orientation=False, text_det_thresh=0.2)" && \
+    python -c "from paddleocr import PaddleOCR; PaddleOCR(ocr_version='PP-OCRv6', lang='en', device='cpu', enable_mkldnn=False, use_doc_unwarping=False, use_doc_orientation_classify=False, use_textline_orientation=False, text_det_thresh=0.2)" && \
     (cp -r /tmp/.paddlex/* /opt/paddlex/ 2>/dev/null || true) && \
     (cp -r /tmp/.paddleocr/* /opt/paddleocr/ 2>/dev/null || true) && \
     chmod -R 755 /opt/paddleocr /opt/paddle /opt/paddlex
 
-# Copy engine and handler
-COPY engine.py ${LAMBDA_TASK_ROOT}/
-COPY handler.py ${LAMBDA_TASK_ROOT}/
+# Copy engine, handler, and shared schema dependencies.
+# document_ir.py and paddle_block_rollup.py must be present at the Lambda
+# task root because engine.py imports them via the ImportError fallback
+# ("from document_ir import ..." / "from paddle_block_rollup import ...").
+# They are NOT auto-included by the build context; omitting either causes
+# an ImportError at container cold-start.
+#
+# NOTE: This Dockerfile must be built with the REPO ROOT as the build context:
+#   docker build --provenance=false --platform linux/amd64 \
+#     -f docker/paddle_handwritten/Dockerfile \
+#     -t <tag> .
+# The deploy_paddle_lambdas.py and deploy_layer2.py scripts have been updated
+# to pass the repo root as the build context.
+COPY docker/paddle_handwritten/engine.py ${LAMBDA_TASK_ROOT}/
+COPY docker/paddle_handwritten/handler.py ${LAMBDA_TASK_ROOT}/
+COPY src/ai/schemas/document_ir.py ${LAMBDA_TASK_ROOT}/
+COPY src/ai/layer2_conversion/paddle_block_rollup.py ${LAMBDA_TASK_ROOT}/
 
 CMD [ "handler.lambda_handler" ]

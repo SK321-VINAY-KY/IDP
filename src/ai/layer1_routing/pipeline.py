@@ -61,29 +61,30 @@ def _run_engine_task(
     task: EngineTask,
     page_context: dict,
     llm_client: LLMClient,
-) -> tuple[str, float, float]:
+) -> tuple[str, float, float, list]:
     """
-    Execute one EngineTask and return (markdown, confidence, latency_ms).
-    All exceptions are caught and surfaced as ("", 0.0, latency_ms) so a
+    Execute one EngineTask and return (markdown, confidence, latency_ms, blocks).
+    All exceptions are caught and surfaced as ("", 0.0, latency_ms, []) so a
     single engine failure never aborts the entire plan.
     """
     t0 = time.monotonic()
     try:
+        blocks = []
         if task.engine == "docling":
-            text, conf = convert_digital_page(
+            text, conf, blocks = convert_digital_page(
                 page_context["pdf_path"],
                 page_context["page_number"],
             )
 
         elif task.engine == "paddleocr_printed":
-            text, conf = convert_scanned_page(
+            text, conf, blocks = convert_scanned_page(
                 page_context.get("image_array"),
                 page_context["page_number"],
                 image_bytes=page_context.get("image_bytes"),
             )
 
         elif task.engine == "paddleocr_handwritten":
-            text, conf = convert_handwritten_via_paddle(
+            text, conf, blocks = convert_handwritten_via_paddle(
                 page_context.get("image_array"),
                 page_context["page_number"],
                 image_bytes=page_context.get("image_bytes"),
@@ -95,15 +96,16 @@ def _run_engine_task(
                 page_number=page_context.get("page_number"),
             )
             text, conf = llm_client.transcribe_handwriting(page_context["image_bytes"])
+            blocks = []
 
         elif task.engine == "skip":
-            text, conf = "", 1.0
+            text, conf, blocks = "", 1.0, []
 
         else:
             raise ValueError(f"Unknown engine: {task.engine!r}")
 
         latency_ms = (time.monotonic() - t0) * 1000
-        return text, conf, latency_ms
+        return text, conf, latency_ms, blocks
 
     except Exception as exc:
         latency_ms = (time.monotonic() - t0) * 1000
@@ -114,7 +116,7 @@ def _run_engine_task(
             error=str(exc),
             error_type=type(exc).__name__,
         )
-        return "", 0.0, latency_ms
+        return "", 0.0, latency_ms, []
 
 
 # ---------------------------------------------------------------------------
@@ -125,16 +127,16 @@ def _run_plan(
     plan: list[EngineTask],
     page_context: dict,
     llm_client: LLMClient,
-) -> list[tuple[EngineTask, str, float, float]]:
+) -> list[tuple[EngineTask, str, float, float, list]]:
     """
     Execute the primary task in the plan.
     Only 1 engine runs initially. If it fails or confidence is below threshold,
     the pipeline escalates directly to VLM without chaining intermediate OCR engines.
     """
-    results: list[tuple[EngineTask, str, float, float]] = []
+    results: list[tuple[EngineTask, str, float, float, list]] = []
     if plan:
         task = plan[0]
-        markdown, confidence, latency_ms = _run_engine_task(task, page_context, llm_client)
+        markdown, confidence, latency_ms, blocks = _run_engine_task(task, page_context, llm_client)
         logger.info(
             "pipeline.engine_task_complete",
             engine=task.engine,
@@ -142,11 +144,12 @@ def _run_plan(
             confidence=round(confidence, 4),
             chars_out=len(markdown.strip()),
             latency_ms=round(latency_ms, 1),
+            blocks_count=len(blocks),
         )
         if markdown.strip():
-            results.append((task, markdown, confidence, latency_ms))
+            results.append((task, markdown, confidence, latency_ms, blocks))
         else:
-            results.append((task, "", confidence, latency_ms))
+            results.append((task, "", confidence, latency_ms, blocks))
     return results
 
 
@@ -389,8 +392,9 @@ def process_page(
     # ── Step 5 + 6: run plan and merge ──────────────────────────────────────
     raw_results = _run_plan(plan, page_context, llm_client)
 
-    # Record each engine result in metadata
-    for task, _md, conf, latency_ms in raw_results:
+    # Record each engine result in metadata and collect blocks
+    page_blocks = []
+    for task, _md, conf, latency_ms, blocks in raw_results:
         metadata.add_engine_result(
             engine=task.engine,
             confidence=round(conf, 4),
@@ -398,8 +402,12 @@ def process_page(
             latency_ms=round(latency_ms, 1),
             output_type="markdown",
         )
+        if blocks:
+            page_blocks.extend(blocks)
 
-    markdown, confidence, engines_used = _merge_results(raw_results)
+    # Adapt raw_results for _merge_results (4-tuple: task, md, conf, latency)
+    mergeable_results = [(t, m, c, l) for t, m, c, l, _b in raw_results]
+    markdown, confidence, engines_used = _merge_results(mergeable_results)
 
     # ── Step 7: escalation fallback ─────────────────────────────────────────
     # Only 1 engine runs initially; if confidence < threshold or text is empty,
@@ -437,9 +445,11 @@ def process_page(
             priority=99,
             reason=f"escalation_from_{current_route}",
         )
-        esc_markdown, esc_confidence, esc_latency = _run_engine_task(
+        esc_markdown, esc_confidence, esc_latency, esc_blocks = _run_engine_task(
             esc_task, page_context, llm_client
         )
+        if esc_blocks:
+            page_blocks.extend(esc_blocks)
 
         # Record escalation in metadata before re-merging
         metadata.add_escalation(
@@ -471,7 +481,7 @@ def process_page(
                     if escalation_engine not in engines_used:
                         engines_used.append(escalation_engine)
             else:
-                all_results = raw_results + [(esc_task, esc_markdown, esc_confidence, esc_latency)]
+                all_results = mergeable_results + [(esc_task, esc_markdown, esc_confidence, esc_latency)]
                 markdown, confidence, engines_used = _merge_results(all_results)
 
         escalation_attempts += 1
@@ -506,6 +516,7 @@ def process_page(
         escalated=escalated,
         escalation_attempts=escalation_attempts,
         low_confidence=low_confidence,
+        blocks=page_blocks,
     )
 
     logger.info(

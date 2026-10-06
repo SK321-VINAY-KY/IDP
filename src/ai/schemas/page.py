@@ -109,6 +109,9 @@ class EngineTask(BaseModel):
     reason: str
 
 
+from src.ai.schemas.document_ir import Block
+
+
 class PageOutput(BaseModel):
     """
     The contract handed to Engineer B's Layer 3. Every page, regardless of
@@ -127,3 +130,5 @@ class PageOutput(BaseModel):
     escalated: bool
     escalation_attempts: int
     low_confidence: bool             # terminal flag: all engines exhausted below threshold
+    blocks: List[Block] = Field(default_factory=list)
+

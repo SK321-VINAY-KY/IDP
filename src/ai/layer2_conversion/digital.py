@@ -59,7 +59,82 @@ def _get_docling_converter() -> Any:
 _get_document_converter = _get_docling_converter
 
 
-def _extract_pymupdf_fallback(pdf_path: str, page_number: int) -> tuple[str, float]:
+from src.ai.schemas.document_ir import Block, BlockType, BBox, TableCell
+
+
+def _docling_bbox_to_ir(prov: Any, page_height: float | None = None) -> BBox | None:
+    try:
+        bbox = getattr(prov, "bbox", None)
+        if bbox is None:
+            return None
+        if getattr(bbox, "coord_origin", None) is not None:
+            from docling_core.types.doc import CoordOrigin
+            if bbox.coord_origin == CoordOrigin.BOTTOMLEFT and page_height:
+                tl = bbox.to_top_left_origin(page_height)
+                return BBox(x0=float(tl.l), y0=float(tl.t), x1=float(tl.r), y1=float(tl.b))
+        l = float(getattr(bbox, "l", getattr(bbox, "x0", 0.0)))
+        t = float(getattr(bbox, "t", getattr(bbox, "y0", 0.0)))
+        r = float(getattr(bbox, "r", getattr(bbox, "x1", 0.0)))
+        b = float(getattr(bbox, "b", getattr(bbox, "y1", 0.0)))
+        return BBox(x0=l, y0=min(t, b), x1=r, y1=max(t, b))
+    except Exception:
+        return None
+
+
+def extract_blocks_from_docling(document: Any, page_number: int) -> list[Block]:
+    blocks: list[Block] = []
+    order = 0
+
+    page_height = None
+    if hasattr(document, "pages") and isinstance(document.pages, dict) and page_number in document.pages:
+        page_obj = document.pages[page_number]
+        if hasattr(page_obj, "size") and hasattr(page_obj.size, "height"):
+            page_height = float(page_obj.size.height)
+
+    for text_item in getattr(document, "texts", []):
+        prov = text_item.prov[0] if getattr(text_item, "prov", None) else None
+        if prov and getattr(prov, "page_no", page_number) != page_number:
+            continue
+        label = getattr(text_item, "label", "")
+        block_type = BlockType.HEADING if label in ("section_header", "title") else BlockType.PARAGRAPH
+        blocks.append(Block(
+            block_id=f"p{page_number}-docling-{order}",
+            type=block_type,
+            text=getattr(text_item, "text", ""),
+            bbox=_docling_bbox_to_ir(prov, page_height) if prov else None,
+            reading_order=order,
+            confidence=0.97,
+            source_engine="docling",
+        ))
+        order += 1
+
+    for table_item in getattr(document, "tables", []):
+        prov = table_item.prov[0] if getattr(table_item, "prov", None) else None
+        if prov and getattr(prov, "page_no", page_number) != page_number:
+            continue
+        cells = []
+        try:
+            grid = table_item.export_to_dataframe()
+            for r, row in enumerate(grid.itertuples(index=False)):
+                for c, val in enumerate(row):
+                    cells.append(TableCell(row=r, column=c, text=str(val)))
+        except Exception:
+            pass
+        blocks.append(Block(
+            block_id=f"p{page_number}-docling-{order}",
+            type=BlockType.TABLE,
+            bbox=_docling_bbox_to_ir(prov, page_height) if prov else None,
+            reading_order=order,
+            confidence=0.95,
+            source_engine="docling",
+            cells=cells or None,
+        ))
+        order += 1
+
+    return blocks
+
+
+def _extract_pymupdf_fallback(pdf_path: str, page_number: int) -> tuple[str, float, list[Block]]:
     """Fallback text extraction via PyMuPDF when Docling is unavailable or fails."""
     try:
         import pymupdf as fitz
@@ -67,7 +142,7 @@ def _extract_pymupdf_fallback(pdf_path: str, page_number: int) -> tuple[str, flo
         try:
             import fitz
         except ImportError:
-            return "", 0.0
+            return "", 0.0, []
 
     try:
         doc = fitz.open(pdf_path)
@@ -75,6 +150,16 @@ def _extract_pymupdf_fallback(pdf_path: str, page_number: int) -> tuple[str, flo
             page = doc[page_number - 1]
             text = page.get_text("text").strip()
             confidence = 0.95 if len(text) > 20 else 0.30
+            fallback_blocks: list[Block] = []
+            if text:
+                fallback_blocks.append(Block(
+                    block_id=f"p{page_number}-docling-0",
+                    type=BlockType.PARAGRAPH,
+                    text=text,
+                    reading_order=0,
+                    confidence=confidence,
+                    source_engine="docling_fallback",
+                ))
             logger.info(
                 "layer2.digital.converted",
                 page_number=page_number,
@@ -82,7 +167,7 @@ def _extract_pymupdf_fallback(pdf_path: str, page_number: int) -> tuple[str, flo
                 markdown_length=len(text),
                 confidence=confidence,
             )
-            return text, confidence
+            return text, confidence, fallback_blocks
         finally:
             doc.close()
     except Exception as exc:
@@ -92,13 +177,13 @@ def _extract_pymupdf_fallback(pdf_path: str, page_number: int) -> tuple[str, flo
             error=str(exc),
             error_type=type(exc).__name__,
         )
-        return "", 0.0
+        return "", 0.0, []
 
 
-def convert_digital_page(pdf_path: str, page_number: int) -> tuple[str, float]:
+def convert_digital_page(pdf_path: str, page_number: int) -> tuple[str, float, list[Block]]:
     """
     Converts a single digital-text page to markdown using Docling.
-    Returns (markdown, confidence). Confidence is near-1.0 for digital text
+    Returns (markdown, confidence, blocks). Confidence is near-1.0 for digital text
     since there's no OCR uncertainty — the text is extracted, not recognized.
     Falls back to raw PyMuPDF text extraction if Docling is not installed or fails.
     """
@@ -106,6 +191,7 @@ def convert_digital_page(pdf_path: str, page_number: int) -> tuple[str, float]:
         converter = _get_docling_converter()
         result = converter.convert(pdf_path, page_range=(page_number, page_number))
         markdown = result.document.export_to_markdown()
+        blocks = extract_blocks_from_docling(result.document, page_number)
         if not markdown or not markdown.strip():
             # If docling produced empty output on a page with digital text, fall back to PyMuPDF
             return _extract_pymupdf_fallback(pdf_path, page_number)
@@ -117,8 +203,9 @@ def convert_digital_page(pdf_path: str, page_number: int) -> tuple[str, float]:
             engine="docling",
             markdown_length=len(markdown),
             confidence=confidence,
+            blocks_count=len(blocks),
         )
-        return markdown, confidence
+        return markdown, confidence, blocks
 
     except (ModuleNotFoundError, ImportError):
         logger.warning(
@@ -136,3 +223,4 @@ def convert_digital_page(pdf_path: str, page_number: int) -> tuple[str, float]:
             error_type=type(exc).__name__,
         )
         return _extract_pymupdf_fallback(pdf_path, page_number)
+

@@ -32,7 +32,7 @@ def main():
     # 2. Build & Push paddle_printed
     printed_tag = "106611079163.dkr.ecr.ap-south-1.amazonaws.com/idp-layer2-paddle-printed:latest"
     print(f"\n[2/4] Building & pushing {printed_tag}...")
-    run(f"docker build --provenance=false --platform linux/amd64 -t {printed_tag} docker/paddle_printed")
+    run(f"docker build --provenance=false --platform linux/amd64 -f docker/paddle_printed/Dockerfile -t {printed_tag} .")
     run(f"docker push {printed_tag}")
 
     print("Updating Lambda function 'idp-engine-paddle-printed' code...")
@@ -42,7 +42,7 @@ def main():
     # 3. Build & Push paddle_handwritten
     handwritten_tag = "106611079163.dkr.ecr.ap-south-1.amazonaws.com/idp-layer2-paddle-handwritten:latest"
     print(f"\n[3/4] Building & pushing {handwritten_tag}...")
-    run(f"docker build --provenance=false --platform linux/amd64 -t {handwritten_tag} docker/paddle_handwritten")
+    run(f"docker build --provenance=false --platform linux/amd64 -f docker/paddle_handwritten/Dockerfile -t {handwritten_tag} .")
     run(f"docker push {handwritten_tag}")
 
     print("Updating Lambda function 'idp-engine-paddle-handwritten' code...")

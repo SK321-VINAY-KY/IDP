@@ -1,6 +1,7 @@
 # PaddleOCR Printed Engine requirements
-paddleocr>=2.7.3
-paddlepaddle>=2.6.0; sys_platform == 'linux' or sys_platform == 'darwin'
+# PP-OCRv6 requires PaddleOCR 3.7+ (PaddleOCR 7.0 line) and PaddlePaddle 3.x.
+paddleocr>=3.7.0
+paddlepaddle>=3.0.0; sys_platform == 'linux' or sys_platform == 'darwin'
 pymupdf>=1.26.0
 pillow>=10.0.0
 numpy>=1.24.0

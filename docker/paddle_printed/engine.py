@@ -32,7 +32,7 @@ def get_paddle_engine() -> Any:
     if _paddle_engine is None:
         from paddleocr import PaddleOCR
         _paddle_engine = PaddleOCR(
-            ocr_version="PP-OCRv4",
+            ocr_version="PP-OCRv6",
             lang="en",
             device="cpu",
             enable_mkldnn=False,
@@ -44,39 +44,25 @@ def get_paddle_engine() -> Any:
     return _paddle_engine
 
 
+try:
+    from src.ai.layer2_conversion.paddle_block_rollup import (
+        _bbox_from_quad,
+        rollup_confidence_with_blocks as _rollup_confidence_with_blocks,
+    )
+    from src.ai.schemas.document_ir import Block, BlockType, BBox
+except ImportError:
+    # Packaged at container root alongside document_ir.py
+    from paddle_block_rollup import (  # type: ignore[no-redef]
+        _bbox_from_quad,
+        rollup_confidence_with_blocks as _rollup_confidence_with_blocks,
+    )
+    from document_ir import Block, BlockType, BBox  # type: ignore[no-redef]
+
+
 def _rollup_confidence(result: Any) -> Tuple[List[str], List[float]]:
-    """
-    Parse raw PaddleOCR v2 or v3 result into (lines, word_confidences).
-    """
-    lines: List[str] = []
-    word_confidences: List[float] = []
-
-    for page_result in result or []:
-        if page_result is None:
-            continue
-
-        # PaddleOCR v3 dict format: {"rec_texts": [...], "rec_scores": [...]}
-        if isinstance(page_result, dict):
-            texts = page_result.get("rec_texts") or []
-            scores = page_result.get("rec_scores") or []
-            for text, conf in zip(texts, scores):
-                if text and str(text).strip():
-                    lines.append(str(text))
-                    word_confidences.append(float(conf))
-
-        # PaddleOCR v2 list format: [[bbox, (text, conf)], ...]
-        elif isinstance(page_result, list):
-            for line_item in page_result:
-                if not line_item or len(line_item) < 2:
-                    continue
-                text_conf = line_item[1]
-                if isinstance(text_conf, (list, tuple)) and len(text_conf) >= 2:
-                    t, c = text_conf[0], text_conf[1]
-                    if t and str(t).strip():
-                        lines.append(str(t))
-                        word_confidences.append(float(c))
-
-    return lines, word_confidences
+    """Backward compatibility shim returning (lines, word_confidences)."""
+    lines, confs, _ = _rollup_confidence_with_blocks(result, page_number=1, engine_name="paddleocr_printed")
+    return lines, confs
 
 
 def process_image(image_input: Any, page_number: int) -> Dict[str, Any]:
@@ -87,7 +73,9 @@ def process_image(image_input: Any, page_number: int) -> Dict[str, Any]:
     try:
         engine = get_paddle_engine()
         ocr_result = engine.ocr(image_input)
-        lines, confs = _rollup_confidence(ocr_result)
+        lines, confs, blocks = _rollup_confidence_with_blocks(
+            ocr_result, page_number, "paddleocr_printed"
+        )
         markdown = "\n".join(lines)
         confidence = float(np.mean(confs)) if confs else 0.0
         latency_ms = (time.monotonic() - t0) * 1000
@@ -98,6 +86,7 @@ def process_image(image_input: Any, page_number: int) -> Dict[str, Any]:
             "markdown": markdown,
             "confidence": round(confidence, 4),
             "lines_extracted": len(lines),
+            "blocks": [b.model_dump() for b in blocks],
             "latency_ms": round(latency_ms, 2),
             "status": "SUCCESS",
         }
@@ -109,6 +98,7 @@ def process_image(image_input: Any, page_number: int) -> Dict[str, Any]:
             "markdown": "",
             "confidence": 0.0,
             "lines_extracted": 0,
+            "blocks": [],
             "latency_ms": round(latency_ms, 2),
             "status": "ERROR",
             "error": str(exc),
@@ -138,6 +128,7 @@ def process_pdf_pages(pdf_stream_or_path: Any, page_numbers: List[int]) -> List[
                     "markdown": "",
                     "confidence": 0.0,
                     "lines_extracted": 0,
+                    "blocks": [],
                     "latency_ms": 0.0,
                     "status": "ERROR",
                     "error": f"Page number {p} out of range (document has {len(doc)} pages)",

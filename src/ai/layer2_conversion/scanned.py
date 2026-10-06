@@ -8,6 +8,8 @@ Owner: engineer-a@idp-pilot
 Created: 2026-08-19 | Updated: 2026-09-29 (dual-resilience AWS Lambda + local PaddleOCR)
 Deps: boto3, paddleocr, numpy, pillow
 """
+from __future__ import annotations
+
 import base64
 import io
 import json
@@ -15,6 +17,11 @@ from typing import Any, Optional
 import numpy as np
 from PIL import Image
 
+from src.ai.schemas.document_ir import Block, BlockType, BBox
+from src.ai.layer2_conversion.paddle_block_rollup import (
+    _bbox_from_quad,
+    rollup_confidence_with_blocks as _rollup_confidence_with_blocks,
+)
 from src.config.settings import settings
 from src.utils.logger import get_logger
 
@@ -54,10 +61,10 @@ def _invoke_paddle_lambda(
     page_number: int,
     mode: str,
     image_bytes: Optional[bytes] = None,
-) -> Optional[tuple[str, float]]:
+) -> Optional[tuple[str, float, list[Block]]]:
     """
     Invokes the dedicated AWS Lambda PaddleOCR engine (printed or handwritten).
-    Returns (markdown, avg_confidence) if successful, or None if unavailable/failed.
+    Returns (markdown, avg_confidence, blocks) if successful, or None if unavailable/failed.
     """
     client = _get_lambda_client()
     if client is None:
@@ -127,14 +134,17 @@ def _invoke_paddle_lambda(
                 if r0.get("status") == "SUCCESS":
                     markdown = r0.get("markdown", "")
                     confidence = float(r0.get("confidence", 0.0))
+                    raw_blocks = r0.get("blocks", [])
+                    blocks = [Block.model_validate(b) for b in raw_blocks] if raw_blocks else []
                     logger.info(
                         f"layer2.{mode}.lambda_converted",
                         page_number=page_number,
                         lines_extracted=r0.get("lines_extracted", 0),
                         confidence=round(confidence, 4),
+                        blocks_count=len(blocks),
                         latency_ms=r0.get("latency_ms"),
                     )
-                    return markdown, confidence
+                    return markdown, confidence, blocks
                 else:
                     logger.warning("layer2.paddle_lambda.result_error", result=r0)
                     return None
@@ -202,51 +212,14 @@ def _get_paddle_engine(mode: str = "printed") -> Any:
     return _paddle_engines[mode]
 
 
-# ---------------------------------------------------------------------------
-# Shared confidence rollup helper
-# ---------------------------------------------------------------------------
+# _bbox_from_quad and _rollup_confidence_with_blocks are imported from
+# paddle_block_rollup at the top of this module — no local copies.
+
 
 def _rollup_confidence(result: Any) -> tuple[list[str], list[float]]:
-    """
-    Parse raw PaddleOCR v3 result into (lines, word_confidences).
-
-    PaddleOCR v3 changed the result format from the v2 nested list
-    [[bbox, (text, conf)], ...] to a list of page dicts, each with
-    'rec_texts' (list[str]) and 'rec_scores' (list[float]) at the top level.
-
-    Shared by both the scanned and handwritten converters so the rollup
-    logic is never duplicated.
-    """
-    lines: list[str] = []
-    word_confidences: list[float] = []
-
-    for page_result in result or []:
-        if page_result is None:
-            continue
-
-        # PaddleOCR v3 dict format: {"rec_texts": [...], "rec_scores": [...]}
-        if isinstance(page_result, dict):
-            texts = page_result.get("rec_texts") or []
-            scores = page_result.get("rec_scores") or []
-            for text, conf in zip(texts, scores):
-                if text and str(text).strip():
-                    lines.append(str(text))
-                    word_confidences.append(float(conf))
-
-        # PaddleOCR v2 list format: [[bbox, (text, conf)], ...]
-        elif isinstance(page_result, list):
-            for item in page_result:
-                if item is None:
-                    continue
-                try:
-                    text, conf = item[1]
-                    if text and str(text).strip():
-                        lines.append(str(text))
-                        word_confidences.append(float(conf))
-                except (IndexError, TypeError, ValueError):
-                    continue
-
-    return lines, word_confidences
+    """Backward compatibility shim returning (lines, word_confidences)."""
+    lines, confs, _ = _rollup_confidence_with_blocks(result, page_number=1, engine_name="paddleocr")
+    return lines, confs
 
 
 # ---------------------------------------------------------------------------
@@ -258,12 +231,14 @@ def _ocr_convert(
     page_number: int,
     mode: str,
     image_bytes: Optional[bytes] = None,
-) -> tuple[str, float]:
+) -> tuple[str, float, list[Block]]:
     """
     Common execution path for PaddleOCR conversion (printed or handwritten).
     Prioritizes dedicated AWS Lambda PaddleOCR engine when available/preferred;
     falls back seamlessly to local in-process PaddleOCR engine.
     """
+    engine_name = "paddleocr_handwritten" if mode == "handwritten" else "paddleocr_printed"
+
     # 1. Try AWS Lambda PaddleOCR offload first if preferred
     if getattr(settings, "paddle_prefer_lambda", True):
         lambda_result = _invoke_paddle_lambda(image_array, page_number, mode, image_bytes)
@@ -276,13 +251,15 @@ def _ocr_convert(
                 f"layer2.{mode}.lambda_failed_skipping_local_in_prod",
                 page_number=page_number,
             )
-            return "", 0.0
+            return "", 0.0, []
 
     # 2. In-process PaddleOCR engine (local execution for dev/test)
     try:
         engine = _get_paddle_engine(mode=mode)
         result = engine.ocr(image_array)
-        lines, word_confidences = _rollup_confidence(result)
+        lines, word_confidences, blocks = _rollup_confidence_with_blocks(
+            result, page_number=page_number, engine_name=engine_name
+        )
 
         markdown = "\n".join(lines)
         avg_confidence = (
@@ -294,8 +271,9 @@ def _ocr_convert(
             page_number=page_number,
             line_count=len(lines),
             avg_confidence=round(avg_confidence, 4),
+            blocks_count=len(blocks),
         )
-        return markdown, avg_confidence
+        return markdown, avg_confidence, blocks
 
     except (ImportError, ModuleNotFoundError) as imp_err:
         logger.warning(
@@ -315,7 +293,7 @@ def _ocr_convert(
             error=str(imp_err),
             error_type=type(imp_err).__name__,
         )
-        return "", 0.0
+        return "", 0.0, []
 
     except Exception as exc:
         # If in-process execution failed with another error, try Lambda as a fallback
@@ -334,7 +312,7 @@ def _ocr_convert(
             error=str(exc),
             error_type=type(exc).__name__,
         )
-        return "", 0.0
+        return "", 0.0, []
 
 
 # ---------------------------------------------------------------------------
@@ -345,10 +323,10 @@ def convert_scanned_page(
     image_array: Any,
     page_number: int,
     image_bytes: Optional[bytes] = None,
-) -> tuple[str, float]:
+) -> tuple[str, float, list[Block]]:
     """
     Converts a single scanned/printed page image (numpy array or bytes) to markdown-ish
-    text via PaddleOCR. Returns (text, avg_confidence).
+    text via PaddleOCR. Returns (text, avg_confidence, blocks).
     """
     return _ocr_convert(image_array, page_number, mode="printed", image_bytes=image_bytes)
 
@@ -361,7 +339,7 @@ def convert_handwritten_via_paddle(
     image_array: Any,
     page_number: int,
     image_bytes: Optional[bytes] = None,
-) -> tuple[str, float]:
+) -> tuple[str, float, list[Block]]:
     """
     Converts a handwritten page image (numpy array or bytes) to text via PaddleOCR
     using the "handwritten" mode engine (lower det_db_thresh, angle cls on).
@@ -369,9 +347,10 @@ def convert_handwritten_via_paddle(
     PaddleOCR's built-in DBNet text detector segments lines automatically,
     so no external line_segmentation step is needed.
 
-    Returns (text, avg_confidence) with the same contract as convert_scanned_page().
+    Returns (text, avg_confidence, blocks) with the same contract as convert_scanned_page().
     """
     return _ocr_convert(image_array, page_number, mode="handwritten", image_bytes=image_bytes)
+
 
 
 # ---------------------------------------------------------------------------

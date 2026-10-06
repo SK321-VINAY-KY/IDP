@@ -40,13 +40,13 @@ def test_convert_digital_page_reuses_document_converter_instance():
 
     with patch("src.ai.layer2_conversion.digital.DocumentConverter", return_value=mock_instance) as mock_cls:
         # First call: should instantiate DocumentConverter once and convert page 1
-        md1, conf1 = digital.convert_digital_page("test_doc.pdf", 1)
+        md1, conf1, blocks1 = digital.convert_digital_page("test_doc.pdf", 1)
 
         # Second call: should reuse existing DocumentConverter without re-instantiating
-        md2, conf2 = digital.convert_digital_page("test_doc.pdf", 2)
+        md2, conf2, blocks2 = digital.convert_digital_page("test_doc.pdf", 2)
 
         # Third call: another page
-        md3, conf3 = digital.convert_digital_page("test_doc.pdf", 3)
+        md3, conf3, blocks3 = digital.convert_digital_page("test_doc.pdf", 3)
 
         # Verify DocumentConverter() was instantiated exactly ONCE
         assert mock_cls.call_count == 1, f"Expected 1 instantiation, got {mock_cls.call_count}"
@@ -75,8 +75,8 @@ def test_convert_digital_page_reuses_converter_with_docling_module_patch():
     mock_instance.convert.return_value = mock_result
 
     with patch("docling.document_converter.DocumentConverter", return_value=mock_instance) as mock_cls:
-        md1, conf1 = digital.convert_digital_page("sample.pdf", 1)
-        md2, conf2 = digital.convert_digital_page("sample.pdf", 2)
+        md1, conf1, blocks1 = digital.convert_digital_page("sample.pdf", 1)
+        md2, conf2, blocks2 = digital.convert_digital_page("sample.pdf", 2)
 
         assert mock_cls.call_count == 1
         assert mock_instance.convert.call_count == 2
@@ -98,9 +98,10 @@ def test_convert_digital_page_fallback_when_docling_unavailable():
             mock_doc.__getitem__.return_value = mock_page
             mock_open.return_value = mock_doc
 
-            md, conf = digital.convert_digital_page("fallback.pdf", 1)
+            md, conf, blocks = digital.convert_digital_page("fallback.pdf", 1)
 
             assert md == "Fallback text extracted via PyMuPDF successfully."
             assert conf == 0.95
+            assert len(blocks) == 1
             mock_open.assert_called_once_with("fallback.pdf")
             mock_doc.close.assert_called_once()
