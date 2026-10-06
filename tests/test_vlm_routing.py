@@ -55,7 +55,7 @@ def test_paddle_is_routed_first_and_vlm_not_called_when_confident(monkeypatch):
 
     def fake_engine(task, context, llm):
         calls.append(task.engine)
-        return "paddle text", 0.90, 1.0
+        return "paddle text", 0.90, 1.0, []
 
     monkeypatch.setattr(pipeline, "_run_engine_task", fake_engine)
     output, metadata = run_page(monkeypatch, client)
@@ -75,11 +75,11 @@ def test_escalation_to_vlm_when_paddle_has_low_confidence(monkeypatch):
     def fake_engine(task, context, llm):
         calls.append(task.engine)
         if task.engine == "paddleocr_printed":
-            return "low conf paddle text", 0.60, 1.0
+            return "low conf paddle text", 0.60, 1.0, []
         elif task.engine == "vlm_transcribe":
             text, conf = llm.transcribe_handwriting(context["image_bytes"])
-            return text, conf, 1.0
-        return "", 0.0, 1.0
+            return text, conf, 1.0, []
+        return "", 0.0, 1.0, []
 
     monkeypatch.setattr(pipeline, "_run_engine_task", fake_engine)
     output, metadata = run_page(monkeypatch, client)
@@ -100,11 +100,11 @@ def test_escalation_to_vlm_when_paddle_fails(monkeypatch):
     def fake_engine(task, context, llm):
         calls.append(task.engine)
         if task.engine == "paddleocr_printed":
-            return "", 0.0, 1.0  # Paddle failed
+            return "", 0.0, 1.0, []  # Paddle failed
         elif task.engine == "vlm_transcribe":
             text, conf = llm.transcribe_handwriting(context["image_bytes"])
-            return text, conf, 1.0
-        return "", 0.0, 1.0
+            return text, conf, 1.0, []
+        return "", 0.0, 1.0, []
 
     monkeypatch.setattr(pipeline, "_run_engine_task", fake_engine)
     output, metadata = run_page(monkeypatch, client)
@@ -126,7 +126,7 @@ def test_low_confidence_vlm_uses_only_required_ocr(monkeypatch):
 
     def fake_engine(task, context, llm):
         calls.append(task.engine)
-        return "ocr text", 0.90, 1.0
+        return "ocr text", 0.90, 1.0, []
 
     monkeypatch.setattr(pipeline, "_run_engine_task", fake_engine)
     output, _ = run_page(monkeypatch, client)
@@ -143,7 +143,7 @@ def test_exact_transcription_requirement_rejects_direct_vlm(monkeypatch):
     ))
     calls = []
     monkeypatch.setattr(pipeline, "_run_engine_task", lambda task, context, llm: (
-        calls.append(task.engine) or ("exact policy number", 0.95, 1.0)
+        calls.append(task.engine) or ("exact policy number", 0.95, 1.0, [])
     ))
 
     output, _ = run_page(
@@ -163,7 +163,7 @@ def test_vlm_exact_flag_rejects_direct_vlm(monkeypatch):
     ))
     calls = []
     monkeypatch.setattr(pipeline, "_run_engine_task", lambda task, context, llm: (
-        calls.append(task.engine) or ("exact claim number", 0.95, 1.0)
+        calls.append(task.engine) or ("exact claim number", 0.95, 1.0, [])
     ))
 
     output, _ = run_page(monkeypatch, client)
