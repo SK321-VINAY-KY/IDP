@@ -19,11 +19,15 @@ RUN pip install --no-cache-dir -U pip setuptools wheel && \
     pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 # Install Python requirements
-COPY requirements.txt .
+COPY docker/docling/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy engine and handler
-COPY engine.py ${LAMBDA_TASK_ROOT}/
-COPY handler.py ${LAMBDA_TASK_ROOT}/
+# Copy engine, handler, and shared schema dependencies.
+# document_ir.py must be present at the Lambda task root for fallback import.
+# NOTE: Build from repo root:
+#   docker build --provenance=false --platform linux/amd64 -f docker/docling/Dockerfile -t <tag> .
+COPY docker/docling/engine.py ${LAMBDA_TASK_ROOT}/
+COPY docker/docling/handler.py ${LAMBDA_TASK_ROOT}/
+COPY src/ai/schemas/document_ir.py ${LAMBDA_TASK_ROOT}/
 
 CMD [ "handler.lambda_handler" ]
