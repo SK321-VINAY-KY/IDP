@@ -6,8 +6,9 @@
 .venv/
 venv/
 env/
+ENV/
 
-# Python caches
+# Python caches & build artifacts
 __pycache__/
 *.py[cod]
 *$py.class
@@ -17,9 +18,17 @@ build/
 .eggs/
 .pytest_cache/
 
+# Tests & Docs
+tests/
+docs/
+
+# Frontend & Dependencies
+node_modules/
+
 # Environment and secrets
-.env
+.env*
 *.db
+*.sqlite3
 
 # Model and local caches
 .cache/
@@ -27,11 +36,12 @@ build/
 *.safetensors
 .kiro/
 
-# Runtime outputs & temporary logs
+# Runtime outputs & uploads
 logs/
 scratch/
-dataset_output/*.layer3_result.json
-dataset_output/*.targeted_12p.json
+dataset_output/
+dataset_uploads/
+output/
 data/
 schema_chatbot_v2/data/
 
