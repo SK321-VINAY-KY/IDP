@@ -952,11 +952,16 @@ def _schema_record_to_dict(rec: "SchemaRecord") -> dict:
     return payload
 
 
-def get_schema_record(schema_id: str) -> Optional[dict]:
+def get_schema_record(schema_id: str, owner: Optional[str] = None) -> Optional[dict]:
     """
     Retrieve a single confirmed schema record from PostgreSQL by schema_id.
     Returns the full stored schema_json dict (same shape as the old on-disk
     schema_registry/<id>.json), or None if not found.
+
+    If ``owner`` is provided, the returned record must belong to that owner
+    (i.e. rec.owner == owner).  Records with a NULL owner are shared/admin
+    schemas and are visible to all callers regardless of owner.
+    Pass owner=None (default) to skip owner-scoping (admin-only code paths).
     """
     if not schema_id:
         return None
@@ -966,13 +971,23 @@ def get_schema_record(schema_id: str) -> Optional[dict]:
         try:
             rec = session.query(SchemaRecord).filter_by(schema_id=schema_id).first()
             if not rec:
+                # Fall back to disk schema_registry/
                 from pathlib import Path
                 reg_file = Path("schema_registry") / f"{schema_id}.json"
                 if reg_file.is_file():
                     try:
-                        return json.loads(reg_file.read_text(encoding="utf-8"))
+                        data = json.loads(reg_file.read_text(encoding="utf-8"))
+                        # Owner check on disk fallback
+                        if owner is not None:
+                            rec_owner = data.get("owner")
+                            if rec_owner is not None and rec_owner != owner:
+                                return None
+                        return data
                     except Exception:
                         pass
+                return None
+            # Owner check on DB record
+            if owner is not None and rec.owner is not None and rec.owner != owner:
                 return None
             return _schema_record_to_dict(rec)
         finally:
@@ -980,6 +995,7 @@ def get_schema_record(schema_id: str) -> Optional[dict]:
     except Exception as exc:
         logger.error("storage.get_schema_record_failed", schema_id=schema_id, error=str(exc))
         return None
+
 
 
 def schema_exists(schema_id: str) -> bool:
