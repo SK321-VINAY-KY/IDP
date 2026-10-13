@@ -212,28 +212,40 @@ class MetricsCollector:
 # Module-level singleton shared by all call sites + the summary writer.
 _collector = MetricsCollector()
 
-# Thread-local run context so the extractor can stamp owner/doc_id onto records
+# Process-global run context so the extractor can stamp owner/doc_id onto records
 # WITHOUT changing the client method signatures (measurement-only, no behavior change).
-# A call site's explicit owner/doc_id/page args always win over this context.
-_ctx = threading.local()
+# NOTE: intentionally process-global (not thread-local) because the concurrent
+# extractor dispatches per-page Converse calls to worker threads via
+# asyncio.to_thread; a thread-local context would miss those graph-extraction
+# calls. The measurement harness runs ONE document at a time, so a single global
+# context is correct here. A call site's explicit owner/doc_id/page args always win.
+_ctx_lock = threading.Lock()
+_ctx_owner_val: Optional[str] = None
+_ctx_doc_id_val: Optional[str] = None
 
 
 def set_run_context(owner: Optional[str] = None, doc_id: Optional[str] = None) -> None:
-    _ctx.owner = owner
-    _ctx.doc_id = doc_id
+    global _ctx_owner_val, _ctx_doc_id_val
+    with _ctx_lock:
+        _ctx_owner_val = owner
+        _ctx_doc_id_val = doc_id
 
 
 def clear_run_context() -> None:
-    _ctx.owner = None
-    _ctx.doc_id = None
+    global _ctx_owner_val, _ctx_doc_id_val
+    with _ctx_lock:
+        _ctx_owner_val = None
+        _ctx_doc_id_val = None
 
 
 def _ctx_owner() -> Optional[str]:
-    return getattr(_ctx, "owner", None)
+    with _ctx_lock:
+        return _ctx_owner_val
 
 
 def _ctx_doc_id() -> Optional[str]:
-    return getattr(_ctx, "doc_id", None)
+    with _ctx_lock:
+        return _ctx_doc_id_val
 
 
 def get_collector() -> MetricsCollector:
