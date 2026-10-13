@@ -35,6 +35,14 @@ def _strip_fences(raw: str) -> str:
     return raw.strip()
 
 
+def _is_reasoning_model(model_id: str) -> bool:
+    """True if the model id matches any configured reasoning-model marker.
+    Replaces the hardcoded 'gpt-oss'/'qdtz23c8eis1' conditional (audit #1, 2a)."""
+    markers = getattr(settings, "bedrock_reasoning_model_markers", None) or ["gpt-oss", "qdtz23c8eis1"]
+    mid = (model_id or "").lower()
+    return any(str(mk).lower() in mid for mk in markers)
+
+
 def _extract_text_from_converse_response(response: Dict[str, Any]) -> str:
     """Safely extract plain text from Bedrock Converse API response, skipping reasoningContent."""
     output = response.get("output", {})
@@ -124,7 +132,7 @@ class BedrockExtractionClient:
             kwargs["system"] = [{"text": system}]
         if tool_config:
             kwargs["toolConfig"] = tool_config
-        if self.reasoning_effort and ("gpt-oss" in self.model_id.lower() or "qdtz23c8eis1" in self.model_id):
+        if self.reasoning_effort and _is_reasoning_model(self.model_id):
             kwargs["additionalModelRequestFields"] = {"reasoning_effort": self.reasoning_effort}
 
         # ---- MEASUREMENT ONLY (audit finding #1) -------------------------------
@@ -348,11 +356,16 @@ class BedrockExtractionClient:
         params = prompt_params("graph_page_ingestion")
 
         from src.adapters.llm import llm_metrics as _m
+        # Audit #1 (2a): the graph-extraction output budget comes from settings
+        # (default 8000), replacing the old hardcoded max(..., 4000) floor. The
+        # dedicated setting is authoritative for this purpose (the shared prompt
+        # config's stale max_tokens is intentionally not consulted here).
+        graph_budget = int(getattr(settings, "graph_extraction_max_tokens", 8000))
         resp = self._call_converse(
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             system="You extract entities and relationships for a Document Knowledge Graph. Return ONLY valid JSON.",
             temperature=params.get("temperature", 0.0),
-            max_tokens=max(params.get("max_tokens", 4000), 4000),
+            max_tokens=graph_budget,
             _purpose=_m.PURPOSE_GRAPH_EXTRACTION,
             _page_number=page_number,
         )

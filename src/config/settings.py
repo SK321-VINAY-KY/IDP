@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     bedrock_region: str = "ap-south-1"
     bedrock_model_id: str = "arn:aws:bedrock:ap-south-1:106611079163:application-inference-profile/qdtz23c8eis1"
     bedrock_reasoning_effort: str = "low"
+    # Substrings that identify a reasoning-capable model id. If the active
+    # model id contains any of these, Converse sends additionalModelRequestFields
+    # {reasoning_effort: ...}. Moved out of a hardcoded conditional so the
+    # inference-profile id is config, not a magic string. Comma-separated via env.
+    bedrock_reasoning_model_markers: list[str] = ["gpt-oss", "qdtz23c8eis1"]
     bedrock_vlm_model_id: str = "arn:aws:bedrock:ap-south-1:106611079163:application-inference-profile/lmbukv3mwnhm"
 
     # Ollama (local) settings (kept for backwards compatibility)
@@ -63,6 +68,16 @@ class Settings(BaseSettings):
     max_extraction_retries: int = 2
     layer3_strategy: str = "graph_memory_concurrent"  # "graph_memory_concurrent" (default), "graph_memory", or "page_scan"
     graph_concurrency_limit: int = 8
+    # --- Layer 3 graph-extraction output budget (audit finding #1) ---
+    # Output token budget for the per-page graph-extraction Converse call.
+    # Was a hardcoded max(..., 4000) floor in bedrock_client; the fairness
+    # measurement showed 4000 truncates dense pages, so the default is 8000.
+    # Other call purposes (resolver, extract, check_page) keep their own budgets.
+    graph_extraction_max_tokens: int = 8000
+    # Ceiling used by the single max_tokens retry: if the first graph-extraction
+    # call stops on max_tokens, it is retried once at this larger budget. If it
+    # still truncates, the page is marked degraded (not COMPLETED).
+    graph_extraction_max_tokens_ceiling: int = 12000
     graph_anchor_max_k: int = 5
     graph_anchor_types: list[str] = []
     page_concurrency_limit: int = 25
@@ -117,6 +132,22 @@ class Settings(BaseSettings):
                 raw_k = os.getenv("IDP_GRAPH_ANCHOR_MAX_K") or os.getenv("GRAPH_ANCHOR_MAX_K")
                 if raw_k:
                     data["graph_anchor_max_k"] = int(raw_k)
+            if not data.get("graph_extraction_max_tokens"):
+                raw_gm = os.getenv("IDP_GRAPH_EXTRACTION_MAX_TOKENS") or os.getenv("GRAPH_EXTRACTION_MAX_TOKENS")
+                if raw_gm:
+                    data["graph_extraction_max_tokens"] = int(raw_gm)
+            if not data.get("graph_extraction_max_tokens_ceiling"):
+                raw_gc = os.getenv("IDP_GRAPH_EXTRACTION_MAX_TOKENS_CEILING") or os.getenv("GRAPH_EXTRACTION_MAX_TOKENS_CEILING")
+                if raw_gc:
+                    data["graph_extraction_max_tokens_ceiling"] = int(raw_gc)
+            if not data.get("bedrock_reasoning_model_markers"):
+                raw_markers = os.getenv("IDP_BEDROCK_REASONING_MODEL_MARKERS") or os.getenv("BEDROCK_REASONING_MODEL_MARKERS")
+                if raw_markers:
+                    if raw_markers.startswith("["):
+                        import json
+                        data["bedrock_reasoning_model_markers"] = json.loads(raw_markers)
+                    else:
+                        data["bedrock_reasoning_model_markers"] = [a.strip() for a in raw_markers.split(",") if a.strip()]
             if not data.get("graph_anchor_types"):
                 raw_anchors = os.getenv("IDP_GRAPH_ANCHOR_TYPES") or os.getenv("GRAPH_ANCHOR_TYPES")
                 if raw_anchors:
