@@ -792,6 +792,7 @@ def _run_pipeline_job(
                             extraction_llm,
                             strategy=selected_strategy,
                             graph_out=graph_meta,
+                            owner=job_owner,
                         ),
                         dynamic_schema,
                     )
@@ -1162,7 +1163,7 @@ async def extract_from_existing_output(
         extraction_llm = get_extraction_client()
         graph_meta: Dict[str, Any] = {}
         extracted_result = extract_with_retry(
-            lambda: extract_document(pages, dynamic_schema, extraction_llm, strategy=selected_strategy, graph_out=graph_meta),
+            lambda: extract_document(pages, dynamic_schema, extraction_llm, strategy=selected_strategy, graph_out=graph_meta, owner=known_owner or "_admin"),
             dynamic_schema,
         )
         elapsed = round(time.time() - t_start, 2)
@@ -1380,7 +1381,7 @@ async def extract_uploaded_document(
         extraction_llm = get_extraction_client()
         graph_meta: Dict[str, Any] = {}
         extracted_result = extract_with_retry(
-            lambda: extract_document(pages_md, dynamic_schema, extraction_llm, strategy=selected_strategy, graph_out=graph_meta),
+            lambda: extract_document(pages_md, dynamic_schema, extraction_llm, strategy=selected_strategy, graph_out=graph_meta, owner=user.username),
             dynamic_schema,
         )
 

@@ -423,6 +423,7 @@ async def test_8_concurrent_e2e():
         schema=PatientClaimSchema,
         llm=mock_llm,
         graph_out=graph_out,
+        owner="_admin",
     )
 
     assert result.patient_name == "Rahul Sharma"
@@ -472,6 +473,7 @@ async def test_9_concurrency_actually_overlaps(monkeypatch):
         pages_md=pages,
         schema=PatientClaimSchema,
         llm=mock_llm,
+        owner="_admin",
     )
     elapsed = time.monotonic() - t0
 
@@ -512,6 +514,7 @@ async def test_10_failure_isolation():
         schema=PatientClaimSchema,
         llm=mock_llm,
         graph_out=graph_out,
+        owner="_admin",
     )
 
     # Other pages must still succeed

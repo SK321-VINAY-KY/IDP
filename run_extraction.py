@@ -83,7 +83,7 @@ def main():
 
     start = time.time()
     result = extract_with_retry(
-        lambda: extract_document(pages, schema, llm, strategy=args.strategy),
+        lambda: extract_document(pages, schema, llm, strategy=args.strategy, owner=args.owner),
         schema,
     )
     elapsed = round(time.time() - start, 2)

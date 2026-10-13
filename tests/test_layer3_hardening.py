@@ -1073,6 +1073,7 @@ async def test_conc_1_ordered_context_mode_sees_prior_pages():
         pages_md=pages,
         schema=PatientClaimSchema,
         llm=mock_llm,
+        owner="_admin",
     )
 
     # Page 1 started with empty context
@@ -1106,6 +1107,7 @@ async def test_conc_2_epoch_batch_mode_behavior():
         llm=mock_llm,
         epoch_size=2,  # 2 epochs of 2 pages
         graph_out=graph_out,
+        owner="_admin",
     )
 
     assert graph_out["strategy"] == "graph_memory_batched"

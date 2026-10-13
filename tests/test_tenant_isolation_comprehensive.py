@@ -48,6 +48,11 @@ from src.ai.layer3_extraction.storage import (
     list_page_checkpoints,
     delete_page_checkpoints,
 )
+from src.ai.layer3_extraction.extractor import (
+    extract_with_graph_memory_ordered,
+    extract_with_graph_memory_concurrent,
+    extract_with_graph_memory_batched,
+)
 from src.ai.layer3_extraction.migrations.migrate_tenant_isolation import (
     migrate_sqlite,
     migrate_postgres,
@@ -86,11 +91,13 @@ def clean_db():
 
 def test_storage_function_signatures_require_owner_without_default():
     """
-    Guards against regressions: every public storage function touching these tables
-    must require 'owner: str' with NO default value.
-    Omitting 'owner' must be a TypeError.
+    Guards against regressions:
+    (A) Every public storage function touching tenant-scoped tables must require
+        'owner: str' with NO default value. Omitting 'owner' must be a TypeError.
+    (B) The three extractor functions (ordered, concurrent, batched) must also
+        require 'owner: str' with NO default. Omitting 'owner' must be a TypeError.
     """
-    funcs = [
+    storage_funcs = [
         save_document,
         save_markdown_record,
         get_markdown_record,
@@ -104,7 +111,7 @@ def test_storage_function_signatures_require_owner_without_default():
         delete_page_checkpoints,
     ]
 
-    for fn in funcs:
+    for fn in storage_funcs:
         sig = inspect.signature(fn)
         assert "owner" in sig.parameters, f"{fn.__name__} is missing required 'owner' parameter!"
         param = sig.parameters["owner"]
@@ -112,7 +119,21 @@ def test_storage_function_signatures_require_owner_without_default():
             f"{fn.__name__} 'owner' parameter must NOT have a default value (got {param.default})!"
         )
 
-    # Calling each function without owner must raise TypeError
+    # Extractor functions must also have owner with NO default
+    extractor_funcs = [
+        extract_with_graph_memory_ordered,
+        extract_with_graph_memory_concurrent,
+        extract_with_graph_memory_batched,
+    ]
+    for fn in extractor_funcs:
+        sig = inspect.signature(fn)
+        assert "owner" in sig.parameters, f"{fn.__name__} is missing required 'owner' parameter!"
+        param = sig.parameters["owner"]
+        assert param.default is inspect.Parameter.empty, (
+            f"{fn.__name__} 'owner' parameter must NOT have a default value (got {param.default})!"
+        )
+
+    # Calling each storage function without owner must raise TypeError
     with pytest.raises(TypeError):
         save_document("test.pdf", b"bytes")  # type: ignore
 
@@ -145,6 +166,16 @@ def test_storage_function_signatures_require_owner_without_default():
 
     with pytest.raises(TypeError):
         delete_page_checkpoints("test.pdf")  # type: ignore
+
+    # Calling each extractor function without owner must raise TypeError
+    with pytest.raises(TypeError):
+        extract_with_graph_memory_ordered([], object, object)  # type: ignore
+
+    with pytest.raises(TypeError):
+        extract_with_graph_memory_concurrent([], object, object)  # type: ignore
+
+    with pytest.raises(TypeError):
+        extract_with_graph_memory_batched([], object, object)  # type: ignore
 
 
 # ==============================================================================

@@ -113,10 +113,10 @@ async def extract_with_graph_memory_ordered(
     pages_md: Union[List[str], List[Dict]],
     schema: type[BaseModel],
     llm: ExtractionLLMClient,
+    owner: str,
     graph_out: Optional[Dict[str, Any]] = None,
     doc_id: Optional[str] = None,
     pipeline_version: str = "v1",
-    owner: str = "_admin",
 ) -> BaseModel:
     """
     MODE A: ORDERED CONTEXT MODE.
@@ -285,11 +285,13 @@ def extract_with_graph_memory(
     llm: ExtractionLLMClient,
     graph_out: Optional[Dict[str, Any]] = None,
     doc_id: Optional[str] = None,
+    owner: str = "_admin",
     **kwargs: Any,
 ) -> BaseModel:
     """
     Sequential / Ordered Graph-Memory Extraction Strategy.
     Wraps Mode A (Ordered Context Mode) synchronously for backward compatibility.
+    ``owner`` is forwarded to Mode A (ordered); callers should pass it explicitly.
     """
     return _run_coroutine_sync(
         extract_with_graph_memory_ordered(
@@ -298,6 +300,7 @@ def extract_with_graph_memory(
             llm=llm,
             graph_out=graph_out,
             doc_id=doc_id,
+            owner=owner,
             **kwargs,
         )
     )
@@ -307,10 +310,10 @@ async def extract_with_graph_memory_concurrent(
     pages_md: Union[List[str], List[Dict]],
     schema: type[BaseModel],
     llm: ExtractionLLMClient,
+    owner: str,
     graph_out: Optional[Dict[str, Any]] = None,
     doc_id: Optional[str] = None,
     pipeline_version: str = "v1",
-    owner: str = "_admin",
 ) -> BaseModel:
     """
     MODE B: CONCURRENT DELTA MODE.
@@ -511,11 +514,11 @@ async def extract_with_graph_memory_batched(
     pages_md: Union[List[str], List[Dict]],
     schema: type[BaseModel],
     llm: ExtractionLLMClient,
+    owner: str,
     graph_out: Optional[Dict[str, Any]] = None,
     doc_id: Optional[str] = None,
     epoch_size: int = 4,
     pipeline_version: str = "v1",
-    owner: str = "_admin",
 ) -> BaseModel:
     """
     MODE C: EPOCH / BATCH MODE (Optional Strategy).
@@ -665,6 +668,7 @@ def extract_document(
     strategy: Optional[str] = None,
     graph_out: Optional[Dict[str, Any]] = None,
     doc_id: Optional[str] = None,
+    owner: str = "_admin",
     **kwargs: Any,
 ) -> BaseModel:
     """
@@ -674,6 +678,10 @@ def extract_document(
     - "graph_memory" / "graph_memory_ordered": Mode A (Ordered Context Mode).
     - "graph_memory_concurrent": Mode B (Concurrent Delta Mode).
     - "graph_memory_batched" / "graph_memory_epoch": Mode C (Epoch / Batch Mode).
+
+    ``owner`` must be the authenticated tenant username (or "_admin" for
+    background / admin paths). It is forwarded explicitly to every
+    graph-memory mode so checkpoints and extraction runs are keyed by tenant.
     """
     from src.config.settings import settings
 
@@ -687,6 +695,7 @@ def extract_document(
                 llm=llm,
                 graph_out=graph_out,
                 doc_id=doc_id,
+                owner=owner,
                 **kwargs,
             )
         )
@@ -698,6 +707,7 @@ def extract_document(
                 llm=llm,
                 graph_out=graph_out,
                 doc_id=doc_id,
+                owner=owner,
                 **kwargs,
             )
         )
@@ -708,6 +718,8 @@ def extract_document(
             llm=llm,
             graph_out=graph_out,
             doc_id=doc_id,
+            owner=owner,
             **kwargs,
         )
     return extract_by_page_scan(pages_md, schema, llm, graph_out=graph_out, **kwargs)
+
