@@ -86,6 +86,7 @@ html {
 body {
     margin: 0;
     height: 100vh;
+    height: 100dvh; /* dynamic viewport height: avoids the header being clipped above the visible area */
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -158,6 +159,7 @@ h2 {
     padding: 16px 24px;
     background: var(--bg-2);
     border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
     transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
@@ -253,6 +255,7 @@ h2 {
     padding: 0 24px;
     background: var(--bg-2);
     border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
     transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
@@ -1289,7 +1292,11 @@ select option:hover,
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     padding: 12px;
-    max-height: 480px;
+    /* Cap to the viewport so only this inner panel scrolls, never the page.
+       Offsets account for the app header, tab bar, .content padding, and the
+       logs card header/filter row above this panel. */
+    max-height: calc(100vh - 320px);
+    min-height: 160px;
     overflow-y: auto;
     font-size: 12.5px;
 }
@@ -1621,4 +1628,11 @@ select option:hover,
     background: #2563eb;
     border-color: #2563eb;
     color: #ffffff;
+}
+
+/* Document row action buttons (badge + delete) */
+.doc-item-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }

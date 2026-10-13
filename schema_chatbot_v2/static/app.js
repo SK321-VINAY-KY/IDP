@@ -177,6 +177,7 @@
             } else {
                 loadUserDocuments();
                 loadUserJobs();
+                loadUserSchemas();
                 loadAllExtractedData();
             }
 
@@ -246,6 +247,7 @@
                     else renderDocChecklist();
                 } else {
                     loadUserJobs();
+                    loadUserSchemas();
                 }
             } else if (btn.dataset.tab === 'documents') {
                 loadDocuments();
@@ -308,8 +310,14 @@
                 const badge = d.has_output
                     ? '<span class="badge doc-badge badge-success">processed</span>'
                     : '<span class="badge doc-badge badge-mute">pending</span>';
-                const actions = el('div');
+                const actions = el('div', 'doc-item-actions');
+                const delBtn = el('button', 'btn btn-danger btn-sm');
+                delBtn.type = 'button';
+                delBtn.textContent = 'Delete';
+                delBtn.title = 'Delete document from storage';
+                delBtn.addEventListener('click', () => deleteAdminDocument(d.name));
                 actions.innerHTML = badge;
+                actions.appendChild(delBtn);
                 row.appendChild(info);
                 row.appendChild(actions);
                 docList.appendChild(row);
@@ -333,9 +341,33 @@
                         <div class="doc-meta">${fmtSize(o.size)} • ${new Date(o.modified).toLocaleString()}${schema}</div>
                     </div>
                 `;
+                const actions = el('div', 'doc-item-actions');
+                const dl = el('button', 'btn btn-outline btn-sm');
+                dl.type = 'button';
+                dl.textContent = 'Download';
+                dl.addEventListener('click', () => downloadOutput('/documents/output/', o.name));
+                actions.appendChild(dl);
                 row.appendChild(info);
+                row.appendChild(actions);
                 outList.appendChild(row);
             });
+        }
+    }
+
+    async function downloadOutput(basePath, name) {
+        try {
+            const data = await api(basePath + encodeURIComponent(name));
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = name.replace(/\.(md|extracted\.json)$/i, '') + '.extracted.json';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            alert('Download failed: ' + e.message);
         }
     }
 
@@ -349,6 +381,45 @@
             renderUserDocList(state.userDocs);
         } catch (e) {
             if ($('userDocList')) $('userDocList').innerHTML = `<p class="muted">Failed to load: ${e.message}</p>`;
+        }
+        loadUserOutputs();
+    }
+
+    async function loadUserOutputs() {
+        const host = $('userOutList');
+        if (!host) return;
+        try {
+            const data = await api('/me/outputs');
+            const outs = data.outputs || [];
+            if ($('userOutCount')) $('userOutCount').textContent = outs.length;
+            if (!outs.length) {
+                host.innerHTML = '<p class="muted">No processed outputs yet. Run the pipeline.</p>';
+                return;
+            }
+            host.innerHTML = '';
+            outs.forEach(o => {
+                const row = el('div', 'doc-item');
+                const info = el('div', 'doc-item-info');
+                const schema = o.schema_ref ? ` • schema: <code>${escapeHtml(o.schema_ref.schema_id || '--')}</code>` : '';
+                info.innerHTML = `
+                    <span class="doc-icon"></span>
+                    <div>
+                        <div class="doc-name">${escapeHtml(o.name)}</div>
+                        <div class="doc-meta">${fmtSize(o.size)} • ${new Date(o.modified).toLocaleString()}${schema}</div>
+                    </div>
+                `;
+                const actions = el('div', 'doc-item-actions');
+                const dl = el('button', 'btn btn-outline btn-sm');
+                dl.type = 'button';
+                dl.textContent = 'Download';
+                dl.addEventListener('click', () => downloadOutput('/me/outputs/output/', o.name));
+                actions.appendChild(dl);
+                row.appendChild(info);
+                row.appendChild(actions);
+                host.appendChild(row);
+            });
+        } catch (e) {
+            host.innerHTML = `<p class="muted">Failed to load outputs: ${e.message}</p>`;
         }
     }
 
@@ -369,10 +440,42 @@
                         <div class="doc-meta">${fmtSize(d.size)} • ${new Date(d.modified).toLocaleString()}</div>
                     </div>
                 `;
+                const actions = el('div', 'doc-item-actions');
+                const delBtn = el('button', 'btn btn-danger btn-sm');
+                delBtn.type = 'button';
+                delBtn.textContent = 'Delete';
+                delBtn.title = 'Delete document from storage';
+                delBtn.addEventListener('click', () => deleteUserDocument(d.name));
+                actions.appendChild(delBtn);
                 row.appendChild(info);
+                row.appendChild(actions);
                 host.appendChild(row);
             });
         }
+    }
+
+    async function deleteAdminDocument(name) {
+        if (!confirm(`Delete "${name}" from storage? This cannot be undone.`)) return;
+        try {
+            await api('/documents/' + encodeURIComponent(name), { method: 'DELETE' });
+            showStatus('uploadStatus', `Deleted ${name}`, 'success');
+            loadDocuments();
+        } catch (e) {
+            showStatus('uploadStatus', 'Delete failed: ' + e.message, 'error');
+        }
+        setTimeout(() => hideStatus('uploadStatus'), 4000);
+    }
+
+    async function deleteUserDocument(name) {
+        if (!confirm(`Delete "${name}" from your workspace? This cannot be undone.`)) return;
+        try {
+            await api('/me/documents/' + encodeURIComponent(name), { method: 'DELETE' });
+            showStatus('userUploadStatus', `Deleted ${name}`, 'success');
+            loadUserDocuments();
+        } catch (e) {
+            showStatus('userUploadStatus', 'Delete failed: ' + e.message, 'error');
+        }
+        setTimeout(() => hideStatus('userUploadStatus'), 4000);
     }
 
     // ======================= Upload Handlers =======================
@@ -391,10 +494,11 @@
             }
 
             zone.addEventListener('click', (e) => {
-                if (e.target.tagName !== 'A') { input.click(); e.preventDefault(); }
+                if (e.target.closest('#browseBtn')) return; // browse handles its own click
+                input.click();
             });
-            browse.addEventListener('click', (e) => { input.click(); e.preventDefault(); });
-            input.addEventListener('change', (e) => handleFiles(e.target.files));
+            browse.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); input.click(); });
+            input.addEventListener('change', (e) => { handleFiles(e.target.files); e.target.value = ''; });
             zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('dragover'); });
             zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
             zone.addEventListener('drop', (e) => {
@@ -431,10 +535,11 @@
             }
 
             uZone.addEventListener('click', (e) => {
-                if (e.target.tagName !== 'A') { uInput.click(); e.preventDefault(); }
+                if (e.target.closest('#userBrowseBtn')) return; // browse handles its own click
+                uInput.click();
             });
-            uBrowse.addEventListener('click', (e) => { uInput.click(); e.preventDefault(); });
-            uInput.addEventListener('change', (e) => handleUserFiles(e.target.files));
+            uBrowse.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); uInput.click(); });
+            uInput.addEventListener('change', (e) => { handleUserFiles(e.target.files); e.target.value = ''; });
             uZone.addEventListener('dragover', (e) => { e.preventDefault(); uZone.classList.add('dragover'); });
             uZone.addEventListener('dragleave', () => uZone.classList.remove('dragover'));
             uZone.addEventListener('drop', (e) => {
@@ -461,6 +566,7 @@
 
     if ($('refreshDocsBtn')) $('refreshDocsBtn').addEventListener('click', loadDocuments);
     if ($('refreshUserDocsBtn')) $('refreshUserDocsBtn').addEventListener('click', loadUserDocuments);
+    if ($('refreshUserOutputsBtn')) $('refreshUserOutputsBtn').addEventListener('click', loadUserOutputs);
 
     function showStatus(id, html, kind) {
         const s = $(id);
@@ -755,22 +861,6 @@
         applyPreset('blank');
     }
 
-    async function copySchemaJson() {
-        collectSchemaFromInputs();
-        if (!state.currentSchema) return;
-        try {
-            await navigator.clipboard.writeText(JSON.stringify(state.currentSchema, null, 2));
-            const btn = $('copySchemaBtn');
-            if (btn) {
-                const orig = btn.textContent;
-                btn.textContent = 'Copied!';
-                setTimeout(() => { btn.textContent = orig; }, 1500);
-            }
-        } catch (e) {
-            alert('Failed to copy: ' + e.message);
-        }
-    }
-
     function toggleJsonPreview() {
         collectSchemaFromInputs();
         const box = $('schemaJsonPreviewBox');
@@ -810,8 +900,10 @@
         }
 
         try {
+            const schemaNameInput = $('editSchemaName');
             const payload = {
                 document_type: schema.document_type,
+                schema_name: (schemaNameInput && schemaNameInput.value.trim()) || schema.document_type,
                 fields: schema.fields.map(f => ({
                     name: f.name,
                     type: f.type || 'string',
@@ -881,7 +973,6 @@
 
     if ($('addSchemaFieldBtn')) $('addSchemaFieldBtn').addEventListener('click', addNewSchemaField);
     if ($('clearSchemaBtn')) $('clearSchemaBtn').addEventListener('click', clearSchema);
-    if ($('copySchemaBtn')) $('copySchemaBtn').addEventListener('click', copySchemaJson);
     if ($('toggleJsonPreviewBtn')) $('toggleJsonPreviewBtn').addEventListener('click', toggleJsonPreview);
     if ($('confirmBtn')) $('confirmBtn').addEventListener('click', saveCustomSchema);
 
@@ -1502,8 +1593,10 @@
 
         try {
             const fd = new FormData();
-            const strategy = ($('userLayer3StrategySelect') && $('userLayer3StrategySelect').value) || 'graph_memory_concurrent';
-            fd.append('strategy', strategy);
+            // Normal users always run the recommended concurrent strategy.
+            fd.append('strategy', 'graph_memory_concurrent');
+            const chosenSchema = $('userSchemaSelect') && $('userSchemaSelect').value;
+            if (chosenSchema) fd.append('schema_id', chosenSchema);
             const res = await api('/me/pipeline/run', { method: 'POST', body: fd });
             showStatus('userAutoRunStatus', `Job ${res.job_id} queued for ${res.targets} document(s).`, 'success');
             loadUserJobs();
@@ -1515,11 +1608,27 @@
     }
 
     if ($('userAutoRunPipelineBtn')) $('userAutoRunPipelineBtn').addEventListener('click', runUserPipeline);
-    if ($('layer3StrategySelect')) {
-        $('layer3StrategySelect').addEventListener('change', () => { window.__userChangedStrategy = true; });
-    }
-    if ($('userLayer3StrategySelect')) {
-        $('userLayer3StrategySelect').addEventListener('change', () => { window.__userChangedStrategy = true; });
+    if ($('refreshUserSchemasBtn')) $('refreshUserSchemasBtn').addEventListener('click', loadUserSchemas);
+
+    async function loadUserSchemas() {
+        const sel = $('userSchemaSelect');
+        if (!sel) return;
+        try {
+            const schemas = await api('/me/schemas');
+            const current = sel.value;
+            sel.innerHTML = '<option value="">— select your schema —</option>';
+            (schemas || []).forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s.schema_id;
+                const label = s.schema_name || s.document_type || s.schema_id;
+                const ver = s.version ? ` (v${s.version})` : '';
+                opt.textContent = `${label}${ver} · ${s.field_count} field(s)`;
+                sel.appendChild(opt);
+            });
+            if (current) sel.value = current;
+        } catch (e) {
+            sel.innerHTML = `<option value="">Failed to load schemas</option>`;
+        }
     }
     if ($('quickRunPipelineBtn')) {
         $('quickRunPipelineBtn').addEventListener('click', () => {

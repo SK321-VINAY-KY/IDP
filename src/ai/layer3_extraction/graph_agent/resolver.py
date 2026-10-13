@@ -9,6 +9,7 @@ Hardened to:
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
@@ -122,18 +123,55 @@ def resolve_schema_from_graph(
 
     # Post-resolution reconciliation:
     # If any schema field is empty in the LLM output, look for authoritative graph matches.
-    # Only nodes explicitly tagged with schema_field_name matching the target field are used.
-    # UNCERTAIN nodes must NOT contaminate authoritative output.
+    # Graded fallback (first match wins, UNCERTAIN nodes excluded, only empty fields filled):
+    #   (i)  exact schema_field_name match (authoritative tag), then
+    #   (ii) normalized node-label equals-or-contains the field name
+    #        (safety net for values present in the graph but mis-tagged with the
+    #         wrong schema_field_name / sfn=null, e.g. dense-table extraction misses).
+    # Pass (ii) only runs after pass (i) finds nothing for a given field, so an
+    # explicitly tagged node always wins over a label-inferred one.
+    def _norm_key(text: str) -> str:
+        # Lowercase, drop non-alphanumerics -> comparable token (e.g. "Non_Medical_Deductions" ~ "non medical deductions")
+        return re.sub(r"[^a-z0-9]+", "", str(text or "").lower())
+
     for fname in field_names:
-        if merged.get(fname) in ("", None):
-            # Search for nodes explicitly tagged with this field name (excluding UNCERTAIN)
-            for node in graph._nodes.values():
-                if node.status == "UNCERTAIN":
-                    continue
-                if node.properties.get("schema_field_name") == fname and node.value:
-                    merged[fname] = node.value
-                    logger.debug("graph.resolver.reconciled_tagged", field=fname, value=node.value)
-                    break
+        if merged.get(fname) not in ("", None):
+            continue
+
+        # Pass (i): exact schema_field_name match
+        filled = False
+        for node in graph._nodes.values():
+            if node.status == "UNCERTAIN":
+                continue
+            if node.properties.get("schema_field_name") == fname and node.value:
+                merged[fname] = node.value
+                logger.debug("graph.resolver.reconciled_tagged", field=fname, value=node.value)
+                filled = True
+                break
+        if filled:
+            continue
+
+        # Pass (ii): normalized label equals-or-contains the field name
+        fname_key = _norm_key(fname)
+        if not fname_key:
+            continue
+        for node in graph._nodes.values():
+            if node.status == "UNCERTAIN":
+                continue
+            if not node.value:
+                continue
+            label_key = _norm_key(getattr(node, "label", ""))
+            if not label_key:
+                continue
+            if label_key == fname_key or fname_key in label_key or label_key in fname_key:
+                merged[fname] = node.value
+                logger.debug(
+                    "graph.resolver.reconciled_label_fallback",
+                    field=fname,
+                    value=node.value,
+                    node_label=getattr(node, "label", ""),
+                )
+                break
 
     if merged != res_dict:
         result = schema.model_validate(merged)

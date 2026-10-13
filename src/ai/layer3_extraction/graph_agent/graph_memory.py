@@ -203,6 +203,16 @@ class GraphMemory:
                         page_number=int(ev.get("page_number", 1)),
                         text=str(ev.get("text", "")),
                         confidence=float(ev.get("confidence", 1.0)),
+                        block_ids=list(ev.get("block_ids", [])) if ev.get("block_ids") else [],
+                        bbox=ev.get("bbox"),
+                    )
+                elif isinstance(ev, Evidence):
+                    node.add_evidence(
+                        page_number=ev.page_number,
+                        text=ev.text,
+                        confidence=ev.confidence,
+                        block_ids=ev.block_ids,
+                        bbox=ev.bbox,
                     )
                 else:
                     node.add_evidence(page_number=ev.page_number, text=ev.text, confidence=ev.confidence)

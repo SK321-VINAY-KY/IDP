@@ -63,14 +63,24 @@
       "repomix-output.*",
       "repomix-layer3.*",
       "repomix*.xml",
+      "repomix*.md",
       "schema_registry/**",
       "schema_chatbot_v2/data/**",
       ".git/**",
       ".github/**",
-      ".vscode/**"
+      ".vscode/**",
+      ".env",
+      ".env2",
+      ".env.*",
+      "**/.env",
+      "**/.env.*",
+      ".secrets.baseline",
+      "_*.py",
+      "_taskdef*.json",
+      "_*.json"
     ]
   },
   "security": {
-    "enableSecurityCheck": false
+    "enableSecurityCheck": true
   }
 }

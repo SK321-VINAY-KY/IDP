@@ -7,7 +7,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>IDP — Extraction Pipeline Console</title>
-    <link rel="stylesheet" href="style.css?v=26">
+    <link rel="stylesheet" href="style.css?v=30">
 </head>
 <body>
     <!-- =========================== LOGIN OVERLAY =========================== -->
@@ -15,7 +15,6 @@
         <div class="login-card">
             <div class="login-header">
                 <h2>IDP Console Login</h2>
-                <p class="muted small">Sign in with your admin or user credentials.</p>
             </div>
             <form id="loginForm" class="login-form">
                 <div class="form-row">
@@ -28,7 +27,6 @@
                 </div>
                 <div id="loginError" class="status-box error hidden"></div>
                 <button type="submit" id="loginSubmitBtn" class="btn btn-primary btn-full btn-lg mt-2">Sign In</button>
-                <p class="muted small mt-2" style="text-align: center;">Default Admin: <code>admin</code> / <code>changeme</code></p>
             </form>
         </div>
     </div>
@@ -37,7 +35,6 @@
     <header class="app-header">
         <div class="header-left">
             <h1>IDP Console</h1>
-            <span class="subtitle">Schema Discovery &middot; Document Extraction Pipeline</span>
         </div>
         <div class="header-right">
             <button id="themeToggleBtn" class="theme-toggle-btn" type="button" title="Toggle Light/Dark Theme">
@@ -58,7 +55,7 @@
         <button class="tab-btn user-only hidden" data-tab="user-documents" id="tabBtnUserDocuments">My Documents</button>
         <button class="tab-btn admin-only" data-tab="logs" id="tabBtnLogs">Logs</button>
         <button class="tab-btn admin-only" data-tab="users" id="tabBtnUsers">User Management</button>
-        <button class="tab-btn admin-only" data-tab="querybot" id="tabBtnQueryBot">Query Bot</button>
+        <button class="tab-btn" data-tab="querybot" id="tabBtnQueryBot">Query Bot</button>
     </nav>
 
     <main class="content">
@@ -69,10 +66,8 @@
                     <div class="card-header">
                         <div class="header-titles">
                             <h2>Interactive Schema Builder</h2>
-                            <p class="muted small">Define custom target extraction schema: specify document type, configure fields, data types, and extraction guidance.</p>
                         </div>
                         <div class="card-actions">
-                            <button type="button" class="btn btn-outline btn-sm" id="copySchemaBtn" title="Copy schema JSON">Copy JSON</button>
                             <button type="button" class="btn btn-outline btn-sm" id="toggleJsonPreviewBtn" title="Toggle JSON view">Preview JSON</button>
                             <button type="button" class="btn btn-ghost btn-sm" id="clearSchemaBtn" title="Clear all fields">Clear</button>
                         </div>
@@ -91,6 +86,12 @@
                     <div class="doc-type-edit-row">
                         <label for="editDocType">Document Type <span class="required-star" style="color:var(--danger, #ef4444)">*</span>:</label>
                         <input id="editDocType" class="doc-type-input" type="text" placeholder="e.g. medical_discharge_summary, invoice, resume" autocomplete="off">
+                    </div>
+
+                    <!-- Schema Name Row (used for per-user versioning: same name => v1, v2, v3...) -->
+                    <div class="doc-type-edit-row">
+                        <label for="editSchemaName">Schema Name:</label>
+                        <input id="editSchemaName" class="doc-type-input" type="text" placeholder="e.g. my_invoice_schema (reused name auto-versions v1, v2, v3)" autocomplete="off">
                     </div>
 
                     <!-- Fields Table Container -->
@@ -114,9 +115,6 @@
                         <button type="button" class="btn btn-success btn-lg btn-full" id="confirmBtn">
                             Save &amp; Confirm Schema
                         </button>
-                        <p class="muted small mt-1" style="text-align: center;">
-                            Validates and saves the schema directly to <code>schema_registry/</code> and PostgreSQL. Immediately ready for pipeline extraction below.
-                        </p>
                     </div>
                     <div id="confirmStatus" class="status-box hidden mt-1"></div>
 
@@ -139,9 +137,6 @@
                                 Download Schema JSON
                             </button>
                         </div>
-                        <p class="muted small mt-1">
-                            Your schema is registered to <code>schema_registry/</code> and PostgreSQL. Ready for direct Layer 3 contextual extraction below!
-                        </p>
                     </div>
                 </div>
             </div>
@@ -168,13 +163,10 @@
                         <label for="layer3StrategySelect">
                             <strong>Layer 3 Extraction Strategy</strong>
                             <select id="layer3StrategySelect" class="themed-select" style="width: 100%; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--input-bg); color: var(--fg); border: 1px solid var(--border); font-size: 13px; font-weight: 500;">
-                                <option value="graph_memory_concurrent" selected>Graph Memory Concurrent (High Speed, 8x Parallel)</option>
-                                <option value="graph_memory">Graph Memory Sequential (Ordered Context)</option>
-                                <option value="page_scan">Classic Page Scan (Independent Page-by-Page Scratchpad)</option>
+                                <option value="graph_memory_concurrent" selected>Graph Memory Concurrent</option>
+                                <option value="graph_memory">Graph Memory Sequential</option>
+                                <option value="graph_memory_epoch">Epoch</option>
                             </select>
-                            <span class="muted small mt-1" style="display:block;">
-                                <strong>Graph Memory Concurrent (Recommended):</strong> Parallel delta extraction across pages (8x speedup) with dispatch-time snapshots and post-merge reconciliation. Best for multi-page documents.
-                            </span>
                         </label>
                     </div>
 
@@ -196,9 +188,6 @@
                             Run Extraction Pipeline
                         </button>
                     </div>
-                    <p class="muted small mt-1">
-                        Processes each selected document through <strong>Layer 1 (Routing)</strong>, <strong>Layer 2 (Conversion &amp; OCR)</strong>, and continues directly into <strong>Layer 3 (Contextual Field Extraction via Amazon Bedrock GPT OSS 120B)</strong> using the selected schema. Results are saved in <code>dataset_output/</code> and recorded in PostgreSQL.
-                    </p>
                 </div>
 
                 <div class="card">
@@ -231,17 +220,13 @@
                     <div class="card-header">
                         <h2>Run My Extraction Pipeline</h2>
                     </div>
-                    <p class="muted small">
-                        Automatically processes the documents you uploaded with your most recently confirmed schema.
-                    </p>
                     <div class="form-row mt-1">
-                        <label for="userLayer3StrategySelect">
-                            <strong>Layer 3 Strategy</strong>
-                            <select id="userLayer3StrategySelect" class="themed-select" style="width: 100%; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--input-bg); color: var(--fg); border: 1px solid var(--border); font-size: 13px;">
-                                <option value="graph_memory_concurrent" selected>Graph Memory Concurrent (High Speed, 8x Parallel)</option>
-                                <option value="graph_memory">Graph Memory Sequential (Ordered Context)</option>
-                                <option value="page_scan">Classic Page Scan (Scratchpad)</option>
+                        <label for="userSchemaSelect">
+                            <strong>Target Schema</strong>
+                            <select id="userSchemaSelect" class="themed-select" style="width: 100%; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--input-bg); color: var(--fg); border: 1px solid var(--border); font-size: 13px;">
+                                <option value="">— load your schemas —</option>
                             </select>
+                            <button class="btn btn-ghost btn-sm mt-1" id="refreshUserSchemasBtn" type="button">Refresh My Schemas</button>
                         </label>
                     </div>
                     <div class="pipeline-actions mt-1">
@@ -281,13 +266,11 @@
         <section id="tab-documents" class="tab-panel admin-only">
             <div class="card">
                 <h2>Upload Shared Documents</h2>
-                <p class="muted">Add PDFs to the dataset folder. Files go into shared <code>dataset/</code> pool.</p>
                 <div class="upload-zone" id="uploadZone">
                     <input type="file" id="fileInput" multiple accept="application/pdf,.pdf" hidden>
                     <div class="upload-inner">
                         <p class="upload-icon"></p>
                         <p><strong>Drag &amp; drop PDFs here</strong> or <a href="#" id="browseBtn">browse</a></p>
-                        <p class="muted small">Multi-select supported. Files go into <code>dataset/</code>.</p>
                     </div>
                 </div>
                 <div id="uploadStatus" class="status-box hidden"></div>
@@ -317,13 +300,11 @@
         <section id="tab-user-documents" class="tab-panel user-only hidden">
             <div class="card">
                 <h2>Upload My Documents</h2>
-                <p class="muted">Add PDFs to your isolated workspace. These documents are private to your account.</p>
                 <div class="upload-zone" id="userUploadZone">
                     <input type="file" id="userFileInput" multiple accept="application/pdf,.pdf" hidden>
                     <div class="upload-inner">
                         <p class="upload-icon"></p>
                         <p><strong>Drag &amp; drop PDFs here</strong> or <a href="#" id="userBrowseBtn">browse</a></p>
-                        <p class="muted small">Multi-select supported. Files are saved in your private workspace.</p>
                     </div>
                 </div>
                 <div id="userUploadStatus" class="status-box hidden"></div>
@@ -336,6 +317,16 @@
                 </div>
                 <div id="userDocList" class="doc-list">
                     <p class="muted">Loading…</p>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2>Outputs (<span id="userOutCount">0</span>)</h2>
+                    <button class="btn btn-ghost btn-sm" id="refreshUserOutputsBtn">Refresh</button>
+                </div>
+                <div id="userOutList" class="doc-list">
+                    <p class="muted">No processed outputs yet. Run the pipeline.</p>
                 </div>
             </div>
         </section>
@@ -411,7 +402,7 @@
             </div>
         </section>
         <!-- =========================== TAB: Query Bot (Admin Only) =========================== -->
-        <section id="tab-querybot" class="tab-panel admin-only">
+        <section id="tab-querybot" class="tab-panel">
             <div class="card">
                 <div class="card-header">
                     <h2>Query Bot</h2>
@@ -445,6 +436,6 @@
         </section>
     </main>
 
-    <script src="app.js?v=23"></script>
+    <script src="app.js?v=27"></script>
 </body>
 </html>

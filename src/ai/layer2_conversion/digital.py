@@ -148,7 +148,8 @@ def _extract_pymupdf_fallback(pdf_path: str, page_number: int) -> tuple[str, flo
         doc = fitz.open(pdf_path)
         try:
             page = doc[page_number - 1]
-            text = page.get_text("text").strip()
+            raw_text = page.get_text("text")
+            text = raw_text.strip() if isinstance(raw_text, str) else str(raw_text).strip()
             confidence = 0.95 if len(text) > 20 else 0.30
             fallback_blocks: list[Block] = []
             if text:

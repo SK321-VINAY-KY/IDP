@@ -27,7 +27,10 @@ def load_pages_with_confidence(page_outputs: List[PageOutput]) -> List[Dict]:
     if low_conf_pages:
         logger.warning("page_loader.low_confidence_pages_included",
                        pages=low_conf_pages, total_pages=len(sorted_outputs))
-    return [{"markdown": p.markdown, "page_number": p.page_number} for p in sorted_outputs]
+    return [
+        {"markdown": p.markdown, "page_number": p.page_number, "blocks": getattr(p, "blocks", []) or []}
+        for p in sorted_outputs
+    ]
 
 
 def load_pages_from_outputs(page_outputs: List[PageOutput]) -> List[str]:
@@ -44,7 +47,7 @@ def load_pages_from_fixture(doc_id: str) -> List[Dict]:
     content = file_path.read_text(encoding="utf-8")
     matches = list(PAGE_MARKER.finditer(content))
     if not matches:
-        return [{"markdown": content.strip(), "page_number": 1}]
+        return [{"markdown": content.strip(), "page_number": 1, "blocks": []}]
 
     pages = []
     for i, match in enumerate(matches):
@@ -55,6 +58,7 @@ def load_pages_from_fixture(doc_id: str) -> List[Dict]:
         pages.append({
             "markdown":    cleaned_markdown,
             "page_number": int(match.group(1)),
+            "blocks":      [],
         })
     return pages
 

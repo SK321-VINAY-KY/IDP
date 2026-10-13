@@ -41,12 +41,16 @@ class Evidence:
     page_number: int
     text: str
     confidence: float = 1.0
+    block_ids: List[str] = field(default_factory=list)
+    bbox: Optional[dict] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "page_number": self.page_number,
             "text": self.text,
             "confidence": round(self.confidence, 3),
+            "block_ids": self.block_ids,
+            "bbox": self.bbox,
         }
 
     @classmethod
@@ -55,6 +59,8 @@ class Evidence:
             page_number=int(data.get("page_number", 1)),
             text=str(data.get("text", "")),
             confidence=float(data.get("confidence", 1.0)),
+            block_ids=data.get("block_ids", []) or [],
+            bbox=data.get("bbox"),
         )
 
 
@@ -84,10 +90,25 @@ class GraphNode:
             self.source_pages.append(page_number)
             self.source_pages.sort()
 
-    def add_evidence(self, page_number: int, text: str, confidence: float = 1.0) -> None:
+    def add_evidence(
+        self,
+        page_number: int,
+        text: str,
+        confidence: float = 1.0,
+        block_ids: Optional[List[str]] = None,
+        bbox: Optional[dict] = None,
+    ) -> None:
         self.add_page(page_number)
         if text and not any(e.text == text and e.page_number == page_number for e in self.evidence):
-            self.evidence.append(Evidence(page_number=page_number, text=text, confidence=confidence))
+            self.evidence.append(
+                Evidence(
+                    page_number=page_number,
+                    text=text,
+                    confidence=confidence,
+                    block_ids=block_ids or [],
+                    bbox=bbox,
+                )
+            )
 
     def add_alias(self, alias: str) -> None:
         clean = alias.strip()
