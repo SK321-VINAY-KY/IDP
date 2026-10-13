@@ -38,7 +38,9 @@ OUTCOME_EXCEPTION = "exception"
 
 # Call-purpose enums for the Layer-3 Bedrock sites.
 PURPOSE_GRAPH_EXTRACTION = "graph_extraction"
+PURPOSE_GRAPH_REASK = "graph_extraction_reask"   # audit #1 (2c): one re-ask on invalid JSON
 PURPOSE_RESOLVER = "schema_resolution"
+PURPOSE_RESOLVER_REASK = "schema_resolution_reask"
 PURPOSE_CHECK_PAGE = "check_page_for_fields"
 PURPOSE_NAVIGATE = "navigate"
 PURPOSE_SUMMARIZE = "summarize_page"
@@ -82,6 +84,25 @@ class CallRecord:
     owner: Optional[str] = None
     doc_id: Optional[str] = None
     page_number: Optional[int] = None
+    # Audit #1 (2b/2c/2e): number of extra attempts this call needed —
+    # throttling backoff retries OR a max_tokens larger-budget retry OR a
+    # parse re-ask. Metadata only.
+    retry_attempts: int = 0
+
+
+# Page-quality enums (audit #1). Metadata only — no content.
+PAGE_QUALITY_CLEAN = "clean"
+PAGE_QUALITY_PARTIAL = "partial"      # needed the substring salvage path
+PAGE_QUALITY_DEGRADED = "degraded"    # truncated after retry, or invalid after re-ask
+
+
+@dataclass
+class PageQualityRecord:
+    """One page's final extraction quality. Metadata only."""
+    quality: str
+    owner: Optional[str] = None
+    doc_id: Optional[str] = None
+    page_number: Optional[int] = None
 
 
 def _percentile(sorted_vals: List[int], pct: float) -> Optional[int]:
@@ -103,6 +124,32 @@ class MetricsCollector:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._records: List[CallRecord] = []
+        self._page_quality: List[PageQualityRecord] = []
+
+    def record_page_quality(self, quality: str, owner: Optional[str] = None,
+                            doc_id: Optional[str] = None,
+                            page_number: Optional[int] = None) -> None:
+        """Record one page's final extraction quality (clean/partial/degraded).
+        Falls back to the process-global run context for owner/doc_id. Metadata only."""
+        if owner is None:
+            owner = _ctx_owner()
+        if doc_id is None:
+            doc_id = _ctx_doc_id()
+        with self._lock:
+            self._page_quality.append(PageQualityRecord(
+                quality=quality, owner=owner, doc_id=doc_id, page_number=page_number))
+        logger.info("llm.page.quality", quality=quality, owner=owner,
+                    doc_id=doc_id, page_number=page_number)
+
+    def page_quality_for(self, owner: Optional[str] = None,
+                         doc_id: Optional[str] = None) -> List[PageQualityRecord]:
+        with self._lock:
+            recs = list(self._page_quality)
+        if owner is not None:
+            recs = [r for r in recs if r.owner == owner]
+        if doc_id is not None:
+            recs = [r for r in recs if r.doc_id == doc_id]
+        return recs
 
     def record(self, rec: CallRecord) -> None:
         with self._lock:
@@ -126,6 +173,7 @@ class MetricsCollector:
     def reset(self) -> None:
         with self._lock:
             self._records.clear()
+            self._page_quality.clear()
 
     def records_for(self, owner: Optional[str] = None, doc_id: Optional[str] = None) -> List[CallRecord]:
         with self._lock:
@@ -153,6 +201,18 @@ class MetricsCollector:
         empty_results = outcome_dist.get(OUTCOME_EMPTY_RESULT, 0)
         throttles = sum(1 for r in recs if r.outcome == OUTCOME_EXCEPTION and (r.stop_reason == "ThrottlingException"))
 
+        # Audit #1: retry/re-ask tallies (metadata only).
+        retry_attempts_total = sum((r.retry_attempts or 0) for r in recs)
+        reask_recs = [r for r in recs if r.purpose == PURPOSE_GRAPH_REASK]
+        reask_count = len(reask_recs)
+        reask_recovered = sum(1 for r in reask_recs if r.outcome == OUTCOME_OK)
+
+        # Audit #1: per-page extraction quality (degraded / partial / clean).
+        pq = self.page_quality_for(owner=owner, doc_id=doc_id)
+        degraded_pages = sum(1 for r in pq if r.quality == PAGE_QUALITY_DEGRADED)
+        partial_pages = sum(1 for r in pq if r.quality == PAGE_QUALITY_PARTIAL)
+        clean_pages = sum(1 for r in pq if r.quality == PAGE_QUALITY_CLEAN)
+
         # Output-token distribution per purpose.
         by_purpose: Dict[str, Dict[str, Any]] = {}
         purposes = sorted({r.purpose for r in recs})
@@ -177,6 +237,12 @@ class MetricsCollector:
             "parse_failures": parse_failures,
             "empty_result_calls": empty_results,
             "throttling_exceptions": throttles,
+            "retry_attempts": retry_attempts_total,
+            "reask_count": reask_count,
+            "reask_recovered": reask_recovered,
+            "degraded_pages": degraded_pages,
+            "partial_pages": partial_pages,
+            "clean_pages": clean_pages,
             "by_purpose": by_purpose,
         }
 
@@ -206,6 +272,17 @@ class MetricsCollector:
             for rec in reversed(self._records):
                 if rec.purpose == purpose and (page_number is None or rec.page_number == page_number):
                     rec.outcome = outcome
+                    return
+
+    def amend_retry_attempts(self, purpose: str, retry_attempts: int,
+                             page_number: Optional[int] = None) -> None:
+        """Set retry_attempts on the most recent record matching (purpose[, page]).
+        Used to attribute a max_tokens larger-budget retry or throttle backoff
+        count to the call that ultimately returned. Metadata only."""
+        with self._lock:
+            for rec in reversed(self._records):
+                if rec.purpose == purpose and (page_number is None or rec.page_number == page_number):
+                    rec.retry_attempts = int(retry_attempts)
                     return
 
 
@@ -298,3 +375,14 @@ def record_converse(
 def amend_outcome(purpose: str, outcome: str, page_number: Optional[int] = None) -> None:
     """Refine the outcome of the most recent matching call record (metadata only)."""
     _collector.amend_last_outcome(purpose=purpose, outcome=outcome, page_number=page_number)
+
+
+def amend_retry_attempts(purpose: str, retry_attempts: int, page_number: Optional[int] = None) -> None:
+    """Attribute a retry/backoff/re-ask attempt count to the most recent matching record."""
+    _collector.amend_retry_attempts(purpose=purpose, retry_attempts=retry_attempts, page_number=page_number)
+
+
+def record_page_quality(quality: str, owner: Optional[str] = None,
+                        doc_id: Optional[str] = None, page_number: Optional[int] = None) -> None:
+    """Record one page's final extraction quality (clean/partial/degraded). Metadata only."""
+    _collector.record_page_quality(quality=quality, owner=owner, doc_id=doc_id, page_number=page_number)

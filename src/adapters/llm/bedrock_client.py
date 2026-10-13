@@ -357,48 +357,71 @@ class BedrockExtractionClient:
 
         from src.adapters.llm import llm_metrics as _m
         # Audit #1 (2a): the graph-extraction output budget comes from settings
-        # (default 8000), replacing the old hardcoded max(..., 4000) floor. The
-        # dedicated setting is authoritative for this purpose (the shared prompt
-        # config's stale max_tokens is intentionally not consulted here).
+        # (default 8000). Audit #1 (2b): if the call stops on max_tokens, retry
+        # ONCE at the ceiling budget; if it still truncates, the page is degraded.
         graph_budget = int(getattr(settings, "graph_extraction_max_tokens", 8000))
+        ceiling = int(getattr(settings, "graph_extraction_max_tokens_ceiling", 12000))
+        base_messages = [{"role": "user", "content": [{"text": prompt}]}]
+        base_system = "You extract entities and relationships for a Document Knowledge Graph. Return ONLY valid JSON."
+
         resp = self._call_converse(
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            system="You extract entities and relationships for a Document Knowledge Graph. Return ONLY valid JSON.",
+            messages=base_messages,
+            system=base_system,
             temperature=params.get("temperature", 0.0),
             max_tokens=graph_budget,
             _purpose=_m.PURPOSE_GRAPH_EXTRACTION,
             _page_number=page_number,
         )
-        raw = _extract_text_from_converse_response(resp)
-        raw = _strip_fences(raw)
 
-        def _result(entities, relationships, refs):
-            # MEASUREMENT ONLY: tag empty-entity outcome so the summary can tell a
-            # truncation/parse-fail page from a real one. Does not change the return.
-            if not entities:
+        # 2b: one larger-budget retry on truncation.
+        truncated = _m.stop_reason_from_response(resp) == "max_tokens"
+        if truncated and ceiling > graph_budget:
+            resp = self._call_converse(
+                messages=base_messages,
+                system=base_system,
+                temperature=params.get("temperature", 0.0),
+                max_tokens=ceiling,
+                _purpose=_m.PURPOSE_GRAPH_EXTRACTION,
+                _page_number=page_number,
+            )
+            _m.amend_retry_attempts(_m.PURPOSE_GRAPH_EXTRACTION, 1, page_number=page_number)
+            truncated = _m.stop_reason_from_response(resp) == "max_tokens"
+
+        raw = _strip_fences(_extract_text_from_converse_response(resp))
+
+        def _finish(entities, relationships, refs, quality):
+            # 2b/2c: a degraded page produced truncated/invalid output; a page with
+            # no entities is tagged empty_result; otherwise the metrics 'ok' stands.
+            if quality == _m.PAGE_QUALITY_DEGRADED:
+                _m.amend_outcome(_m.PURPOSE_GRAPH_EXTRACTION, _m.OUTCOME_PARSE_FAILED, page_number=page_number)
+            elif not entities:
                 _m.amend_outcome(_m.PURPOSE_GRAPH_EXTRACTION, _m.OUTCOME_EMPTY_RESULT, page_number=page_number)
-            return {"entities": entities, "relationships": relationships, "reference_resolutions": refs}
+            _m.record_page_quality(quality, page_number=page_number)
+            return {
+                "entities": entities,
+                "relationships": relationships,
+                "reference_resolutions": refs,
+                "quality": quality,
+            }
+
+        # If still truncated after the retry, the page is degraded regardless of
+        # whether the fragment happens to parse — we cannot trust a cut-off object.
+        if truncated:
+            logger.warning("bedrock.extract_graph.truncated_after_retry",
+                           page_number=page_number, out_len=len(raw))
+            return _finish([], [], [], _m.PAGE_QUALITY_DEGRADED)
 
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, dict):
-                return _result(parsed.get("entities", []), parsed.get("relationships", []),
-                               parsed.get("reference_resolutions", []))
-            return _result([], [], [])
+                return _finish(parsed.get("entities", []), parsed.get("relationships", []),
+                               parsed.get("reference_resolutions", []), _m.PAGE_QUALITY_CLEAN)
+            return _finish([], [], [], _m.PAGE_QUALITY_CLEAN)
         except json.JSONDecodeError:
-            start = raw.find("{")
-            end = raw.rfind("}")
-            if start != -1 and end != -1:
-                try:
-                    parsed = json.loads(raw[start : end + 1])
-                    if isinstance(parsed, dict):
-                        return _result(parsed.get("entities", []), parsed.get("relationships", []),
-                                       parsed.get("reference_resolutions", []))
-                except Exception:
-                    pass
             _m.amend_outcome(_m.PURPOSE_GRAPH_EXTRACTION, _m.OUTCOME_PARSE_FAILED, page_number=page_number)
-            logger.warning("bedrock.extract_graph.parse_failed", raw=raw[:200])
-            return {"entities": [], "relationships": [], "reference_resolutions": []}
+            logger.warning("bedrock.extract_graph.parse_failed",
+                           page_number=page_number, raw_len=len(raw))
+            return _finish([], [], [], _m.PAGE_QUALITY_DEGRADED)
 
     def resolve_schema_from_graph(
         self,

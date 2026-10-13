@@ -271,6 +271,11 @@ class PageDelta:
     relationships: List[GraphEdge] = field(default_factory=list)
     unresolved_references: List[UnresolvedRef] = field(default_factory=list)
     raw_id_map: Dict[str, str] = field(default_factory=dict)
+    # Extraction quality for this page (audit #1): "clean" (parsed first try),
+    # "partial" (needed the substring salvage path), or "degraded" (truncated after
+    # retry, or invalid JSON after one re-ask). Non-clean pages MUST NOT be
+    # checkpointed as COMPLETED so a resumed run re-processes them.
+    quality: str = "clean"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -279,6 +284,7 @@ class PageDelta:
             "relationships": [e.to_dict() for e in self.relationships],
             "unresolved_references": [r.to_dict() for r in self.unresolved_references],
             "raw_id_map": dict(self.raw_id_map),
+            "quality": self.quality,
         }
 
     @classmethod
@@ -295,6 +301,7 @@ class PageDelta:
             relationships=relationships,
             unresolved_references=unresolved,
             raw_id_map=dict(data.get("raw_id_map", {})),
+            quality=str(data.get("quality", "clean")),
         )
 
 

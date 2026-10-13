@@ -64,20 +64,27 @@ def test_normal_stop_records_ok(fresh_collector):
 
 def test_max_tokens_stop_is_recorded(fresh_collector):
     # Truncated: valid-looking but we still read stopReason=max_tokens.
+    # audit #1 (2b): a max_tokens stop now triggers ONE larger-budget retry. This
+    # mock returns max_tokens on every call, so both the original and the retry
+    # truncate -> 2 recorded max_tokens stops and a degraded page.
     client = _make_client_with_mock(lambda **kw: _resp("max_tokens", out_tokens=4000))
     client.extract_graph_from_page("page", [{"name": "x", "description": "y"}], [], page_number=5)
     s = fresh_collector.summarize()
-    assert s["stop_reason_distribution"].get("max_tokens") == 1
-    assert s["max_tokens_stops"] == 1
+    assert s["stop_reason_distribution"].get("max_tokens") == 2
+    assert s["max_tokens_stops"] == 2
+    assert s["degraded_pages"] == 1
 
 
 def test_unparseable_json_tagged_parse_failed(fresh_collector):
-    client = _make_client_with_mock(lambda **kw: _resp("max_tokens", text="{ this is not valid json ::::"))
+    # Non-truncated (end_turn) but invalid JSON. audit #1 (2c): one re-ask is
+    # issued; this mock stays invalid on the re-ask too -> page degraded, empty.
+    client = _make_client_with_mock(lambda **kw: _resp("end_turn", text="{ this is not valid json ::::"))
     out = client.extract_graph_from_page("page", [{"name": "x", "description": "y"}], [], page_number=3)
-    assert out == {"entities": [], "relationships": [], "reference_resolutions": []}  # behavior unchanged
+    assert out["entities"] == [] and out["relationships"] == [] and out["reference_resolutions"] == []
+    assert out["quality"] == "degraded"
     s = fresh_collector.summarize()
-    # empty entities on a parse failure -> tagged parse_failed (amended from ok)
-    assert s["parse_failures"] == 1
+    # invalid JSON -> tagged parse_failed (amended from ok)
+    assert s["parse_failures"] >= 1
 
 
 def test_empty_entities_tagged_empty_result(fresh_collector):

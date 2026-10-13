@@ -111,6 +111,10 @@ class GraphExtractionAgent:
         entities = llm_output.get("entities", [])
         relationships = llm_output.get("relationships", [])
         ref_resolutions = llm_output.get("reference_resolutions", [])
+        # Audit #1 (2b/2c): propagate extraction quality (clean/partial/degraded)
+        # emitted by the client so the orchestrator can checkpoint non-clean pages
+        # as something other than COMPLETED.
+        page_quality = str(llm_output.get("quality", "clean"))
 
         delta_entities: List[GraphNode] = []
         delta_edges: List[GraphEdge] = []
@@ -259,4 +263,5 @@ class GraphExtractionAgent:
             relationships=delta_edges,
             unresolved_references=unresolved,
             raw_id_map=raw_id_map,
+            quality=page_quality,
         )

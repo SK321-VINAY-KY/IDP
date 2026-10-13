@@ -105,3 +105,74 @@ def test_reasoning_model_marker_is_config_driven(monkeypatch):
     monkeypatch.setattr(settings, "bedrock_reasoning_model_markers", ["claude-3"], raising=False)
     assert _is_reasoning_model("anthropic.claude-3") is True
     assert _is_reasoning_model("some-gpt-oss-120b") is False
+
+
+# --------------------------------------------------------------------------- #
+# 2b — stopReason: one larger-budget retry on max_tokens, else degraded
+# --------------------------------------------------------------------------- #
+
+def test_max_tokens_retries_once_at_ceiling_then_succeeds(fresh, monkeypatch):
+    monkeypatch.setattr(settings, "graph_extraction_max_tokens", 8000, raising=False)
+    monkeypatch.setattr(settings, "graph_extraction_max_tokens_ceiling", 12000, raising=False)
+    budgets = []
+    def seq(**kw):
+        budgets.append(kw["inferenceConfig"]["maxTokens"])
+        if len(budgets) == 1:
+            return _resp("max_tokens", ENTITIES_JSON, out_tokens=8000)
+        return _resp("end_turn", ENTITIES_JSON, out_tokens=5000)
+    client = _make_client(seq)
+    out = client.extract_graph_from_page("page", SCHEMA_FIELDS, [], page_number=1)
+    assert budgets == [8000, 12000]              # retried once at the ceiling
+    assert out["entities"]                       # recovered content
+    assert out["quality"] == "clean"
+    s = fresh.summarize()
+    assert s["retry_attempts"] >= 1
+    assert s["degraded_pages"] == 0
+
+
+def test_max_tokens_twice_marks_page_degraded(fresh, monkeypatch):
+    monkeypatch.setattr(settings, "graph_extraction_max_tokens", 8000, raising=False)
+    monkeypatch.setattr(settings, "graph_extraction_max_tokens_ceiling", 12000, raising=False)
+    def seq(**kw):
+        return _resp("max_tokens", ENTITIES_JSON, out_tokens=kw["inferenceConfig"]["maxTokens"])
+    client = _make_client(seq)
+    out = client.extract_graph_from_page("page", SCHEMA_FIELDS, [], page_number=2)
+    assert out["quality"] == "degraded"
+    assert out["entities"] == []                 # cannot trust a cut-off object
+    s = fresh.summarize()
+    assert s["degraded_pages"] == 1
+    assert s["max_tokens_stops"] == 2            # original + retry both truncated
+
+
+def test_clean_page_has_clean_quality_and_no_retry(fresh):
+    client = _make_client(lambda **kw: _resp("end_turn", ENTITIES_JSON, out_tokens=1000))
+    out = client.extract_graph_from_page("page", SCHEMA_FIELDS, [], page_number=1)
+    assert out["quality"] == "clean"
+    s = fresh.summarize()
+    assert s["retry_attempts"] == 0
+    assert s["degraded_pages"] == 0
+    assert s["clean_pages"] == 1
+
+
+def test_page_delta_carries_quality_through_agent():
+    """The agent must thread the client's quality onto the PageDelta."""
+    import asyncio
+    from src.ai.layer3_extraction.graph_agent.agent import GraphExtractionAgent
+    from src.ai.layer3_extraction.graph_agent.graph_memory import GraphMemory
+    from pydantic import BaseModel, Field
+
+    class S(BaseModel):
+        patient_name: str = Field(default="", description="n")
+
+    class FakeLLM:
+        def extract_graph_from_page(self, **kw):
+            return {"entities": [], "relationships": [], "reference_resolutions": [],
+                    "quality": "degraded"}
+
+    agent = GraphExtractionAgent(schema=S, graph=GraphMemory(), llm=FakeLLM())
+    delta = asyncio.run(agent.build_page_delta_async(
+        page_number=1, markdown="some text", total_pages=1, context=[]))
+    assert delta.quality == "degraded"
+    # round-trips through checkpoint serialization
+    from src.ai.layer3_extraction.graph_agent.models import PageDelta
+    assert PageDelta.from_dict(delta.to_dict()).quality == "degraded"

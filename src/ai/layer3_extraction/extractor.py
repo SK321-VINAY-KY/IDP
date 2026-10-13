@@ -403,6 +403,8 @@ async def extract_with_graph_memory_concurrent(
     semaphore = asyncio.Semaphore(concurrency_limit)
     pages_succeeded: List[int] = list(recovered_pages)
     pages_failed: List[int] = []
+    pages_degraded: List[int] = []   # audit #1 (2b/2c): truncated/invalid after retry/re-ask
+    pages_partial: List[int] = []    # audit #1 (2c): needed the salvage path
     failed_errors: Dict[int, str] = {}
 
     async def _process_page(page_data: Dict[str, Any]) -> None:
@@ -470,10 +472,29 @@ async def extract_with_graph_memory_concurrent(
         # 5. Ingest delta into central GraphMemory (canonical merge under lock)
         await manager.ingest_page_delta(delta, delta_checksum=checksum)
 
-        # 6. Mark page completed
-        if doc_id:
-            save_page_checkpoint(doc_id, page_num, status="COMPLETED", owner=owner, pipeline_version=pipeline_version)
-        pages_succeeded.append(page_num)
+        # 6. Mark page completed — BUT only if extraction was clean. A degraded
+        #    page (truncated after retry / invalid JSON after re-ask) or a partial
+        #    page (needed the salvage path) must NOT be checkpointed COMPLETED, so a
+        #    resumed run re-processes it. Its DELTA_PERSISTED checkpoint from step 4
+        #    is NOT in the recovery whitelist for a re-run of a degraded page below,
+        #    so we overwrite the status with DEGRADED / PARTIAL (audit #1, 2b/2c).
+        page_quality = getattr(delta, "quality", "clean") or "clean"
+        if page_quality == "degraded":
+            pages_degraded.append(page_num)
+            if doc_id:
+                save_page_checkpoint(doc_id, page_num, status="DEGRADED", owner=owner,
+                                     error_info="truncated_or_invalid_after_retry",
+                                     pipeline_version=pipeline_version)
+        elif page_quality == "partial":
+            pages_partial.append(page_num)
+            pages_succeeded.append(page_num)
+            if doc_id:
+                save_page_checkpoint(doc_id, page_num, status="PARTIAL", owner=owner,
+                                     pipeline_version=pipeline_version)
+        else:
+            if doc_id:
+                save_page_checkpoint(doc_id, page_num, status="COMPLETED", owner=owner, pipeline_version=pipeline_version)
+            pages_succeeded.append(page_num)
 
     # Launch concurrent worker tasks for non-recovered pages
     tasks = [_process_page(p) for p in pages if p.get("page_number") not in recovered_pages]
@@ -503,12 +524,17 @@ async def extract_with_graph_memory_concurrent(
         except Exception as exc:
             logger.warning("layer3.save_graph_failed", error=str(exc))
 
+    pages_degraded.sort()
+    pages_partial.sort()
+
     logger.info(
         "layer3.graph_memory_concurrent.done",
         graph_stats=manager.graph.stats(),
         pages_total=total_pages,
         pages_succeeded=len(pages_succeeded),
         pages_failed=len(pages_failed),
+        pages_degraded=len(pages_degraded),
+        pages_partial=len(pages_partial),
     )
 
     if graph_out is not None:
@@ -519,6 +545,11 @@ async def extract_with_graph_memory_concurrent(
         graph_out["pages_succeeded"] = len(pages_succeeded)
         graph_out["pages_failed"] = len(pages_failed)
         graph_out["failed_pages"] = pages_failed
+        # audit #1 (2b/2c): surface non-clean pages in the page results.
+        graph_out["pages_degraded"] = len(pages_degraded)
+        graph_out["degraded_pages"] = pages_degraded
+        graph_out["pages_partial"] = len(pages_partial)
+        graph_out["partial_pages"] = pages_partial
         graph_out["concurrency_limit"] = concurrency_limit
         graph_out["unresolved_reference_count"] = manager.unresolved_count
         graph_out["merge_ledger"] = [r.to_dict() for r in manager.get_merge_ledger()]
