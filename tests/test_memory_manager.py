@@ -545,6 +545,7 @@ def test_11_extract_document_sync_wrapper():
         pages_md=pages,
         schema=PatientClaimSchema,
         llm=mock_llm,
+        owner="_admin",
         strategy="graph_memory_concurrent",
         graph_out=graph_out,
     )

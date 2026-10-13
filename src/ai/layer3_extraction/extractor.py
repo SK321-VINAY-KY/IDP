@@ -283,15 +283,17 @@ def extract_with_graph_memory(
     pages_md: Union[List[str], List[Dict]],
     schema: type[BaseModel],
     llm: ExtractionLLMClient,
+    owner: str,
     graph_out: Optional[Dict[str, Any]] = None,
     doc_id: Optional[str] = None,
-    owner: str = "_admin",
     **kwargs: Any,
 ) -> BaseModel:
     """
     Sequential / Ordered Graph-Memory Extraction Strategy.
     Wraps Mode A (Ordered Context Mode) synchronously for backward compatibility.
-    ``owner`` is forwarded to Mode A (ordered); callers should pass it explicitly.
+    ``owner`` is REQUIRED (no default) and forwarded to Mode A (ordered). Background
+    / admin paths with no authenticated tenant must pass ``owner="_admin"`` explicitly
+    at the call site — never rely on an implicit default (tenant-isolation hardening).
     """
     return _run_coroutine_sync(
         extract_with_graph_memory_ordered(
@@ -665,10 +667,10 @@ def extract_document(
     pages_md: Union[List[str], List[Dict]],
     schema: type[BaseModel],
     llm: ExtractionLLMClient,
+    owner: str,
     strategy: Optional[str] = None,
     graph_out: Optional[Dict[str, Any]] = None,
     doc_id: Optional[str] = None,
-    owner: str = "_admin",
     **kwargs: Any,
 ) -> BaseModel:
     """
@@ -679,9 +681,12 @@ def extract_document(
     - "graph_memory_concurrent": Mode B (Concurrent Delta Mode).
     - "graph_memory_batched" / "graph_memory_epoch": Mode C (Epoch / Batch Mode).
 
-    ``owner`` must be the authenticated tenant username (or "_admin" for
-    background / admin paths). It is forwarded explicitly to every
-    graph-memory mode so checkpoints and extraction runs are keyed by tenant.
+    ``owner`` is REQUIRED (no default) and must be the authenticated tenant
+    username (or "_admin" for background / admin paths, passed EXPLICITLY at the
+    call site). It is forwarded to every graph-memory mode so checkpoints and
+    extraction runs are keyed by tenant. Removing the former "_admin" default
+    prevents a caller from silently writing another tenant's data as admin
+    (tenant-isolation hardening).
     """
     from src.config.settings import settings
 

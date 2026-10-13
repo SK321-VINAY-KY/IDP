@@ -52,6 +52,8 @@ from src.ai.layer3_extraction.extractor import (
     extract_with_graph_memory_ordered,
     extract_with_graph_memory_concurrent,
     extract_with_graph_memory_batched,
+    extract_with_graph_memory,
+    extract_document,
 )
 from src.ai.layer3_extraction.migrations.migrate_tenant_isolation import (
     migrate_sqlite,
@@ -119,11 +121,16 @@ def test_storage_function_signatures_require_owner_without_default():
             f"{fn.__name__} 'owner' parameter must NOT have a default value (got {param.default})!"
         )
 
-    # Extractor functions must also have owner with NO default
+    # Extractor functions must also have owner with NO default. This covers the
+    # three async core modes AND the two sync entry points (extract_with_graph_memory
+    # wrapper + extract_document dispatcher) that formerly defaulted owner="_admin" —
+    # a default there let a caller silently write another tenant's data as admin.
     extractor_funcs = [
         extract_with_graph_memory_ordered,
         extract_with_graph_memory_concurrent,
         extract_with_graph_memory_batched,
+        extract_with_graph_memory,
+        extract_document,
     ]
     for fn in extractor_funcs:
         sig = inspect.signature(fn)

@@ -272,6 +272,7 @@ def run_layer3_only(
         pages_md=pages,
         schema=schema_model,
         llm=llm,
+        owner="_admin",
         strategy=strategy,
         graph_out=graph_out,
     )
