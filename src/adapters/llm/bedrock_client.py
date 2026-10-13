@@ -107,6 +107,10 @@ class BedrockExtractionClient:
         temperature: float = 0.0,
         max_tokens: int = 4000,
         tool_config: Optional[Dict[str, Any]] = None,
+        _purpose: str = "other",
+        _owner: Optional[str] = None,
+        _doc_id: Optional[str] = None,
+        _page_number: Optional[int] = None,
     ) -> Dict[str, Any]:
         kwargs: Dict[str, Any] = {
             "modelId": self.model_id,
@@ -123,14 +127,43 @@ class BedrockExtractionClient:
         if self.reasoning_effort and ("gpt-oss" in self.model_id.lower() or "qdtz23c8eis1" in self.model_id):
             kwargs["additionalModelRequestFields"] = {"reasoning_effort": self.reasoning_effort}
 
+        # ---- MEASUREMENT ONLY (audit finding #1) -------------------------------
+        # Record Converse metadata (stopReason / usage / latency / outcome). This is
+        # a pure observer: the response is returned UNCHANGED and behavior is identical
+        # whether or not recording succeeds. Never reads prompt/response content.
+        import time as _time
+        from src.adapters.llm import llm_metrics as _m
+        _t0 = _time.perf_counter()
         try:
-            return self.client.converse(**kwargs)
+            try:
+                resp = self.client.converse(**kwargs)
+            except Exception as exc:
+                # Existing behavior: drop additionalModelRequestFields once and retry.
+                if "additionalModelRequestFields" in kwargs:
+                    kwargs.pop("additionalModelRequestFields", None)
+                    resp = self.client.converse(**kwargs)
+                else:
+                    raise exc
         except Exception as exc:
-            # If additionalModelRequestFields failed, retry without it
-            if "additionalModelRequestFields" in kwargs:
-                kwargs.pop("additionalModelRequestFields", None)
-                return self.client.converse(**kwargs)
-            raise exc
+            try:
+                _m.record_converse(
+                    purpose=_purpose, model_id=self.model_id, max_tokens=max_tokens,
+                    response=None, latency_ms=(_time.perf_counter() - _t0) * 1000.0,
+                    outcome=_m.OUTCOME_EXCEPTION, owner=_owner, doc_id=_doc_id,
+                    page_number=_page_number, exception_type=type(exc).__name__,
+                )
+            except Exception:
+                pass
+            raise
+        try:
+            _m.record_converse(
+                purpose=_purpose, model_id=self.model_id, max_tokens=max_tokens,
+                response=resp, latency_ms=(_time.perf_counter() - _t0) * 1000.0,
+                outcome=_m.OUTCOME_OK, owner=_owner, doc_id=_doc_id, page_number=_page_number,
+            )
+        except Exception:
+            pass
+        return resp
 
     def extract(self, content: str, schema: type[BaseModel]) -> BaseModel:
         """
@@ -314,23 +347,31 @@ class BedrockExtractionClient:
         )
         params = prompt_params("graph_page_ingestion")
 
+        from src.adapters.llm import llm_metrics as _m
         resp = self._call_converse(
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             system="You extract entities and relationships for a Document Knowledge Graph. Return ONLY valid JSON.",
             temperature=params.get("temperature", 0.0),
             max_tokens=max(params.get("max_tokens", 4000), 4000),
+            _purpose=_m.PURPOSE_GRAPH_EXTRACTION,
+            _page_number=page_number,
         )
         raw = _extract_text_from_converse_response(resp)
         raw = _strip_fences(raw)
+
+        def _result(entities, relationships, refs):
+            # MEASUREMENT ONLY: tag empty-entity outcome so the summary can tell a
+            # truncation/parse-fail page from a real one. Does not change the return.
+            if not entities:
+                _m.amend_outcome(_m.PURPOSE_GRAPH_EXTRACTION, _m.OUTCOME_EMPTY_RESULT, page_number=page_number)
+            return {"entities": entities, "relationships": relationships, "reference_resolutions": refs}
+
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, dict):
-                return {
-                    "entities": parsed.get("entities", []),
-                    "relationships": parsed.get("relationships", []),
-                    "reference_resolutions": parsed.get("reference_resolutions", []),
-                }
-            return {"entities": [], "relationships": [], "reference_resolutions": []}
+                return _result(parsed.get("entities", []), parsed.get("relationships", []),
+                               parsed.get("reference_resolutions", []))
+            return _result([], [], [])
         except json.JSONDecodeError:
             start = raw.find("{")
             end = raw.rfind("}")
@@ -338,13 +379,11 @@ class BedrockExtractionClient:
                 try:
                     parsed = json.loads(raw[start : end + 1])
                     if isinstance(parsed, dict):
-                        return {
-                            "entities": parsed.get("entities", []),
-                            "relationships": parsed.get("relationships", []),
-                            "reference_resolutions": parsed.get("reference_resolutions", []),
-                        }
+                        return _result(parsed.get("entities", []), parsed.get("relationships", []),
+                                       parsed.get("reference_resolutions", []))
                 except Exception:
                     pass
+            _m.amend_outcome(_m.PURPOSE_GRAPH_EXTRACTION, _m.OUTCOME_PARSE_FAILED, page_number=page_number)
             logger.warning("bedrock.extract_graph.parse_failed", raw=raw[:200])
             return {"entities": [], "relationships": [], "reference_resolutions": []}
 
@@ -367,11 +406,13 @@ class BedrockExtractionClient:
         )
         params = prompt_params("graph_schema_resolution")
 
+        from src.adapters.llm import llm_metrics as _m
         resp = self._call_converse(
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             system="You extract structured schema fields using a Document Knowledge Graph. Return ONLY valid JSON matching the schema.",
             temperature=params.get("temperature", 0.0),
             max_tokens=max(params.get("max_tokens", 4000), 4000),
+            _purpose=_m.PURPOSE_RESOLVER,
         )
         raw = _extract_text_from_converse_response(resp)
         raw = _strip_fences(raw)
@@ -387,6 +428,8 @@ class BedrockExtractionClient:
                     return schema.model_validate(parsed)
                 except Exception:
                     pass
+            # MEASUREMENT ONLY: tag resolver parse failure (unchanged return).
+            _m.amend_outcome(_m.PURPOSE_RESOLVER, _m.OUTCOME_PARSE_FAILED)
             logger.warning("bedrock.resolve_schema.parse_failed", raw=raw[:200])
             return schema.model_validate({})
 

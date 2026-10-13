@@ -11,6 +11,7 @@ build/
 
 # Virtual environments & secrets
 .env
+.env*
 *.env
 *.env.*
 !*.env.example
@@ -19,6 +20,18 @@ dataset_uploads/
 .venv
 venv/
 env/
+
+# Local debug / credential-bearing scratch artifacts (never commit)
+_*.txt
+sts_*.txt
+_taskdef*.json
+_db_*.py
+_ssl_test*.py
+_patch_taskdef.py
+_repomix_run.log
+scratch_*.py
+scratch/
+output/
 
 # Test fixtures — PDFs and generated markdown outputs (large files)
 tests/fixtures/*.pdf

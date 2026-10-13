@@ -162,6 +162,13 @@ async def extract_with_graph_memory_ordered(
         anchor_types=manager.anchor_types,
     )
 
+    # MEASUREMENT ONLY (audit finding #1): stamp owner/doc on Converse metric records.
+    try:
+        from src.adapters.llm import llm_metrics as _llm_metrics
+        _llm_metrics.set_run_context(owner=owner, doc_id=doc_id)
+    except Exception:
+        pass
+
     pages_succeeded: List[int] = []
     pages_failed: List[int] = []
 
@@ -366,6 +373,13 @@ async def extract_with_graph_memory_concurrent(
         anchor_types=manager.anchor_types,
     )
 
+    # MEASUREMENT ONLY (audit finding #1): stamp owner/doc on Converse metric records.
+    try:
+        from src.adapters.llm import llm_metrics as _llm_metrics
+        _llm_metrics.set_run_context(owner=owner, doc_id=doc_id)
+    except Exception:
+        pass
+
     # Checkpoint recovery: check existing durable checkpoints
     recovered_pages: Set[int] = set()
     if doc_id:
@@ -562,6 +576,13 @@ async def extract_with_graph_memory_batched(
     semaphore = asyncio.Semaphore(concurrency_limit)
     pages_succeeded: List[int] = []
     pages_failed: List[int] = []
+
+    # MEASUREMENT ONLY (audit finding #1): stamp owner/doc on Converse metric records.
+    try:
+        from src.adapters.llm import llm_metrics as _llm_metrics
+        _llm_metrics.set_run_context(owner=owner, doc_id=doc_id)
+    except Exception:
+        pass
 
     # Partition into epochs
     epochs = [pages[i : i + epoch_size] for i in range(0, len(pages), epoch_size)]
