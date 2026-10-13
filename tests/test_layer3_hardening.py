@@ -578,7 +578,7 @@ def test_schema_resolution_uncertain_explicit_candidate_remains_excluded():
 def test_chk_1_successful_page_checkpoint_persists():
     """Page checkpoint persists to database with status and delta checksum."""
     doc_id = "test_doc_chk_1"
-    delete_page_checkpoints(doc_id)
+    delete_page_checkpoints(doc_id, owner="_admin")
 
     delta = PageDelta(
         page_number=1,
@@ -591,17 +591,18 @@ def test_chk_1_successful_page_checkpoint_persists():
         doc_id=doc_id,
         page_number=1,
         status="DELTA_PERSISTED",
+        owner="_admin",
         page_delta_json=delta_dict,
         delta_checksum=chk,
     )
     assert rec_id is not None
 
-    cp = get_page_checkpoint(doc_id=doc_id, page_number=1)
+    cp = get_page_checkpoint(doc_id=doc_id, page_number=1, owner="_admin")
     assert cp is not None
     assert cp["status"] == "DELTA_PERSISTED"
     assert cp["delta_checksum"] == chk
 
-    delete_page_checkpoints(doc_id)
+    delete_page_checkpoints(doc_id, owner="_admin")
 
 
 @async_test
@@ -657,7 +658,7 @@ def test_chk_3_malformed_page_delta_rejected_by_validator():
 async def test_chk_4_crash_recovery_skips_completed_pages():
     """When recovering a partially completed document, completed pages are replayed and skipped from LLM extraction."""
     doc_id = "test_doc_recovery_4"
-    delete_page_checkpoints(doc_id)
+    delete_page_checkpoints(doc_id, owner="_admin")
 
     # Page 1 was already completed in a prior run
     p1_delta = PageDelta(
@@ -675,7 +676,7 @@ async def test_chk_4_crash_recovery_skips_completed_pages():
     )
     p1_dict = p1_delta.to_dict()
     p1_chk = compute_page_delta_checksum(p1_dict)
-    save_page_checkpoint(doc_id=doc_id, page_number=1, status="COMPLETED", page_delta_json=p1_dict, delta_checksum=p1_chk)
+    save_page_checkpoint(doc_id=doc_id, page_number=1, status="COMPLETED", owner="_admin", page_delta_json=p1_dict, delta_checksum=p1_chk)
 
     mock_llm = MagicMock()
     # Mock LLM should only be called for Page 2, NEVER for Page 1!
@@ -705,6 +706,7 @@ async def test_chk_4_crash_recovery_skips_completed_pages():
         llm=mock_llm,
         doc_id=doc_id,
         graph_out=graph_out,
+        owner="_admin",
     )
 
     assert result.patient_name == "Saved Patient"
@@ -712,7 +714,7 @@ async def test_chk_4_crash_recovery_skips_completed_pages():
     assert graph_out["pages_succeeded"] == 2
     assert graph_out["stats"]["total_nodes"] == 2
 
-    delete_page_checkpoints(doc_id)
+    delete_page_checkpoints(doc_id, owner="_admin")
 
 
 @async_test
@@ -724,7 +726,7 @@ async def test_chk_7_ordered_mode_crash_recovery_replays_delta_persisted():
     Also asserts that delta_checksum is passed through during replay.
     """
     doc_id = "test_doc_recovery_ordered_delta_persisted"
-    delete_page_checkpoints(doc_id)
+    delete_page_checkpoints(doc_id, owner="_admin")
 
     # Page 1 crashed after DELTA_PERSISTED before reaching COMPLETED
     p1_delta = PageDelta(
@@ -746,6 +748,7 @@ async def test_chk_7_ordered_mode_crash_recovery_replays_delta_persisted():
         doc_id=doc_id,
         page_number=1,
         status="DELTA_PERSISTED",
+        owner="_admin",
         page_delta_json=p1_dict,
         delta_checksum=p1_chk,
     )
@@ -796,6 +799,7 @@ async def test_chk_7_ordered_mode_crash_recovery_replays_delta_persisted():
             llm=mock_llm,
             doc_id=doc_id,
             graph_out=graph_out,
+            owner="_admin",
         )
 
     # 1. Assert replayed PageDelta entities are in the resolved schema & graph
@@ -810,7 +814,7 @@ async def test_chk_7_ordered_mode_crash_recovery_replays_delta_persisted():
     # 3. Assert checksum was passed through during replay
     assert (1, p1_chk) in recorded_replays
 
-    delete_page_checkpoints(doc_id)
+    delete_page_checkpoints(doc_id, owner="_admin")
 
 
 @async_test
@@ -822,7 +826,7 @@ async def test_chk_8_concurrent_mode_crash_recovery_replays_delta_persisted():
     Also asserts that delta_checksum is passed through during replay.
     """
     doc_id = "test_doc_recovery_concurrent_delta_persisted"
-    delete_page_checkpoints(doc_id)
+    delete_page_checkpoints(doc_id, owner="_admin")
 
     # Page 1 crashed after DELTA_PERSISTED before reaching COMPLETED
     p1_delta = PageDelta(
@@ -844,6 +848,7 @@ async def test_chk_8_concurrent_mode_crash_recovery_replays_delta_persisted():
         doc_id=doc_id,
         page_number=1,
         status="DELTA_PERSISTED",
+        owner="_admin",
         page_delta_json=p1_dict,
         delta_checksum=p1_chk,
     )
@@ -894,6 +899,7 @@ async def test_chk_8_concurrent_mode_crash_recovery_replays_delta_persisted():
             llm=mock_llm,
             doc_id=doc_id,
             graph_out=graph_out,
+            owner="_admin",
         )
 
     # 1. Assert replayed PageDelta entities are in the resolved schema & graph
@@ -908,7 +914,7 @@ async def test_chk_8_concurrent_mode_crash_recovery_replays_delta_persisted():
     # 3. Assert checksum was passed through during replay
     assert (1, p1_chk) in recorded_replays
 
-    delete_page_checkpoints(doc_id)
+    delete_page_checkpoints(doc_id, owner="_admin")
 
 
 @async_test
@@ -1185,30 +1191,30 @@ async def test_unc_4_later_evidence_promotes_uncertain_reference():
 def test_chk_5_same_key_different_checksum_detected():
     """When a checkpoint key is saved with a different checksum, attempt count increments and updated checksum is recorded."""
     doc_id = "test_doc_conflict_5"
-    delete_page_checkpoints(doc_id)
+    delete_page_checkpoints(doc_id, owner="_admin")
 
     delta_v1 = {"page_number": 1, "entities": [{"id": "n1", "value": "Version 1"}]}
     chk1 = compute_page_delta_checksum(delta_v1)
-    save_page_checkpoint(doc_id=doc_id, page_number=1, status="DELTA_PERSISTED", page_delta_json=delta_v1, delta_checksum=chk1)
+    save_page_checkpoint(doc_id=doc_id, page_number=1, status="DELTA_PERSISTED", owner="_admin", page_delta_json=delta_v1, delta_checksum=chk1)
 
     # Re-saving with different content / checksum
     delta_v2 = {"page_number": 1, "entities": [{"id": "n1", "value": "Version 2 Modified"}]}
     chk2 = compute_page_delta_checksum(delta_v2)
-    save_page_checkpoint(doc_id=doc_id, page_number=1, status="DELTA_PERSISTED", page_delta_json=delta_v2, delta_checksum=chk2)
+    save_page_checkpoint(doc_id=doc_id, page_number=1, status="DELTA_PERSISTED", owner="_admin", page_delta_json=delta_v2, delta_checksum=chk2)
 
-    cp = get_page_checkpoint(doc_id=doc_id, page_number=1)
+    cp = get_page_checkpoint(doc_id=doc_id, page_number=1, owner="_admin")
     assert cp is not None
     assert cp["delta_checksum"] == chk2
     assert cp["attempt_count"] == 2
 
-    delete_page_checkpoints(doc_id)
+    delete_page_checkpoints(doc_id, owner="_admin")
 
 
 @async_test
 async def test_chk_6_worker_failure_persists_failed_state_and_allows_retry():
     """Worker failure marks checkpoint as FAILED, allowing subsequent retry to succeed."""
     doc_id = "test_doc_retry_6"
-    delete_page_checkpoints(doc_id)
+    delete_page_checkpoints(doc_id, owner="_admin")
 
     mock_llm = MagicMock()
     attempt = 0
@@ -1237,9 +1243,10 @@ async def test_chk_6_worker_failure_persists_failed_state_and_allows_retry():
         llm=mock_llm,
         doc_id=doc_id,
         graph_out=out1,
+        owner="_admin",
     )
     assert out1["pages_failed"] == 1
-    cp1 = get_page_checkpoint(doc_id=doc_id, page_number=1)
+    cp1 = get_page_checkpoint(doc_id=doc_id, page_number=1, owner="_admin")
     assert cp1["status"] == "FAILED"
     assert "timeout" in cp1["error_info"].lower()
 
@@ -1251,13 +1258,14 @@ async def test_chk_6_worker_failure_persists_failed_state_and_allows_retry():
         llm=mock_llm,
         doc_id=doc_id,
         graph_out=out2,
+        owner="_admin",
     )
     assert out2["pages_succeeded"] == 1
     assert res.patient_name == "Retried Patient"
-    cp2 = get_page_checkpoint(doc_id=doc_id, page_number=1)
+    cp2 = get_page_checkpoint(doc_id=doc_id, page_number=1, owner="_admin")
     assert cp2["status"] == "COMPLETED"
 
-    delete_page_checkpoints(doc_id)
+    delete_page_checkpoints(doc_id, owner="_admin")
 
 
 @async_test

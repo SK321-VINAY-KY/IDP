@@ -93,6 +93,9 @@ class UserStore(ABC):
     def list_users(self) -> List[User]: ...
 
 
+RESERVED_SENTINEL_USERNAMES = {"_legacy", "_admin"}
+
+
 class InMemoryUserStore(UserStore):
     """
     In-memory user storage implementation for development and testing.
@@ -106,6 +109,8 @@ class InMemoryUserStore(UserStore):
         username_clean = (username or "").strip().lower()
         if not username_clean:
             raise ValueError("username cannot be empty")
+        if username_clean in RESERVED_SENTINEL_USERNAMES or username_clean.startswith("_"):
+            raise ValueError(f"username '{username_clean}' is reserved for internal system use")
         if not password or not str(password).strip():
             raise ValueError("password cannot be empty")
         if username_clean in self._users_by_username:
@@ -208,6 +213,8 @@ class JSONFileUserStore(UserStore):
         username_clean = (username or "").strip().lower()
         if not username_clean:
             raise ValueError("username cannot be empty")
+        if username_clean in RESERVED_SENTINEL_USERNAMES or username_clean.startswith("_"):
+            raise ValueError(f"username '{username_clean}' is reserved for internal system use")
         if not password or not str(password).strip():
             raise ValueError("password cannot be empty")
         if username_clean in self._users_by_username:
@@ -275,6 +282,8 @@ class PostgresUserStore(UserStore):
         username_clean = (username or "").strip().lower()
         if not username_clean:
             raise ValueError("username cannot be empty")
+        if username_clean in RESERVED_SENTINEL_USERNAMES or username_clean.startswith("_"):
+            raise ValueError(f"username '{username_clean}' is reserved for internal system use")
         if not password or not str(password).strip():
             raise ValueError("password cannot be empty")
 

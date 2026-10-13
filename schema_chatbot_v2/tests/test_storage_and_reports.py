@@ -48,6 +48,7 @@ def test_storage_fallback_and_operations():
     doc_id = save_document(
         filename="test_invoice.pdf",
         file_bytes=b"%PDF-1.4 test binary data",
+        owner="test_storage_user",
         content_type="application/pdf",
     )
     assert doc_id is not None
@@ -57,6 +58,7 @@ def test_storage_fallback_and_operations():
         doc_id="test_invoice.pdf",
         md_filename="test_invoice.md",
         markdown_content="# Invoice Summary\nTotal: $500",
+        owner="test_storage_user",
         schema_id="invoice_schema",
         page_count=1,
     )
@@ -68,6 +70,7 @@ def test_storage_fallback_and_operations():
         page_count=1,
         schema_name="invoice_schema",
         result_json={"invoice_number": "INV-1001", "total_amount": "$500.00"},
+        owner="test_storage_user",
         llm_provider="sarvam",
         model_name="sarvam-105b",
         processing_time_seconds=1.25,

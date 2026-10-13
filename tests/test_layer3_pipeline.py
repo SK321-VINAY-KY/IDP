@@ -290,6 +290,7 @@ def run_layer3_only(
             page_count=len(pages),
             schema_name=schema_name,
             result_json=extracted_dict,
+            owner=owner or "_admin",
             llm_provider=getattr(settings, "extraction_backend", "bedrock"),
             model_name=(
                 getattr(settings, "bedrock_model_id", "arn:aws:bedrock:ap-south-1:106611079163:application-inference-profile/qdtz23c8eis1")

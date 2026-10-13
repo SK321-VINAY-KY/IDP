@@ -62,6 +62,7 @@ def main():
     parser.add_argument("--schema",   default="schema", help="Schema file name (no .json)")
     parser.add_argument("--strategy", default=getattr(settings, "layer3_strategy", "graph_memory_concurrent"),
                         choices=["page_scan", "graph_memory", "graph_memory_concurrent"], help="Layer 3 strategy")
+    parser.add_argument("--owner",    default="_admin", help="Tenant owner of the extraction run")
     args = parser.parse_args()
 
     print(f"Doc      : tests/fixtures/{args.doc}.md")
@@ -93,6 +94,7 @@ def main():
         page_count=len(pages),
         schema_name=args.schema,
         result_json=result.model_dump(),
+        owner=args.owner,
         llm_provider=settings.extraction_backend,
         model_name=(
             settings.bedrock_model_id if settings.extraction_backend == "bedrock"

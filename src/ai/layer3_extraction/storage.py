@@ -30,6 +30,8 @@ from sqlalchemy import (
     Text,
     JSON,
     create_engine,
+    UniqueConstraint,
+    Index,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -38,15 +40,37 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Reserved sentinel owner values for system isolation
+SENTINEL_LEGACY = "_legacy"
+SENTINEL_ADMIN = "_admin"
+
 
 class Base(DeclarativeBase):
     pass
 
 
+def _normalize_pg_url(db_url: str) -> str:
+    """
+    Pin the PostgreSQL dialect to psycopg2, which is the driver installed in
+    the image. SQLAlchemy 2.1 changed the default driver for a bare
+    'postgresql://' URL to psycopg (v3); without an explicit '+psycopg2' the
+    engine would try to import psycopg (v3), fail, and silently fall back to
+    SQLite. Normalizing here keeps existing DATABASE_URL env values working.
+    """
+    if db_url.startswith("postgresql+"):
+        return db_url  # driver already specified explicitly
+    if db_url.startswith("postgresql://"):
+        return "postgresql+psycopg2://" + db_url[len("postgresql://"):]
+    if db_url.startswith("postgres://"):
+        return "postgresql+psycopg2://" + db_url[len("postgres://"):]
+    return db_url
+
+
 def _create_db_engine():
     db_url = getattr(settings, "database_url", "sqlite:///./idp_storage.db")
     try:
-        if db_url.startswith("postgresql"):
+        if db_url.startswith("postgres"):
+            db_url = _normalize_pg_url(db_url)
             eng = create_engine(db_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
             # Ping test connection
             with eng.connect() as conn:
@@ -72,12 +96,18 @@ def get_session():
 
 # ==============================================================================
 # Table 1: Uploaded Input Documents (PDFs)
+# Shadow copy for input documents; non-authoritative when S3 is configured.
+# Keyed by (owner, filename).
 # ==============================================================================
 class DocumentRecord(Base):
     __tablename__ = "documents"
+    __table_args__ = (
+        UniqueConstraint("owner", "filename", name="uq_documents_owner_filename"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    filename: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    owner: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    filename: Mapped[str] = mapped_column(String, nullable=False, index=True)
     file_size: Mapped[int] = mapped_column(Integer, nullable=False)
     content_type: Mapped[str] = mapped_column(String, default="application/pdf")
     file_hash: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
@@ -94,6 +124,9 @@ class SchemaRecord(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     schema_id: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
     document_type: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
+    owner: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
+    schema_name: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
     field_count: Mapped[int] = mapped_column(Integer, default=0)
     schema_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     sample_documents: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
@@ -104,11 +137,16 @@ class SchemaRecord(Base):
 
 # ==============================================================================
 # Table 3: Converted Markdown Outputs (.md)
+# Keyed by (owner, doc_id).
 # ==============================================================================
 class MarkdownRecord(Base):
     __tablename__ = "document_markdowns"
+    __table_args__ = (
+        UniqueConstraint("owner", "doc_id", name="uq_document_markdowns_owner_doc_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner: Mapped[str] = mapped_column(String, nullable=False, index=True)
     doc_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     md_filename: Mapped[str] = mapped_column(String, nullable=False)
     markdown_content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -121,11 +159,16 @@ class MarkdownRecord(Base):
 
 # ==============================================================================
 # Table 4: Structured Field Extraction Runs (Layer 3)
+# Indexed by (owner, doc_id).
 # ==============================================================================
 class ExtractionRun(Base):
     __tablename__ = "extraction_runs"
+    __table_args__ = (
+        Index("ix_extraction_runs_owner_doc_id", "owner", "doc_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner: Mapped[str] = mapped_column(String, nullable=False, index=True)
     doc_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     page_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     schema_name: Mapped[str] = mapped_column(String, nullable=False)
@@ -177,6 +220,7 @@ class PageCheckpointRecord(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     checkpoint_key: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    owner: Mapped[str] = mapped_column(String, default="_admin", nullable=False, index=True)
     doc_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     page_number: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     pipeline_version: Mapped[str] = mapped_column(String, default="v1")
@@ -224,16 +268,20 @@ def init_db():
 # CRUD Helper Functions with Safe Error Handling
 # ==============================================================================
 
-def save_document(filename: str, file_bytes: bytes, content_type: str = "application/pdf") -> Optional[int]:
+def save_document(filename: str, file_bytes: bytes, owner: str, content_type: str = "application/pdf") -> Optional[int]:
     """
-    Save or update an uploaded document (PDF) in PostgreSQL.
+    Save or update an uploaded document (PDF) shadow copy in PostgreSQL / SQLite.
+    Non-authoritative when S3 is configured. Keyed by (owner, filename).
     """
+    if not owner or not isinstance(owner, str) or not owner.strip():
+        raise ValueError("owner is required and cannot be empty")
+    owner = owner.strip()
     try:
         init_db()
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         session = SessionLocal()
         try:
-            doc = session.query(DocumentRecord).filter_by(filename=filename).first()
+            doc = session.query(DocumentRecord).filter_by(owner=owner, filename=filename).first()
             if doc:
                 doc.file_size = len(file_bytes)
                 doc.file_data = file_bytes
@@ -242,6 +290,7 @@ def save_document(filename: str, file_bytes: bytes, content_type: str = "applica
                 doc.created_at = datetime.now(timezone.utc)
             else:
                 doc = DocumentRecord(
+                    owner=owner,
                     filename=filename,
                     file_size=len(file_bytes),
                     content_type=content_type,
@@ -251,12 +300,12 @@ def save_document(filename: str, file_bytes: bytes, content_type: str = "applica
                 session.add(doc)
             session.commit()
             session.refresh(doc)
-            logger.info("storage.document_saved", file_name=filename, doc_id=doc.id, size=len(file_bytes))
+            logger.info("storage.document_saved", owner=owner, file_name=filename, doc_id=doc.id, size=len(file_bytes))
             return doc.id
         finally:
             session.close()
     except Exception as exc:
-        logger.error("storage.save_document_failed", file_name=filename, error=str(exc))
+        logger.error("storage.save_document_failed", owner=owner, file_name=filename, error=str(exc))
         return None
 
 
@@ -267,29 +316,58 @@ def save_schema_record(
     session_id: Optional[str] = None,
     sample_documents: Optional[list] = None,
     confirmed_at: Optional[datetime] = None,
-) -> Optional[int]:
+    owner: Optional[str] = None,
+    schema_name: Optional[str] = None,
+) -> Optional[dict]:
     """
-    Save or update a target schema in PostgreSQL.
+    Save or insert a target schema in PostgreSQL.
+
+    Versioning: schemas are keyed by (owner, schema_name). Each new confirmation
+    for the same owner+schema_name gets an auto-incremented version (v1, v2, ...).
+    Returns a dict {id, version, schema_id} on success, or None on failure.
     """
     try:
         init_db()
         fields = (schema_json.get("schema") or {}).get("fields", []) or schema_json.get("fields", [])
         field_count = len(fields)
+        # Fall back to document_type as the logical name if none supplied.
+        eff_name = (schema_name or document_type or "schema").strip()
         session = SessionLocal()
         try:
             rec = session.query(SchemaRecord).filter_by(schema_id=schema_id).first()
             if rec:
+                # Update-in-place (same schema_id): keep its version.
                 rec.document_type = document_type
+                rec.owner = owner if owner is not None else rec.owner
+                rec.schema_name = eff_name
                 rec.field_count = field_count
                 rec.schema_json = schema_json
                 rec.sample_documents = sample_documents or []
                 rec.session_id = session_id
                 if confirmed_at:
                     rec.confirmed_at = confirmed_at
+                version = rec.version or 1
             else:
+                # New schema_id: compute next version for this (owner, schema_name).
+                max_v = (
+                    session.query(SchemaRecord.version)
+                    .filter(SchemaRecord.owner == owner, SchemaRecord.schema_name == eff_name)
+                    .order_by(SchemaRecord.version.desc())
+                    .first()
+                )
+                version = ((max_v[0] if max_v and max_v[0] else 0) + 1)
+                # Reflect owner/name/version inside the stored json too (for readers).
+                if isinstance(schema_json, dict):
+                    schema_json = dict(schema_json)
+                    schema_json.setdefault("owner", owner)
+                    schema_json["schema_name"] = eff_name
+                    schema_json["version"] = version
                 rec = SchemaRecord(
                     schema_id=schema_id,
                     document_type=document_type,
+                    owner=owner,
+                    schema_name=eff_name,
+                    version=version,
                     field_count=field_count,
                     schema_json=schema_json,
                     sample_documents=sample_documents or [],
@@ -299,8 +377,8 @@ def save_schema_record(
                 session.add(rec)
             session.commit()
             session.refresh(rec)
-            logger.info("storage.schema_saved", schema_id=schema_id, id=rec.id, field_count=field_count)
-            return rec.id
+            logger.info("storage.schema_saved", schema_id=schema_id, id=rec.id, owner=owner, schema_name=eff_name, version=rec.version, field_count=field_count)
+            return {"id": rec.id, "version": rec.version, "schema_id": rec.schema_id}
         finally:
             session.close()
     except Exception as exc:
@@ -312,19 +390,24 @@ def save_markdown_record(
     doc_id: str,
     md_filename: str,
     markdown_content: str,
+    owner: str,
     schema_id: Optional[str] = None,
     schema_ref_json: Optional[dict] = None,
     page_count: int = 1,
     pages_json: Optional[list] = None,
 ) -> Optional[int]:
     """
-    Save or update converted Markdown (.md) in PostgreSQL.
+    Save or update converted Markdown (.md) in PostgreSQL / SQLite.
+    Keyed by (owner, doc_id).
     """
+    if not owner or not isinstance(owner, str) or not owner.strip():
+        raise ValueError("owner is required and cannot be empty")
+    owner = owner.strip()
     try:
         init_db()
         session = SessionLocal()
         try:
-            rec = session.query(MarkdownRecord).filter_by(doc_id=doc_id).first()
+            rec = session.query(MarkdownRecord).filter_by(owner=owner, doc_id=doc_id).first()
             if rec:
                 rec.md_filename = md_filename
                 rec.markdown_content = markdown_content
@@ -335,6 +418,7 @@ def save_markdown_record(
                 rec.created_at = datetime.now(timezone.utc)
             else:
                 rec = MarkdownRecord(
+                    owner=owner,
                     doc_id=doc_id,
                     md_filename=md_filename,
                     markdown_content=markdown_content,
@@ -346,29 +430,43 @@ def save_markdown_record(
                 session.add(rec)
             session.commit()
             session.refresh(rec)
-            logger.info("storage.markdown_saved", doc_id=doc_id, md_filename=md_filename, id=rec.id)
+            logger.info("storage.markdown_saved", owner=owner, doc_id=doc_id, md_filename=md_filename, id=rec.id)
             return rec.id
         finally:
             session.close()
     except Exception as exc:
-        logger.error("storage.save_markdown_failed", doc_id=doc_id, error=str(exc))
+        logger.error("storage.save_markdown_failed", owner=owner, doc_id=doc_id, error=str(exc))
         return None
 
 
-def get_markdown_record(doc_id: str) -> Optional[dict]:
+def get_markdown_record(doc_id: str, owner: str) -> Optional[dict]:
     """
-    Retrieve stored markdown record by doc_id or md_filename.
+    Retrieve stored markdown record by doc_id or md_filename, strictly scoped to owner.
+    Candidate normalization is executed strictly WITHIN the owner scope.
     """
+    if not doc_id or not owner or not isinstance(owner, str) or not owner.strip():
+        return None
+    owner = owner.strip()
     try:
         init_db()
         session = SessionLocal()
         try:
-            rec = session.query(MarkdownRecord).filter(
-                (MarkdownRecord.doc_id == doc_id) | (MarkdownRecord.md_filename == doc_id)
-            ).order_by(MarkdownRecord.id.desc()).first()
+            from pathlib import Path as _Path
+            stem = _Path(doc_id).stem
+            candidates = list(dict.fromkeys([doc_id, stem, f"{stem}.pdf", f"{stem}.md"]))
+            rec = (
+                session.query(MarkdownRecord)
+                .filter(
+                    MarkdownRecord.owner == owner,
+                    (MarkdownRecord.doc_id.in_(candidates) | MarkdownRecord.md_filename.in_(candidates)),
+                )
+                .order_by(MarkdownRecord.id.desc())
+                .first()
+            )
             if rec:
                 return {
                     "id": rec.id,
+                    "owner": rec.owner,
                     "doc_id": rec.doc_id,
                     "md_filename": rec.md_filename,
                     "markdown_content": rec.markdown_content,
@@ -382,7 +480,7 @@ def get_markdown_record(doc_id: str) -> Optional[dict]:
         finally:
             session.close()
     except Exception as exc:
-        logger.error("storage.get_markdown_failed", doc_id=doc_id, error=str(exc))
+        logger.error("storage.get_markdown_failed", owner=owner, doc_id=doc_id, error=str(exc))
         return None
 
 
@@ -391,14 +489,18 @@ def save_extraction_run(
     page_count: int | None,
     schema_name: str,
     result_json: dict,
-    llm_provider: str | None,
-    model_name: str | None,
-    processing_time_seconds: float | None,
+    owner: str,
+    llm_provider: str | None = None,
+    model_name: str | None = None,
+    processing_time_seconds: float | None = None,
     page_outputs: list | None = None,
 ) -> Optional[int]:
     """
-    Save one extraction run in PostgreSQL.
+    Save one extraction run in PostgreSQL / SQLite, strictly associated with owner.
     """
+    if not owner or not isinstance(owner, str) or not owner.strip():
+        raise ValueError("owner is required and cannot be empty")
+    owner = owner.strip()
     try:
         init_db()
         page_details = None
@@ -417,6 +519,7 @@ def save_extraction_run(
         session = SessionLocal()
         try:
             run = ExtractionRun(
+                owner=owner,
                 doc_id=doc_id,
                 page_count=page_count,
                 schema_name=schema_name,
@@ -429,12 +532,12 @@ def save_extraction_run(
             session.add(run)
             session.commit()
             session.refresh(run)
-            logger.info("storage.extraction_saved", doc_id=doc_id, run_id=run.id)
+            logger.info("storage.extraction_saved", owner=owner, doc_id=doc_id, run_id=run.id)
             return run.id
         finally:
             session.close()
     except Exception as exc:
-        logger.error("storage.save_extraction_failed", doc_id=doc_id, error=str(exc))
+        logger.error("storage.save_extraction_failed", owner=owner, doc_id=doc_id, error=str(exc))
         return None
 
 
@@ -636,16 +739,20 @@ def compute_page_delta_checksum(delta_dict: Optional[dict]) -> str:
 def build_checkpoint_key(
     doc_id: str,
     page_number: int,
+    owner: str,
     pipeline_version: str = "v1",
     extraction_version: str = "v1",
 ) -> str:
-    return f"{doc_id}:p{page_number}:{pipeline_version}:{extraction_version}"
+    if not owner or not isinstance(owner, str) or not owner.strip():
+        raise ValueError("owner is required and cannot be empty")
+    return f"{owner.strip()}:{doc_id}:p{page_number}:{pipeline_version}:{extraction_version}"
 
 
 def save_page_checkpoint(
     doc_id: str,
     page_number: int,
     status: str,
+    owner: str,
     page_delta_json: Optional[dict] = None,
     delta_checksum: Optional[str] = None,
     error_info: Optional[str] = None,
@@ -659,9 +766,12 @@ def save_page_checkpoint(
     Save or update a durable page checkpoint in PostgreSQL / SQLite.
     Protects against duplicate page processing and enables crash recovery.
     """
+    if not owner or not isinstance(owner, str) or not owner.strip():
+        raise ValueError("owner is required and cannot be empty")
+    owner = owner.strip()
     try:
         init_db()
-        key = build_checkpoint_key(doc_id, page_number, pipeline_version, extraction_version)
+        key = build_checkpoint_key(doc_id, page_number, owner=owner, pipeline_version=pipeline_version, extraction_version=extraction_version)
         if page_delta_json and not delta_checksum:
             delta_checksum = compute_page_delta_checksum(page_delta_json)
 
@@ -670,6 +780,7 @@ def save_page_checkpoint(
             rec = session.query(PageCheckpointRecord).filter_by(checkpoint_key=key).first()
             if rec:
                 rec.status = status
+                rec.owner = owner
                 if page_delta_json is not None:
                     rec.page_delta_json = page_delta_json
                 if delta_checksum:
@@ -681,6 +792,7 @@ def save_page_checkpoint(
             else:
                 rec = PageCheckpointRecord(
                     checkpoint_key=key,
+                    owner=owner,
                     doc_id=doc_id,
                     page_number=page_number,
                     pipeline_version=pipeline_version,
@@ -700,6 +812,7 @@ def save_page_checkpoint(
             logger.info(
                 "page.checkpoint.created",
                 checkpoint_key=key,
+                owner=owner,
                 doc_id=doc_id,
                 page_number=page_number,
                 status=status,
@@ -711,6 +824,7 @@ def save_page_checkpoint(
     except Exception as exc:
         logger.error(
             "page.checkpoint.save_failed",
+            owner=owner,
             doc_id=doc_id,
             page_number=page_number,
             error=str(exc),
@@ -721,13 +835,17 @@ def save_page_checkpoint(
 def get_page_checkpoint(
     doc_id: str,
     page_number: int,
+    owner: str,
     pipeline_version: str = "v1",
     extraction_version: str = "v1",
 ) -> Optional[dict]:
     """Retrieve durable page checkpoint dictionary."""
+    if not owner or not isinstance(owner, str) or not owner.strip():
+        return None
+    owner = owner.strip()
     try:
         init_db()
-        key = build_checkpoint_key(doc_id, page_number, pipeline_version, extraction_version)
+        key = build_checkpoint_key(doc_id, page_number, owner=owner, pipeline_version=pipeline_version, extraction_version=extraction_version)
         session = SessionLocal()
         try:
             rec = session.query(PageCheckpointRecord).filter_by(checkpoint_key=key).first()
@@ -735,6 +853,7 @@ def get_page_checkpoint(
                 return {
                     "id": rec.id,
                     "checkpoint_key": rec.checkpoint_key,
+                    "owner": rec.owner,
                     "doc_id": rec.doc_id,
                     "page_number": rec.page_number,
                     "pipeline_version": rec.pipeline_version,
@@ -751,17 +870,20 @@ def get_page_checkpoint(
         finally:
             session.close()
     except Exception as exc:
-        logger.error("storage.get_page_checkpoint_failed", doc_id=doc_id, page=page_number, error=str(exc))
+        logger.error("storage.get_page_checkpoint_failed", owner=owner, doc_id=doc_id, page=page_number, error=str(exc))
         return None
 
 
-def list_page_checkpoints(doc_id: str, pipeline_version: Optional[str] = None) -> List[dict]:
+def list_page_checkpoints(doc_id: str, owner: str, pipeline_version: Optional[str] = None) -> List[dict]:
     """List all checkpoints for a document in ascending page order."""
+    if not owner or not isinstance(owner, str) or not owner.strip():
+        return []
+    owner = owner.strip()
     try:
         init_db()
         session = SessionLocal()
         try:
-            query = session.query(PageCheckpointRecord).filter_by(doc_id=doc_id)
+            query = session.query(PageCheckpointRecord).filter_by(doc_id=doc_id, owner=owner)
             if pipeline_version:
                 query = query.filter_by(pipeline_version=pipeline_version)
             recs = query.order_by(PageCheckpointRecord.page_number.asc()).all()
@@ -769,6 +891,7 @@ def list_page_checkpoints(doc_id: str, pipeline_version: Optional[str] = None) -
                 {
                     "id": r.id,
                     "checkpoint_key": r.checkpoint_key,
+                    "owner": r.owner,
                     "doc_id": r.doc_id,
                     "page_number": r.page_number,
                     "pipeline_version": r.pipeline_version,
@@ -786,22 +909,295 @@ def list_page_checkpoints(doc_id: str, pipeline_version: Optional[str] = None) -
         finally:
             session.close()
     except Exception as exc:
-        logger.error("storage.list_page_checkpoints_failed", doc_id=doc_id, error=str(exc))
+        logger.error("storage.list_page_checkpoints_failed", owner=owner, doc_id=doc_id, error=str(exc))
         return []
 
 
-def delete_page_checkpoints(doc_id: str) -> int:
+def delete_page_checkpoints(doc_id: str, owner: str) -> int:
     """Delete all checkpoints for a given document."""
+    if not owner or not isinstance(owner, str) or not owner.strip():
+        return 0
+    owner = owner.strip()
     try:
         init_db()
         session = SessionLocal()
         try:
-            deleted = session.query(PageCheckpointRecord).filter_by(doc_id=doc_id).delete()
+            deleted = session.query(PageCheckpointRecord).filter_by(doc_id=doc_id, owner=owner).delete()
             session.commit()
             return deleted
         finally:
             session.close()
     except Exception as exc:
-        logger.error("storage.delete_page_checkpoints_failed", doc_id=doc_id, error=str(exc))
+        logger.error("storage.delete_page_checkpoints_failed", owner=owner, doc_id=doc_id, error=str(exc))
         return 0
 
+
+# ==============================================================================
+# Schema Read Helpers (DB-backed reads for the web app)
+# ==============================================================================
+
+def _schema_record_to_dict(rec: "SchemaRecord") -> dict:
+    """
+    Normalize a SchemaRecord row into the same shape the web app previously
+    read from schema_registry/<id>.json. The full original record is stored in
+    schema_json, so return that as the authoritative payload, augmented with
+    top-level summary fields the endpoints rely on.
+    """
+    payload = dict(rec.schema_json) if isinstance(rec.schema_json, dict) else {}
+    # Ensure the summary fields are always present and consistent with the row.
+    payload.setdefault("schema_id", rec.schema_id)
+    payload.setdefault("document_type", rec.document_type)
+    if rec.confirmed_at and not payload.get("confirmed_at"):
+        payload["confirmed_at"] = rec.confirmed_at.isoformat()
+    return payload
+
+
+def get_schema_record(schema_id: str) -> Optional[dict]:
+    """
+    Retrieve a single confirmed schema record from PostgreSQL by schema_id.
+    Returns the full stored schema_json dict (same shape as the old on-disk
+    schema_registry/<id>.json), or None if not found.
+    """
+    if not schema_id:
+        return None
+    try:
+        init_db()
+        session = SessionLocal()
+        try:
+            rec = session.query(SchemaRecord).filter_by(schema_id=schema_id).first()
+            if not rec:
+                from pathlib import Path
+                reg_file = Path("schema_registry") / f"{schema_id}.json"
+                if reg_file.is_file():
+                    try:
+                        return json.loads(reg_file.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+                return None
+            return _schema_record_to_dict(rec)
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error("storage.get_schema_record_failed", schema_id=schema_id, error=str(exc))
+        return None
+
+
+def schema_exists(schema_id: str) -> bool:
+    """Return True if a schema with this schema_id exists in the DB."""
+    if not schema_id:
+        return False
+    try:
+        init_db()
+        session = SessionLocal()
+        try:
+            return session.query(SchemaRecord).filter_by(schema_id=schema_id).first() is not None
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error("storage.schema_exists_failed", schema_id=schema_id, error=str(exc))
+        return False
+
+
+def list_schema_records(owner: Optional[str] = None) -> List[dict]:
+    """
+    List confirmed schemas from PostgreSQL as summary dicts, newest first.
+
+    Ordering: by confirmed_at desc (falling back to created_at desc).
+    Owner filtering: if `owner` is provided, returns schemas whose stored
+    record has that owner OR has no owner set (legacy/ownerless records remain
+    visible, mirroring the previous disk behavior). Pass owner=None for admin
+    (returns everything).
+    """
+    try:
+        init_db()
+        session = SessionLocal()
+        try:
+            q = session.query(SchemaRecord)
+            if owner is not None:
+                # Strict per-user isolation: only schemas owned by this user.
+                # Falls back to the owner embedded in schema_json for legacy rows.
+                q = q.filter(SchemaRecord.owner == owner)
+            recs = q.order_by(
+                SchemaRecord.confirmed_at.desc().nullslast(), SchemaRecord.created_at.desc()
+            ).all()
+            results: List[dict] = []
+            for rec in recs:
+                data = rec.schema_json if isinstance(rec.schema_json, dict) else {}
+                rec_owner = rec.owner or data.get("owner")
+                # Legacy rows may have no owner column yet; enforce json owner too.
+                if owner is not None and rec.owner is None and data.get("owner") not in (None, owner):
+                    continue
+                inner = data.get("schema") if isinstance(data.get("schema"), dict) else {}
+                doc_type = inner.get("document_type") or data.get("document_type") or rec.document_type
+                field_count = rec.field_count
+                if not field_count:
+                    field_count = len(inner.get("fields", []) or data.get("fields", []) or [])
+                results.append({
+                    "schema_id": rec.schema_id,
+                    "document_type": doc_type,
+                    "schema_name": rec.schema_name or data.get("schema_name") or doc_type,
+                    "version": rec.version or data.get("version") or 1,
+                    "confirmed_at": data.get("confirmed_at") or (rec.confirmed_at.isoformat() if rec.confirmed_at else None),
+                    "field_count": field_count,
+                    "sample_documents": rec.sample_documents or data.get("sample_documents", []) or [],
+                    "owner": rec_owner,
+                })
+            return results
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error("storage.list_schema_records_failed", error=str(exc))
+        return []
+
+
+def get_latest_owned_schema_id(owner: str) -> Optional[str]:
+    """
+    Return the schema_id of the most recently confirmed schema owned by `owner`
+    (used by the zero-parameter user pipeline trigger). Ownerless schemas are
+    not considered "owned" here, matching the previous disk semantics which
+    filtered strictly on owner == username.
+    """
+    if not owner:
+        return None
+    try:
+        init_db()
+        session = SessionLocal()
+        try:
+            recs = (
+                session.query(SchemaRecord)
+                .order_by(SchemaRecord.confirmed_at.desc().nullslast(), SchemaRecord.created_at.desc())
+                .all()
+            )
+            for rec in recs:
+                data = rec.schema_json if isinstance(rec.schema_json, dict) else {}
+                if (rec.owner or data.get("owner")) == owner:
+                    return rec.schema_id
+
+            return None
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error("storage.get_latest_owned_schema_failed", owner=owner, error=str(exc))
+        return None
+
+
+# ==============================================================================
+# Extraction Run Read Helpers (DB-backed reads for the Query Bot JSON fallback)
+# ==============================================================================
+
+def get_latest_extracted_data(doc_id: str, owner: str) -> Optional[dict]:
+    """
+    Retrieve the most recent extraction result for a document from PostgreSQL / SQLite.
+    Candidate matching is strictly evaluated WITHIN the specified owner scope.
+    """
+    if not doc_id or not owner or not isinstance(owner, str) or not owner.strip():
+        return None
+    owner = owner.strip()
+    try:
+        from pathlib import Path as _Path
+        stem = _Path(doc_id).stem
+        candidates = list(dict.fromkeys([doc_id, stem, f"{stem}.pdf"]))
+        init_db()
+        session = SessionLocal()
+        try:
+            rec = (
+                session.query(ExtractionRun)
+                .filter(
+                    ExtractionRun.owner == owner,
+                    ExtractionRun.doc_id.in_(candidates),
+                )
+                .order_by(ExtractionRun.created_at.desc())
+                .first()
+            )
+            if not rec or not rec.result_json:
+                return None
+            result = rec.result_json
+            if isinstance(result, dict):
+                # Prefer the nested extracted_data if present, else return as-is.
+                return result.get("extracted_data") or result
+            return None
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error("storage.get_latest_extracted_data_failed", owner=owner, doc_id=doc_id, error=str(exc))
+        return None
+
+
+def list_markdown_records(owner: str) -> List[dict]:
+    """
+    List converted-markdown output records from PostgreSQL / SQLite as summary dicts,
+    newest first. Strictly filtered by owner.
+    Admins can pass '_all' or '*' to inspect across all owners.
+    """
+    if not owner or not isinstance(owner, str) or not owner.strip():
+        return []
+    owner = owner.strip()
+    try:
+        init_db()
+        session = SessionLocal()
+        try:
+            query = session.query(MarkdownRecord)
+            if owner not in ("*", "_all"):
+                query = query.filter(MarkdownRecord.owner == owner)
+            recs = query.order_by(MarkdownRecord.created_at.desc()).all()
+            out: List[dict] = []
+            seen = set()
+            for r in recs:
+                # De-duplicate by (owner, md_filename)
+                key = (r.owner, r.md_filename or f"{r.doc_id}.md")
+                if key in seen:
+                    continue
+                seen.add(key)
+                ref = r.schema_ref_json if isinstance(r.schema_ref_json, dict) else {}
+                out.append({
+                    "name": r.md_filename or f"{r.doc_id}.md",
+                    "doc_id": r.doc_id,
+                    "owner": r.owner,
+                    "size": len(r.markdown_content or ""),
+                    "modified": r.created_at.isoformat() if r.created_at else None,
+                    "page_count": r.page_count,
+                    "schema_id": r.schema_id or ref.get("schema_id"),
+                    "source_pdf": ref.get("source_pdf") or (
+                        f"{r.doc_id}" if str(r.doc_id).lower().endswith(".pdf") else f"{r.doc_id}.pdf"
+                    ),
+                    "schema_ref": ref or None,
+                })
+            return out
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error("storage.list_markdown_records_failed", owner=owner, error=str(exc))
+        return []
+
+
+def _owned_doc_ids(owner: str) -> set:
+    """
+    Return the set of doc_id variants owned by `owner`, derived from
+    DocumentGraphRecord ownership (the authoritative per-user marker).
+    """
+    owned = set()
+    if not owner:
+        return owned
+    try:
+        init_db()
+        session = SessionLocal()
+        try:
+            from pathlib import Path as _Path
+            recs = session.query(DocumentGraphRecord).filter(DocumentGraphRecord.owner == owner).all()
+            for r in recs:
+                d = r.doc_id or ""
+                stem = _Path(d).stem
+                owned.update({d, stem, f"{stem}.pdf"})
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error("storage.owned_doc_ids_failed", owner=owner, error=str(exc))
+    return owned
+
+
+def list_markdown_records_for_owner(owner: str) -> List[dict]:
+    """
+    List processed-output (markdown) summaries that belong to `owner`.
+    Directly delegates to list_markdown_records(owner=owner) enforcing DB isolation.
+    """
+    return list_markdown_records(owner=owner)

@@ -116,6 +116,7 @@ async def extract_with_graph_memory_ordered(
     graph_out: Optional[Dict[str, Any]] = None,
     doc_id: Optional[str] = None,
     pipeline_version: str = "v1",
+    owner: str = "_admin",
 ) -> BaseModel:
     """
     MODE A: ORDERED CONTEXT MODE.
@@ -167,6 +168,7 @@ async def extract_with_graph_memory_ordered(
     for page_data in pages:
         page_num = page_data.get("page_number", 1)
         page_md = page_data.get("markdown", "")
+        page_blocks = page_data.get("blocks", [])
 
         if not str(page_md or "").strip():
             pages_succeeded.append(page_num)
@@ -176,7 +178,7 @@ async def extract_with_graph_memory_ordered(
         replayed_delta: Optional[PageDelta] = None
         replayed_checksum: Optional[str] = None
         if doc_id:
-            cp = get_page_checkpoint(doc_id, page_num, pipeline_version=pipeline_version)
+            cp = get_page_checkpoint(doc_id, page_num, owner=owner, pipeline_version=pipeline_version)
             if cp and cp.get("status") in ("DELTA_PERSISTED", "COMPLETED", "MERGED") and cp.get("page_delta_json"):
                 try:
                     replayed_delta = PageDelta.from_dict(cp["page_delta_json"])
@@ -200,7 +202,7 @@ async def extract_with_graph_memory_ordered(
         context = await manager.get_context_for_page(page_num)
 
         if doc_id:
-            save_page_checkpoint(doc_id, page_num, status="PROCESSING", pipeline_version=pipeline_version)
+            save_page_checkpoint(doc_id, page_num, status="PROCESSING", owner=owner, pipeline_version=pipeline_version)
 
         # 2. Build isolated PageDelta (LLM runs outside lock)
         try:
@@ -209,12 +211,13 @@ async def extract_with_graph_memory_ordered(
                 markdown=page_md,
                 total_pages=total_pages,
                 context=context,
+                blocks=page_blocks,
             )
         except Exception as exc:
             logger.error("layer3.ordered.worker_failed", page_number=page_num, error=str(exc))
             pages_failed.append(page_num)
             if doc_id:
-                save_page_checkpoint(doc_id, page_num, status="FAILED", error_info=str(exc), pipeline_version=pipeline_version)
+                save_page_checkpoint(doc_id, page_num, status="FAILED", owner=owner, error_info=str(exc), pipeline_version=pipeline_version)
             continue
 
         # 3. Validate PageDelta
@@ -224,7 +227,7 @@ async def extract_with_graph_memory_ordered(
             logger.error("page.validation_failed", page_number=page_num, errors=val_res.errors)
             pages_failed.append(page_num)
             if doc_id:
-                save_page_checkpoint(doc_id, page_num, status="FAILED", error_info=err_msg, pipeline_version=pipeline_version)
+                save_page_checkpoint(doc_id, page_num, status="FAILED", owner=owner, error_info=err_msg, pipeline_version=pipeline_version)
             continue
 
         delta_dict = delta.to_dict()
@@ -236,6 +239,7 @@ async def extract_with_graph_memory_ordered(
                 doc_id,
                 page_num,
                 status="DELTA_PERSISTED",
+                owner=owner,
                 page_delta_json=delta_dict,
                 delta_checksum=checksum,
                 pipeline_version=pipeline_version,
@@ -246,7 +250,7 @@ async def extract_with_graph_memory_ordered(
 
         # 6. Mark page completed
         if doc_id:
-            save_page_checkpoint(doc_id, page_num, status="COMPLETED", pipeline_version=pipeline_version)
+            save_page_checkpoint(doc_id, page_num, status="COMPLETED", owner=owner, pipeline_version=pipeline_version)
         pages_succeeded.append(page_num)
 
     # 7. Reconcile cross-page references
@@ -306,6 +310,7 @@ async def extract_with_graph_memory_concurrent(
     graph_out: Optional[Dict[str, Any]] = None,
     doc_id: Optional[str] = None,
     pipeline_version: str = "v1",
+    owner: str = "_admin",
 ) -> BaseModel:
     """
     MODE B: CONCURRENT DELTA MODE.
@@ -359,7 +364,7 @@ async def extract_with_graph_memory_concurrent(
     # Checkpoint recovery: check existing durable checkpoints
     recovered_pages: Set[int] = set()
     if doc_id:
-        checkpoints = list_page_checkpoints(doc_id, pipeline_version=pipeline_version)
+        checkpoints = list_page_checkpoints(doc_id, owner=owner, pipeline_version=pipeline_version)
         for cp in checkpoints:
             if cp.get("status") in ("DELTA_PERSISTED", "COMPLETED", "MERGED") and cp.get("page_delta_json"):
                 try:
@@ -384,6 +389,7 @@ async def extract_with_graph_memory_concurrent(
     async def _process_page(page_data: Dict[str, Any]) -> None:
         page_num = page_data.get("page_number", 1)
         page_md = page_data.get("markdown", "")
+        page_blocks = page_data.get("blocks", [])
 
         if page_num in recovered_pages:
             return  # Already recovered from checkpoint
@@ -397,7 +403,7 @@ async def extract_with_graph_memory_concurrent(
             context = await manager.get_context_for_page(page_num)
 
             if doc_id:
-                save_page_checkpoint(doc_id, page_num, status="PROCESSING", pipeline_version=pipeline_version)
+                save_page_checkpoint(doc_id, page_num, status="PROCESSING", owner=owner, pipeline_version=pipeline_version)
 
             # 2. Build isolated PageDelta (LLM runs concurrently outside manager lock)
             try:
@@ -406,13 +412,14 @@ async def extract_with_graph_memory_concurrent(
                     markdown=page_md,
                     total_pages=total_pages,
                     context=context,
+                    blocks=page_blocks,
                 )
             except Exception as exc:
                 logger.error("layer3.concurrent.worker_failed", page_number=page_num, error=str(exc))
                 pages_failed.append(page_num)
                 failed_errors[page_num] = str(exc)
                 if doc_id:
-                    save_page_checkpoint(doc_id, page_num, status="FAILED", error_info=str(exc), pipeline_version=pipeline_version)
+                    save_page_checkpoint(doc_id, page_num, status="FAILED", owner=owner, error_info=str(exc), pipeline_version=pipeline_version)
                 return
 
         # 3. Validate PageDelta
@@ -423,7 +430,7 @@ async def extract_with_graph_memory_concurrent(
             pages_failed.append(page_num)
             failed_errors[page_num] = err_msg
             if doc_id:
-                save_page_checkpoint(doc_id, page_num, status="FAILED", error_info=err_msg, pipeline_version=pipeline_version)
+                save_page_checkpoint(doc_id, page_num, status="FAILED", owner=owner, error_info=err_msg, pipeline_version=pipeline_version)
             return
 
         delta_dict = delta.to_dict()
@@ -435,6 +442,7 @@ async def extract_with_graph_memory_concurrent(
                 doc_id,
                 page_num,
                 status="DELTA_PERSISTED",
+                owner=owner,
                 page_delta_json=delta_dict,
                 delta_checksum=checksum,
                 pipeline_version=pipeline_version,
@@ -445,7 +453,7 @@ async def extract_with_graph_memory_concurrent(
 
         # 6. Mark page completed
         if doc_id:
-            save_page_checkpoint(doc_id, page_num, status="COMPLETED", pipeline_version=pipeline_version)
+            save_page_checkpoint(doc_id, page_num, status="COMPLETED", owner=owner, pipeline_version=pipeline_version)
         pages_succeeded.append(page_num)
 
     # Launch concurrent worker tasks for non-recovered pages
@@ -507,6 +515,7 @@ async def extract_with_graph_memory_batched(
     doc_id: Optional[str] = None,
     epoch_size: int = 4,
     pipeline_version: str = "v1",
+    owner: str = "_admin",
 ) -> BaseModel:
     """
     MODE C: EPOCH / BATCH MODE (Optional Strategy).
@@ -565,6 +574,7 @@ async def extract_with_graph_memory_batched(
         async def _process_epoch_page(page_data: Dict[str, Any]) -> None:
             page_num = page_data.get("page_number", 1)
             page_md = page_data.get("markdown", "")
+            page_blocks = page_data.get("blocks", [])
 
             if not str(page_md or "").strip():
                 pages_succeeded.append(page_num)
@@ -578,6 +588,7 @@ async def extract_with_graph_memory_batched(
                         markdown=page_md,
                         total_pages=total_pages,
                         context=context,
+                        blocks=page_blocks,
                     )
                 except Exception as exc:
                     logger.error("layer3.epoch.worker_failed", page=page_num, error=str(exc))
@@ -593,7 +604,7 @@ async def extract_with_graph_memory_batched(
             delta_dict = delta.to_dict()
             chk = compute_page_delta_checksum(delta_dict)
             if doc_id:
-                save_page_checkpoint(doc_id, page_num, status="DELTA_PERSISTED", page_delta_json=delta_dict, delta_checksum=chk)
+                save_page_checkpoint(doc_id, page_num, status="DELTA_PERSISTED", owner=owner, page_delta_json=delta_dict, delta_checksum=chk)
             epoch_deltas.append((delta, chk))
 
         tasks = [_process_epoch_page(p) for p in epoch_pages]
@@ -604,7 +615,7 @@ async def extract_with_graph_memory_batched(
         for d, chk in epoch_deltas:
             await manager.ingest_page_delta(d, delta_checksum=chk)
             if doc_id:
-                save_page_checkpoint(doc_id, d.page_number, status="COMPLETED")
+                save_page_checkpoint(doc_id, d.page_number, status="COMPLETED", owner=owner)
             pages_succeeded.append(d.page_number)
 
     await manager.reconcile_cross_references()

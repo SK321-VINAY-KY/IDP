@@ -45,6 +45,7 @@ class CustomFieldIn(BaseModel):
 
 class CreateCustomSchemaRequest(BaseModel):
     document_type: str
+    schema_name: Optional[str] = None
     fields: List[CustomFieldIn] = Field(default_factory=list)
 
 
@@ -144,7 +145,7 @@ async def infer_schema(
         # Store input sample document in PostgreSQL
         try:
             from src.ai.layer3_extraction.storage import save_document
-            save_document(filename=safe_name, file_bytes=content, content_type=f.content_type or "application/pdf")
+            save_document(filename=safe_name, file_bytes=content, owner=user.username, content_type=f.content_type or "application/pdf")
         except Exception:
             pass
 
@@ -289,39 +290,55 @@ def create_custom_schema(
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
 
-    # Generate unique schema ID
+    # Generate unique schema ID (collision check is DB-backed).
+    from src.ai.layer3_extraction.storage import schema_exists
     schema_id = f"schema_{uuid.uuid4().hex[:12]}"
-    while (SCHEMA_REGISTRY_DIR / f"{schema_id}.json").exists():
+    while schema_exists(schema_id):
         schema_id = f"schema_{uuid.uuid4().hex[:12]}"
 
     now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+    owner_name = user.username if user else "admin"
+    schema_name = (req.schema_name or "").strip() or schema_state.document_type or "schema"
     record = {
         "schema_id": schema_id,
         "document_type": schema_state.document_type,
+        "schema_name": schema_name,
         "confirmed_at": now_iso,
         "session_id": None,
         "turn_count_at_confirm": 1,
         "schema": schema_state.to_json_schema(),
         "sample_documents": [],
-        "owner": user.username if user else "admin",
+        "owner": owner_name,
     }
 
-    SCHEMA_REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
-    path = SCHEMA_REGISTRY_DIR / f"{schema_id}.json"
-    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-
-    # Persist to PostgreSQL schemas table
+    # Persist to PostgreSQL schemas table (authoritative store; no disk write).
+    # Versioning is keyed by (owner, schema_name) inside save_schema_record.
+    schema_version = 1
     try:
         from src.ai.layer3_extraction.storage import save_schema_record
-        save_schema_record(
+        saved = save_schema_record(
             schema_id=schema_id,
             document_type=schema_state.document_type or "document",
             schema_json=record,
             session_id=None,
             sample_documents=[],
+            owner=owner_name,
+            schema_name=schema_name,
         )
+        if saved and isinstance(saved, dict):
+            schema_version = saved.get("version", 1)
+            record["version"] = schema_version
     except Exception as exc:
         logger.warning("storage.schema_save_failed for schema_id=%s: %s", schema_id, exc)
+
+    # Persist to schema_registry on disk for registry file compatibility
+    try:
+        from pathlib import Path
+        reg_dir = Path("schema_registry")
+        reg_dir.mkdir(parents=True, exist_ok=True)
+        (reg_dir / f"{schema_id}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
     # Audit log
     try:
@@ -337,6 +354,8 @@ def create_custom_schema(
         "status": "success",
         "schema_id": schema_id,
         "document_type": schema_state.document_type,
+        "schema_name": schema_name,
+        "version": schema_version,
         "confirmed_at": now_iso,
         "schema": schema_state.to_json_schema(),
         "record": record,
@@ -362,34 +381,25 @@ def list_my_schemas(
     Each item contains: schema_id, document_type, confirmed_at, field_count.
     """
     from app.storage.user_store import Role
+    from src.ai.layer3_extraction.storage import list_schema_records
 
-    if not SCHEMA_REGISTRY_DIR.exists():
-        return []
-
-    results = []
-    for path in sorted(SCHEMA_REGISTRY_DIR.glob("*.json")):
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-
-        owner = record.get("owner")
-        if user.role != Role.ADMIN and owner and owner != user.username:
-            continue
-
-        results.append({
-            "schema_id":    record.get("schema_id"),
-            "document_type": record.get("document_type"),
-            "confirmed_at": record.get("confirmed_at"),
-            "field_count":  len(record.get("schema", {}).get("fields", [])),
-            "owner":        owner,
-        })
-
-    return results
+    owner_filter = None if user.role == Role.ADMIN else user.username
+    return [
+        {
+            "schema_id":     r["schema_id"],
+            "document_type": r["document_type"],
+            "schema_name":   r.get("schema_name"),
+            "version":       r.get("version"),
+            "confirmed_at":  r["confirmed_at"],
+            "field_count":   r["field_count"],
+            "owner":         r.get("owner"),
+        }
+        for r in list_schema_records(owner=owner_filter)
+    ]
 
 def _load_schema_record(schema_id: str, requesting_user: User) -> dict:
     """
-    Load a confirmed schema record from the schema_registry directory.
+    Load a confirmed schema record from the PostgreSQL schemas table (DB-backed).
 
     Access rules:
       - ADMIN: can download any schema.
@@ -397,17 +407,14 @@ def _load_schema_record(schema_id: str, requesting_user: User) -> dict:
                 If the record has no owner set (legacy records), access is
                 granted to avoid breaking existing data.
 
-    Raises 404 if the file does not exist, 403 if the user does not own it.
+    Raises 404 if the schema does not exist, 403 if the user does not own it.
     """
     from app.storage.user_store import Role
+    from src.ai.layer3_extraction.storage import get_schema_record
 
-    path = SCHEMA_REGISTRY_DIR / f"{schema_id}.json"
-    if not path.exists():
+    record = get_schema_record(schema_id)
+    if record is None:
         raise HTTPException(status_code=404, detail=f"schema '{schema_id}' not found")
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"could not read schema file: {exc}")
 
     # Ownership check for non-admin users
     if requesting_user.role != Role.ADMIN:

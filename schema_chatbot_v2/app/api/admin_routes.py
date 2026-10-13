@@ -22,6 +22,9 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 USERNAME_REGEX = re.compile(r"^(?!.*\.\.)[a-z0-9_.-]{3,64}$")
 
 
+RESERVED_SENTINEL_USERNAMES = {"_legacy", "_admin"}
+
+
 class CreateUserRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=64)
     password: str = Field(..., min_length=1)
@@ -31,6 +34,8 @@ class CreateUserRequest(BaseModel):
     @classmethod
     def validate_username(cls, v: str) -> str:
         v = (v or "").strip().lower()
+        if v in RESERVED_SENTINEL_USERNAMES or v.startswith("_"):
+            raise ValueError(f"Username '{v}' is reserved for internal system use")
         if ".." in v or not USERNAME_REGEX.fullmatch(v):
             raise ValueError(
                 "Username must match '^[a-z0-9_.-]{3,64}$' and cannot contain consecutive dots ('..')"

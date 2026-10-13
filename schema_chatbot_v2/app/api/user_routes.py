@@ -5,6 +5,7 @@ one-click isolated pipeline trigger, and ownership-scoped job monitoring and dow
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import uuid
 from datetime import datetime
@@ -42,25 +43,19 @@ def _user_docs_dir(username: str) -> Path:
     return d
 
 
-def _latest_owned_schema(username: str) -> Optional[Path]:
+def _latest_owned_schema(username: str) -> Optional[Tuple[str, Dict[str, Any]]]:
     """
-    Scans SCHEMA_REGISTRY for schemas owned by username, returning the Path
-    of the one with the latest confirmed_at timestamp (or None if none exist).
+    Returns (schema_id, schema_record) for the schema owned by username with
+    the latest confirmed_at timestamp (DB-backed), or None if none exist.
     """
-    candidate_files = sorted(SCHEMA_REGISTRY.glob("schema_*.json"))
-    matched: List[Tuple[str, Path]] = []
-    for f in candidate_files:
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            if data.get("owner") == username:
-                confirmed_at = str(data.get("confirmed_at") or "")
-                matched.append((confirmed_at, f))
-        except Exception as exc:
-            logger.warning("user_schema.parse_failed", file=f.name, error=str(exc))
-    if not matched:
+    from src.ai.layer3_extraction.storage import get_latest_owned_schema_id, get_schema_record
+    schema_id = get_latest_owned_schema_id(username)
+    if not schema_id:
         return None
-    matched.sort(key=lambda item: item[0], reverse=True)
-    return matched[0][1]
+    record = get_schema_record(schema_id)
+    if record is None:
+        return None
+    return schema_id, record
 
 
 @router.post("/documents")
@@ -72,14 +67,18 @@ async def upload_my_documents(
     Uploads PDFs to the authenticated user's isolated document directory.
     """
     from app.api.pipeline_routes import check_user_extract_rate_limit, validate_uploaded_pdf
+    from src.ai.layer3_extraction import s3_documents as s3
     check_user_extract_rate_limit(user.username)
-    user_dir = _user_docs_dir(user.username)
     saved: List[str] = []
     for f in files:
         safe_name, content = await validate_uploaded_pdf(f)
-        target = user_dir / safe_name
-        target.write_bytes(content)
-        saved.append(target.name)
+        content_type = f.content_type or "application/pdf"
+        # Store per-user PDFs in S3 under the user's isolated prefix; fall back to disk.
+        if s3.is_configured():
+            s3.upload_user_document(user.username, safe_name, content, content_type=content_type)
+        else:
+            (_user_docs_dir(user.username) / safe_name).write_bytes(content)
+        saved.append(safe_name)
     log_activity(user.username, "document_upload", {"files": saved, "count": len(saved)})
     return {"saved": saved, "count": len(saved)}
 
@@ -89,24 +88,106 @@ def list_my_documents(user: User = Depends(get_current_user)) -> Dict[str, Any]:
     """
     Lists uploaded documents belonging to the calling user.
     """
+    from src.ai.layer3_extraction import s3_documents as s3
+    if s3.is_configured():
+        docs = [
+            {"name": d["name"], "size": d["size"], "modified": d["modified"], "source": "s3"}
+            for d in sorted(s3.list_user_documents(user.username), key=lambda x: x["name"].lower())
+        ]
+        return {"documents": docs}
     user_dir = _user_docs_dir(user.username)
     pdfs = sorted([p for p in user_dir.glob("*.pdf") if p.is_file()])
     return {
-        "user_docs_dir": str(user_dir),
         "documents": [
             {
                 "name": p.name,
                 "size": p.stat().st_size,
                 "modified": datetime.fromtimestamp(p.stat().st_mtime).isoformat(),
+                "source": "disk",
             }
             for p in pdfs
         ],
     }
 
 
+@router.delete("/documents/{filename}")
+def delete_my_document(filename: str, user: User = Depends(get_current_user)) -> Dict[str, Any]:
+    """
+    Delete one of the calling user's own documents from their isolated S3 prefix.
+    """
+    from app.api.pipeline_routes import _validate_doc_filename
+    from src.ai.layer3_extraction import s3_documents as s3
+    safe_name = _validate_doc_filename(filename)
+
+    if s3.is_configured():
+        if not s3.user_document_exists(user.username, safe_name):
+            raise HTTPException(status_code=404, detail=f"Document '{safe_name}' not found.")
+        if not s3.delete_user_document(user.username, safe_name):
+            raise HTTPException(status_code=500, detail=f"Failed to delete '{safe_name}' from storage.")
+    else:
+        target = _user_docs_dir(user.username) / safe_name
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail=f"Document '{safe_name}' not found.")
+        try:
+            target.unlink()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to delete '{safe_name}': {exc}")
+
+    log_activity(user.username, "document_delete", {"file": safe_name})
+    return {"deleted": safe_name}
+
+
+@router.get("/outputs")
+def list_my_outputs(user: User = Depends(get_current_user)) -> Dict[str, Any]:
+    """
+    List processed-output (extracted) files that belong to the calling user.
+    """
+    from src.ai.layer3_extraction.storage import list_markdown_records_for_owner
+    records = list_markdown_records_for_owner(user.username)
+    outputs = [
+        {
+            "name": o["name"],
+            "size": o["size"],
+            "modified": o["modified"],
+            "schema_ref": o.get("schema_ref") or ({"schema_id": o["schema_id"]} if o.get("schema_id") else None),
+        }
+        for o in records
+    ]
+    return {"outputs": outputs}
+
+
+@router.get("/outputs/output/{name}")
+def download_my_output(name: str, user: User = Depends(get_current_user)) -> Response:
+    """
+    Download the extracted-JSON output for one of the calling user's documents.
+    """
+    from src.ai.layer3_extraction.storage import list_markdown_records_for_owner, get_latest_extracted_data
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="Invalid output name.")
+    stem = Path(name).stem.replace(".extracted", "")
+
+    # Ownership gate: the requested output must be in the user's own output set.
+    owned = list_markdown_records_for_owner(user.username)
+    owned_stems = {Path(o["name"]).stem.replace(".extracted", "") for o in owned}
+    owned_stems |= {Path(o.get("source_pdf", "")).stem for o in owned if o.get("source_pdf")}
+    if stem not in owned_stems:
+        raise HTTPException(status_code=403, detail="You can only download your own outputs.")
+
+    data = get_latest_extracted_data(stem, owner=user.username)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"No extracted output found for '{name}'.")
+    payload = json.dumps(data, indent=2, default=str)
+    return Response(
+        content=payload,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{stem}.extracted.json"'},
+    )
+
+
 @router.post("/pipeline/run")
 async def run_my_pipeline(
     strategy: Optional[str] = Form(default=None),
+    schema_id: Optional[str] = Form(default=None),
     user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
@@ -114,29 +195,61 @@ async def run_my_pipeline(
     uploaded to the user's workspace and their most recently confirmed schema.
     """
     from app.api.pipeline_routes import check_user_extract_rate_limit
+    from src.ai.layer3_extraction import s3_documents as s3
     check_user_extract_rate_limit(user.username)
-    user_dir = _user_docs_dir(user.username)
-    targets = sorted([p for p in user_dir.glob("*.pdf") if p.is_file()])
-    if not targets:
-        raise HTTPException(status_code=400, detail="Upload documents first")
 
-    schema_path = _latest_owned_schema(user.username)
-    if not schema_path:
-        raise HTTPException(status_code=400, detail="Build and confirm a schema first")
+    if s3.is_configured():
+        # Download the user's S3 PDFs into local temp files for the worker to render.
+        user_docs = s3.list_user_documents(user.username)
+        if not user_docs:
+            raise HTTPException(status_code=400, detail="Upload documents first")
+        tmp_dir = Path(tempfile.mkdtemp(prefix="idp_userdocs_"))
+        targets = []
+        for d in user_docs:
+            data = s3.download_bytes_by_key(d["key"])
+            if not data:
+                continue
+            tp = tmp_dir / d["name"]
+            tp.write_bytes(data)
+            targets.append(tp)
+        if not targets:
+            raise HTTPException(status_code=400, detail="Upload documents first")
+    else:
+        user_dir = _user_docs_dir(user.username)
+        targets = sorted([p for p in user_dir.glob("*.pdf") if p.is_file()])
+        if not targets:
+            raise HTTPException(status_code=400, detail="Upload documents first")
 
-    try:
-        schema_record = json.loads(schema_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"invalid schema file: {exc}")
+    # Resolve the target schema: use the user's chosen schema (must be owned by
+    # them), otherwise fall back to their most recently confirmed schema.
+    from src.ai.layer3_extraction.storage import get_schema_record
+    schema_record = None
+    schema_id_val = None
+    if schema_id:
+        rec = get_schema_record(schema_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="Schema not found")
+        if rec.get("owner") and rec.get("owner") != user.username:
+            raise HTTPException(status_code=403, detail="You can only run your own schemas")
+        schema_record, schema_id_val = rec, schema_id
+    else:
+        owned = _latest_owned_schema(user.username)
+        if not owned:
+            raise HTTPException(status_code=400, detail="Build and confirm a schema first")
+        schema_id_val, schema_record = owned
 
-    selected_strategy = strategy or getattr(a_settings, "layer3_strategy", "graph_memory")
+    # Display-only stand-in path; the worker only reads schema_path.name, never the file.
+    schema_path = Path(f"{schema_id_val}.json")
+
+    # Normal users always run the recommended concurrent strategy (not user-selectable).
+    selected_strategy = "graph_memory_concurrent"
 
     job_id = f"job_{uuid.uuid4().hex[:12]}"
     _pipeline_jobs[job_id] = {
         "job_id": job_id,
         "status": "queued",
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "schema_id": schema_record.get("schema_id", schema_path.stem),
+        "schema_id": schema_record.get("schema_id", schema_id_val),
         "schema_file": schema_path.name,
         "strategy": selected_strategy,
         "targets": [p.name for p in targets],
@@ -265,21 +378,18 @@ def list_my_schemas(user: User = Depends(get_current_user)) -> List[Dict[str, An
     """
     Returns list of confirmed schemas owned by the authenticated user.
     """
-    candidate_files = sorted(SCHEMA_REGISTRY.glob("schema_*.json"))
+    from src.ai.layer3_extraction.storage import list_schema_records
     results: List[Dict[str, Any]] = []
-    for f in candidate_files:
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            if data.get("owner") == user.username or not data.get("owner"):
-                results.append({
-                    "schema_id": data.get("schema_id", f.stem),
-                    "document_type": (data.get("schema") or {}).get("document_type") or data.get("document_type"),
-                    "confirmed_at": data.get("confirmed_at"),
-                    "field_count": len((data.get("schema") or {}).get("fields", [])),
-                    "owner": data.get("owner", user.username),
-                })
-        except Exception as exc:
-            logger.warning("user_schema.list_failed", file=f.name, error=str(exc))
+    for r in list_schema_records(owner=user.username):
+        results.append({
+            "schema_id": r["schema_id"],
+            "document_type": r["document_type"],
+            "schema_name": r.get("schema_name"),
+            "version": r.get("version"),
+            "confirmed_at": r["confirmed_at"],
+            "field_count": r["field_count"],
+            "owner": r.get("owner") or user.username,
+        })
     return results
 
 
