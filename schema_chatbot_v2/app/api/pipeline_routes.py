@@ -173,7 +173,7 @@ def list_documents(
     from src.ai.layer3_extraction.storage import list_markdown_records
 
     # Processed outputs are DB-backed (converted markdown records).
-    output_records = list_markdown_records(owner=owner) if owner else []
+    output_records = list_markdown_records(owner=owner or "_admin")
     outputs = [
         {
             "name": o["name"],
@@ -1006,8 +1006,17 @@ def load_strict_schema_record(schema_id: str) -> Dict[str, Any]:
     from src.ai.layer3_extraction.storage import get_schema_record
     record = get_schema_record(schema_id)
     if record is None:
+        reg_file = SCHEMA_REGISTRY / f"{schema_id}.json"
+        if reg_file.is_file():
+            try:
+                return json.loads(reg_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
         raise HTTPException(status_code=404, detail=f"Schema '{schema_id}' not found.")
     return record
+
+
+resolve_strict_schema_file = load_strict_schema_record
 
 
 @router.get("/pipeline/outputs")

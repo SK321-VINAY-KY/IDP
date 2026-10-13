@@ -1073,6 +1073,23 @@ def get_latest_owned_schema_id(owner: str) -> Optional[str]:
                 if (rec.owner or data.get("owner")) == owner:
                     return rec.schema_id
 
+            # Fall back to disk schema_registry/
+            from pathlib import Path
+            reg_dir = Path("schema_registry")
+            if reg_dir.exists():
+                candidates = []
+                for f in reg_dir.glob("*.json"):
+                    try:
+                        sdata = json.loads(f.read_text(encoding="utf-8"))
+                        if sdata.get("owner") == owner:
+                            conf = sdata.get("confirmed_at") or ""
+                            candidates.append((conf, sdata.get("schema_id") or f.stem))
+                    except Exception:
+                        pass
+                if candidates:
+                    candidates.sort(key=lambda x: x[0], reverse=True)
+                    return candidates[0][1]
+
             return None
         finally:
             session.close()

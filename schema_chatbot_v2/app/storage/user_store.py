@@ -456,15 +456,9 @@ def get_user_store(file_path: Optional[str | Path] = None) -> UserStore:
             if not os.getenv("ADMIN_PASSWORD") or os.getenv("ADMIN_PASSWORD") in ("changeme", "admin", "password", "12345"):
                 raise ValueError("ADMIN_PASSWORD must be explicitly set and cannot be 'changeme' in production/staging.")
 
-        # Ensure admin account exists with the configured active password
+        # Ensure admin account exists
         existing_admin = store.get_by_username(admin_user)
-        if existing_admin:
-            if admin_pass and not verify_password(admin_pass, existing_admin.hashed_password):
-                logger.info("Updating existing admin account '%s' password to match ADMIN_PASSWORD.", admin_user)
-                existing_admin.hashed_password = get_password_hash(admin_pass)
-                existing_admin.role = Role.ADMIN
-                store.save(existing_admin)
-        else:
+        if not existing_admin:
             logger.info("Seeding admin account '%s'.", admin_user)
             store.create(username=admin_user, password=admin_pass, role=Role.ADMIN)
 
