@@ -997,20 +997,38 @@ def validate_doc_id(doc_id: str) -> str:
     return doc_id
 
 
-def load_strict_schema_record(schema_id: str) -> Dict[str, Any]:
+def load_strict_schema_record(schema_id: str, owner: Optional[str] = None) -> Dict[str, Any]:
     r"""
     Validates schema_id against strict regex ^[A-Za-z0-9_\-]+$ and loads the
     confirmed schema record from the PostgreSQL `schemas` table (DB-backed).
+
+    Tenant isolation: when ``owner`` is provided (always, for user-facing
+    endpoints), the resolved schema must belong to that owner. This is enforced
+    in BOTH the DB path (via get_schema_record(..., owner=owner)) AND this
+    function's own schema_registry/ DISK FALLBACK below. A schema whose stored
+    ``owner`` is set and differs from the caller is treated as not-found (404),
+    so one tenant can never resolve another tenant's schema by guessing its
+    schema_id. NULL-owner records are shared/admin and remain visible to all.
+    Pass owner=None only on admin-gated code paths.
     """
     if not schema_id or not _SCHEMA_ID_REGEX.fullmatch(schema_id):
         raise HTTPException(status_code=400, detail=f"Invalid schema_id format: '{schema_id}'")
     from src.ai.layer3_extraction.storage import get_schema_record
-    record = get_schema_record(schema_id)
+    record = get_schema_record(schema_id, owner=owner)
     if record is None:
         reg_file = SCHEMA_REGISTRY / f"{schema_id}.json"
         if reg_file.is_file():
             try:
-                return json.loads(reg_file.read_text(encoding="utf-8"))
+                data = json.loads(reg_file.read_text(encoding="utf-8"))
+                # Owner-scope the disk fallback: deny if the file is owned by a
+                # different tenant. NULL/absent owner == shared, visible to all.
+                if owner is not None:
+                    rec_owner = data.get("owner")
+                    if rec_owner is not None and rec_owner != owner:
+                        raise HTTPException(status_code=404, detail=f"Schema '{schema_id}' not found.")
+                return data
+            except HTTPException:
+                raise
             except Exception:
                 pass
         raise HTTPException(status_code=404, detail=f"Schema '{schema_id}' not found.")
@@ -1123,7 +1141,9 @@ async def extract_from_existing_output(
     if not schema_id:
         raise HTTPException(status_code=400, detail=f"No schema_id recorded in {ref_path.name}")
 
-    schema_json = load_strict_schema_record(schema_id)
+    # Owner-scoped: resolve the schema as the document's owner (non-admin callers
+    # are already constrained above to owner == their own username).
+    schema_json = load_strict_schema_record(schema_id, owner=known_owner)
     raw_fields = (schema_json.get("schema") or {}).get("fields", [])
     fields_in: List[SchemaFieldIn] = []
     for f in raw_fields:
@@ -1296,7 +1316,8 @@ async def extract_uploaded_document(
     fields_in: List[SchemaFieldIn] = []
     schema_name = "custom_schema"
     if schema_id:
-        schema_data = load_strict_schema_record(schema_id)
+        # Owner-scoped: a user may only resolve their own (or a shared) schema.
+        schema_data = load_strict_schema_record(schema_id, owner=user.username)
         schema_name = schema_data.get("schema_id", schema_id)
         raw_fields = (schema_data.get("schema") or {}).get("fields", [])
         for f in raw_fields:
