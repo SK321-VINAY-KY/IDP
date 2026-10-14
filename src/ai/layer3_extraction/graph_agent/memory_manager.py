@@ -185,14 +185,34 @@ class GraphMemoryManager:
     def _normalize(self, text: str) -> str:
         return re.sub(r"\s+", " ", text.strip().lower())
 
-    @staticmethod
-    def _det_suffix(*parts: Any) -> str:
-        """Deterministic 6-hex id suffix derived from stable inputs (merge-determinism
-        task). Replaces uuid.uuid4().hex[:6] so canonical node/edge ids are reproducible
-        when the same deltas are merged in the same (sorted page) order. Content only —
-        parts are ids/values/pages already present in the delta, never new secrets."""
-        raw = "|".join("" if p is None else str(p) for p in parts)
-        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:6]
+    def _gen_node_id(self, page_num: int, seq: int, prefix: str = "node") -> str:
+        """Deterministic, content-free generated node id: {prefix}_{page}_{seq}
+        (merge-determinism close-out, item 2). (page, seq) is unique across pages
+        and carries NO document value in or behind the id. If the id already exists
+        in the graph (collision with a reused raw_id), append a disambiguating counter
+        and fail loudly in the log rather than silently overwrite."""
+        base = f"{prefix}_{page_num}_{seq}"
+        if base not in self.graph._nodes:
+            return base
+        n = 1
+        while f"{base}_{n}" in self.graph._nodes:
+            logger.warning("graph.node_id.collision", base=base, attempt=n)
+            n += 1
+        logger.warning("graph.node_id.collision_resolved", base=base, final=f"{base}_{n}")
+        return f"{base}_{n}"
+
+    def _gen_edge_id(self, page_num: int, seq: int, prefix: str = "edge") -> str:
+        """Deterministic, content-free generated edge id: {prefix}_{page}_{seq}
+        (merge-determinism close-out, item 2). Collision-checked against existing edges."""
+        base = f"{prefix}_{page_num}_{seq}"
+        if base not in self.graph._edges:
+            return base
+        n = 1
+        while f"{base}_{n}" in self.graph._edges:
+            logger.warning("graph.edge_id.collision", base=base, attempt=n)
+            n += 1
+        logger.warning("graph.edge_id.collision_resolved", base=base, final=f"{base}_{n}")
+        return f"{base}_{n}"
 
     def clean_person_name(self, name: str) -> str:
         """Strip common honorifics and titles from person names."""
@@ -705,7 +725,12 @@ class GraphMemoryManager:
             # ---------------------------------------------------------
             # Step 1: Ingest and Canonicalize Entities (Nodes)
             # ---------------------------------------------------------
-            for ent in delta.entities:
+            # Per-delta sequence for deterministic, content-free generated ids
+            # (merge-determinism close-out, item 2): a generated node id is
+            # node_{page}_{seq}, where seq is the entity's position in this delta.
+            # (page, seq) is unique across pages (page namespaces it) and carries no
+            # document value in or behind the id.
+            for _ent_seq, ent in enumerate(delta.entities):
                 raw_id = ent.id
                 ent_val = (ent.value or "").strip()
                 if not ent_val:
@@ -788,7 +813,7 @@ class GraphMemoryManager:
 
                 elif decision.status == ResolutionStatus.UNCERTAIN_MATCH:
                     # Ambiguous / uncertain match: do NOT merge into candidate
-                    node_id = f"node_unc_{page_num}_{self._det_suffix(page_num, raw_id, ent_val)}"
+                    node_id = self._gen_node_id(page_num, _ent_seq, prefix="node_unc")
                     pages = list(ent.source_pages) if ent.source_pages else [page_num]
                     props = dict(ent.properties)
                     props["raw_id"] = raw_id
@@ -834,7 +859,7 @@ class GraphMemoryManager:
                     if raw_id and raw_id not in self.graph._nodes:
                         node_id = raw_id
                     else:
-                        node_id = f"node_{page_num}_{self._det_suffix(page_num, raw_id, ent_val)}"
+                        node_id = self._gen_node_id(page_num, _ent_seq, prefix="node")
 
                     pages = list(ent.source_pages) if ent.source_pages else [page_num]
                     props = dict(ent.properties)
@@ -895,7 +920,7 @@ class GraphMemoryManager:
             # ---------------------------------------------------------
             # Step 2: Ingest and Rewrite Relationships (Edges)
             # ---------------------------------------------------------
-            for edge in delta.relationships:
+            for _edge_seq, edge in enumerate(delta.relationships):
                 raw_src = (edge.source_node or "").strip()
                 raw_tgt = (edge.target_node or "").strip()
                 if not raw_src or not raw_tgt:
@@ -956,7 +981,7 @@ class GraphMemoryManager:
                 )
                 duplicate = any(e.source_page == page_num for e in existing_edges)
                 if not duplicate:
-                    edge_id = f"edge_{page_num}_{self._det_suffix(page_num, canon_src, canon_tgt, edge.relationship)}"
+                    edge_id = self._gen_edge_id(page_num, _edge_seq, prefix="edge")
                     canon_edge = GraphEdge(
                         id=edge_id,
                         source_node=canon_src,
@@ -998,7 +1023,7 @@ class GraphMemoryManager:
 
             remaining_unresolved: List[UnresolvedRef] = []
 
-            for ref in self._unresolved:
+            for _ref_seq, ref in enumerate(self._unresolved):
                 phrase = (ref.phrase or "").strip()
                 target_type = (ref.target_type or "").strip()
                 page_num = ref.page_number
@@ -1094,7 +1119,7 @@ class GraphMemoryManager:
                     duplicate = any(e.source_page == page_num for e in existing_edges)
                     if not duplicate:
                         ref_edge = GraphEdge(
-                            id=f"edge_ref_{page_num}_{self._det_suffix(page_num, canon_src, best_candidate.id, 'REFERS_TO')}",
+                            id=self._gen_edge_id(page_num, _ref_seq, prefix="edge_ref"),
                             source_node=canon_src,
                             target_node=best_candidate.id,
                             relationship="REFERS_TO",

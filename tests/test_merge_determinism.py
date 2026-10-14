@@ -308,3 +308,52 @@ def test_degraded_page_excluded_from_success(monkeypatch):
     assert 2 in g["degraded_pages"]
     # degraded page not counted as succeeded (pages 1 and 3 only)
     assert g["pages_succeeded"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# Item 2: per-page-sequence ids (content-free), old-graph loading, no collisions
+# --------------------------------------------------------------------------- #
+
+def test_generated_ids_are_page_sequence_and_content_free():
+    import re as _re
+    deltas = make_synthetic_deltas()
+    g = asyncio.run(_merge_arrival(deltas, sorted(deltas.keys())))
+    gen_ids = [nid for nid in g.nodes.keys()
+               if nid.startswith("node_") or nid.startswith("node_unc_")]
+    # every generated id matches node[_unc]_{page}_{seq}; no hex hash, no value text
+    pat = _re.compile(r"^node(?:_unc)?_\d+_\d+(?:_\d+)?$")
+    for nid in gen_ids:
+        assert pat.match(nid), f"generated id not page_sequence form: {nid}"
+    # no document value appears in any generated id
+    for n in g.nodes.values():
+        val_tokens = [t for t in n.value.lower().split() if len(t) > 2]
+        for nid in gen_ids:
+            for tok in val_tokens:
+                assert tok not in nid.lower(), f"value token {tok!r} leaked into id {nid}"
+
+
+def test_no_id_collision_across_pages():
+    # Two pages whose entities would produce the same seq indices: ids must stay
+    # unique because the page number namespaces them.
+    deltas = {
+        1: _delta(1, [_node("", "A", "l", 1), _node("", "B", "l", 1)]),
+        2: _delta(2, [_node("", "C", "l", 2), _node("", "D", "l", 2)]),
+    }
+    g = asyncio.run(_merge_arrival(deltas, [2, 1]))
+    ids = list(g.nodes.keys())
+    assert len(ids) == len(set(ids)), f"duplicate node ids: {ids}"
+    assert len(ids) == 4
+
+
+def test_loads_old_uuid_style_graph_snapshot():
+    """A persisted graph with legacy uuid-suffixed ids must still restore + round-trip."""
+    deltas = make_synthetic_deltas()
+    g = asyncio.run(_merge_arrival(deltas, sorted(deltas.keys())))
+    snap = g.snapshot()
+    # inject a legacy-style uuid id into the snapshot to simulate an old saved graph
+    assert snap["nodes"], "need at least one node"
+    snap["nodes"][0]["id"] = "node_9_a1b2c3"  # old uuid-hex style
+    restored = GraphMemory.from_dict(snap)
+    assert "node_9_a1b2c3" in restored.nodes, "legacy uuid-style id did not load"
+    # round-trips back out unchanged
+    assert "node_9_a1b2c3" in {n["id"] for n in restored.snapshot()["nodes"]}

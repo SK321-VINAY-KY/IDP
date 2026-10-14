@@ -47,7 +47,8 @@ class GraphMemory:
         if alias_norm in self._alias_index:
             node_ids = self._alias_index[alias_norm]
             if node_ids:
-                return self.get_node(next(iter(node_ids)))
+                # sorted() so the resolved node is set-iteration-order independent.
+                return self.get_node(sorted(node_ids)[0])
 
         # Fallback check across node aliases in case alias was added directly to GraphNode
         for node in self._nodes.values():
@@ -408,9 +409,11 @@ class GraphMemory:
         if not val_norm:
             return None
 
-        # 1. Exact normalized value match in same or compatible type
+        # 1. Exact normalized value match in same or compatible type.
+        #    Iterate the id set in SORTED order so the chosen reuse candidate does not
+        #    depend on set-iteration (PYTHONHASHSEED) order (cross-process determinism).
         if val_norm in self._alias_index:
-            for cand_id in self._alias_index[val_norm]:
+            for cand_id in sorted(self._alias_index[val_norm]):
                 cand = self.get_node(cand_id)
                 if cand and (self._normalize(cand.type) == self._normalize(node_type) or not node_type):
                     return cand
