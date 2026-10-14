@@ -406,6 +406,29 @@ class GraphMemoryManager:
                 return True
         return False
 
+    @staticmethod
+    def _merge_schema_tags(target_node: GraphNode, incoming: GraphNode) -> None:
+        """Audit #3: keep the UNION of schema_field_name tags on the merged node,
+        sorted + deduplicated (deterministic), instead of dropping the incoming tag.
+        Stores the union in properties['schema_field_names'] and keeps the scalar
+        properties['schema_field_name'] = first sorted tag for back-compat with the
+        resolver's existing exact-tag lookup."""
+        tags = set()
+        existing_union = target_node.properties.get("schema_field_names")
+        if isinstance(existing_union, list):
+            tags.update(t for t in existing_union if t)
+        t_cur = str(target_node.properties.get("schema_field_name", "")).strip()
+        if t_cur:
+            tags.add(t_cur)
+        t_in = str(incoming.properties.get("schema_field_name", "")).strip()
+        if t_in:
+            tags.add(t_in)
+        if not tags:
+            return
+        union = sorted(tags)
+        target_node.properties["schema_field_names"] = union
+        target_node.properties["schema_field_name"] = union[0]
+
     def _merge_role_incompatible(self, incoming: GraphNode, candidate: GraphNode) -> Tuple[bool, str]:
         """Audit #2 gate: for amount/date-semantic nodes, block a value-based merge when
         labels are incompatible OR schema_field_name tags differ. Returns (block, reason).
@@ -823,6 +846,10 @@ class GraphMemoryManager:
                                 old_val = target_node.value
                                 self.graph.update_node(target_node.id, {"value": ent.value})
                                 target_node.add_alias(old_val)
+
+                        # Audit #3: keep the UNION of schema_field_name tags (sorted,
+                        # deterministic) instead of silently dropping the incoming one.
+                        self._merge_schema_tags(target_node, ent)
 
                         # Preserve raw observation
                         obs_list = target_node.properties.setdefault("observations", [])

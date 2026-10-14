@@ -112,3 +112,48 @@ def test_non_amount_types_unaffected_by_gate():
     n_on = len(_nodes_with_value(g_on, "ALICE EXAMPLE")) if False else len([n for n in g_on.nodes.values() if "alice" in n.value.lower()])
     n_off = len([n for n in g_off.nodes.values() if "alice" in n.value.lower()])
     assert n_on == n_off, "gate must not change non-amount/date merging"
+
+
+# --------------------------------------------------------------------------- #
+# 2. tag union on merge (gate OFF so the two tags actually meet on one node)
+# --------------------------------------------------------------------------- #
+
+def test_merged_node_keeps_union_of_tags():
+    # Two nodes, SAME value + SAME label (so they fuse even with the gate on),
+    # but DIFFERENT schema tags -> merged node must keep BOTH tags (sorted union),
+    # not drop the incoming one.
+    deltas = {
+        1: PageDelta(page_number=1, entities=[_amt("p1", "500", "TotalAmount", 1, "total_hospital_bill_amount")]),
+        2: PageDelta(page_number=2, entities=[_amt("p2", "500", "TotalAmount", 2, "claimed_amount")]),
+    }
+    # same label 'TotalAmount' -> labels compatible; tags differ. With the gate ON a
+    # tag mismatch would BLOCK the merge, so test the union with the gate OFF (merge
+    # happens) which is the scenario the union handling must cover.
+    g = _merge(deltas, [1, 2], flag=False)
+    nodes = _nodes_with_value(g, "500")
+    assert len(nodes) == 1, "nodes should have fused (gate off)"
+    node = nodes[0]
+    union = node.properties.get("schema_field_names")
+    assert union == ["claimed_amount", "total_hospital_bill_amount"], f"tags not unioned+sorted: {union}"
+    # primary single tag stays readable (first sorted) for back-compat
+    assert node.properties.get("schema_field_name") in union
+
+
+def test_resolver_fallback_reads_union_tag():
+    # A node whose union contains the field name must be found by the resolver's
+    # exact-tag fallback pass even if it's not the primary tag.
+    from src.ai.layer3_extraction.graph_agent.resolver import resolve_schema_from_graph
+    from src.ai.layer3_extraction.graph_agent.graph_memory import GraphMemory
+
+    class FakeLLM:
+        def resolve_schema_from_graph(self, graph_evidence, schema):
+            return schema()  # LLM returns empty -> forces the tag fallback
+
+    g = GraphMemory()
+    n = _amt("n1", "500", "TotalAmount", 1, "")
+    n.properties["schema_field_names"] = ["claimed_amount", "total_hospital_bill_amount"]
+    n.properties["schema_field_name"] = "claimed_amount"
+    g.create_node(n)
+    out = resolve_schema_from_graph(graph=g, schema=S, llm=FakeLLM())
+    # claimed_amount should be filled from the union-tagged node
+    assert out.claimed_amount == "500"

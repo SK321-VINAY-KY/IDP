@@ -143,7 +143,15 @@ def resolve_schema_from_graph(
         for node in graph._nodes.values():
             if node.status == "UNCERTAIN":
                 continue
-            if node.properties.get("schema_field_name") == fname and node.value:
+            # Audit #3: a merged node may carry a UNION of tags in
+            # properties['schema_field_names']; the field matches if it is the scalar
+            # primary tag OR a member of the union. (Lookup only — scoring unchanged.)
+            tag_union = node.properties.get("schema_field_names")
+            tag_match = (
+                node.properties.get("schema_field_name") == fname
+                or (isinstance(tag_union, list) and fname in tag_union)
+            )
+            if tag_match and node.value:
                 merged[fname] = node.value
                 logger.debug("graph.resolver.reconciled_tagged", field=fname, value=node.value)
                 filled = True
