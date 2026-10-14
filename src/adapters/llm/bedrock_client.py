@@ -43,6 +43,29 @@ def _is_reasoning_model(model_id: str) -> bool:
     return any(str(mk).lower() in mid for mk in markers)
 
 
+def _parse_failure_category(raw: str) -> str:
+    """Classify a parse failure using METADATA-ONLY features (audit #1, 2d).
+    Returns a short category label — NEVER any response content. Mirrors the
+    Step-1 diagnosis categories so logs stay useful without leaking text."""
+    if raw is None:
+        return "none"
+    s = raw.strip()
+    if not s:
+        return "empty"
+    if s.lstrip().startswith("```"):
+        return "fenced"
+    first, last = s.find("{"), s.rfind("}")
+    if first == -1 and last == -1:
+        return "no_json_object"
+    if s.count("{") != s.count("}"):
+        return "unbalanced_braces"
+    if first == -1 or last == -1:
+        return "no_json_object"
+    if first > 0 or last < len(s) - 1:
+        return "surrounding_text"
+    return "invalid_json_balanced"   # Step-1 signature: balanced but invalid
+
+
 def _parse_graph_json(raw: str):
     """Parse a graph-extraction JSON payload (audit #1, 2c).
 
@@ -235,7 +258,8 @@ class BedrockExtractionClient:
                     return schema.model_validate(parsed)
                 except Exception:
                     pass
-            logger.warning("bedrock.extract.parse_failed", raw=raw[:200])
+            logger.warning("bedrock.extract.parse_failed",
+                           raw_len=len(raw), category=_parse_failure_category(raw))
             # Return empty schema instance rather than crashing
             return schema.model_validate({})
 
@@ -288,7 +312,8 @@ class BedrockExtractionClient:
                         return {str(k): list(v) if isinstance(v, list) else [] for k, v in parsed.items()}
                 except Exception:
                     pass
-            logger.warning("bedrock.navigate.parse_failed", raw=raw[:200])
+            logger.warning("bedrock.navigate.parse_failed",
+                           raw_len=len(raw), category=_parse_failure_category(raw))
             return {f: [] for f in schema_fields}
 
     def check_page_for_fields(
@@ -453,7 +478,8 @@ class BedrockExtractionClient:
         # recorded; its recovered/still_invalid outcome is captured.
         _m.amend_outcome(_m.PURPOSE_GRAPH_EXTRACTION, _m.OUTCOME_PARSE_FAILED, page_number=page_number)
         logger.warning("bedrock.extract_graph.parse_failed",
-                       page_number=page_number, raw_len=len(raw))
+                       page_number=page_number, raw_len=len(raw),
+                       category=_parse_failure_category(raw))
 
         reask_messages = base_messages + [
             {"role": "assistant", "content": [{"text": "(previous reply omitted)"}]},

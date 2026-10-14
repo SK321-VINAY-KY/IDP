@@ -282,3 +282,77 @@ def test_combined_18_scored_fields_resolver_reask(fresh):
     assert len(calls) == 2
     reask = [r for r in fresh.records_for() if r.purpose == m.PURPOSE_RESOLVER_REASK]
     assert len(reask) == 1
+
+
+# --------------------------------------------------------------------------- #
+# 2d — no response text in parse-failure logs (length + category only)
+# --------------------------------------------------------------------------- #
+
+import logging  # noqa: E402
+
+SECRET = "CONFIDENTIAL_" + "RESPONSE_TEXT_SECRET_98765"
+
+
+def _log_blob(caplog):
+    return ("\n".join(r.getMessage() for r in caplog.records)
+            + "\n" + str([r.__dict__ for r in caplog.records]))
+
+
+def test_graph_parse_failure_log_has_no_response_text(fresh, caplog):
+    leaky = ('{"entities": [{"id":"e1","value":"' + SECRET + '" invalid}], '
+             '"relationships": [], "reference_resolutions": []}')
+    # stays invalid on the re-ask too so both parse-fail log sites fire
+    client = _make_client(lambda **kw: _resp("end_turn", leaky, out_tokens=2000))
+    with caplog.at_level(logging.WARNING):
+        client.extract_graph_from_page("page", SCHEMA_FIELDS, [], page_number=17)
+    blob = _log_blob(caplog)
+    assert SECRET not in blob, "response text leaked into graph parse-failure log"
+    # the metadata we DO log is present
+    assert any("parse_failed" in r.getMessage() or "reask_still_invalid" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_resolver_parse_failure_log_has_no_response_text(fresh, caplog):
+    from pydantic import BaseModel, Field
+
+    class S(BaseModel):
+        a: str = Field(default="", description="x")
+
+    leaky = '{"a": "' + SECRET + '" invalid json}'
+    client = _make_client(lambda **kw: _resp("end_turn", leaky, out_tokens=50))
+    with caplog.at_level(logging.WARNING):
+        client.resolve_schema_from_graph("evidence", S)
+    assert SECRET not in _log_blob(caplog), "response text leaked into resolver parse-failure log"
+
+
+def test_extract_parse_failure_log_has_no_response_text(fresh, caplog):
+    from pydantic import BaseModel, Field
+
+    class S(BaseModel):
+        a: str = Field(default="", description="x")
+
+    leaky = "{ invalid " + SECRET + " not json ::::"
+    client = _make_client(lambda **kw: _resp("end_turn", leaky, out_tokens=50))
+    with caplog.at_level(logging.WARNING):
+        client.extract("some content", S)
+    assert SECRET not in _log_blob(caplog), "response text leaked into extract parse-failure log"
+
+
+def test_navigate_parse_failure_log_has_no_response_text(fresh, caplog):
+    leaky = "not json " + SECRET + " ::::"
+    client = _make_client(lambda **kw: _resp("end_turn", leaky, out_tokens=50))
+    with caplog.at_level(logging.WARNING):
+        client.navigate(["summary one"], ["field_a"])
+    assert SECRET not in _log_blob(caplog), "response text leaked into navigate parse-failure log"
+
+
+def test_parse_failure_category_is_metadata_only():
+    from src.adapters.llm.bedrock_client import _parse_failure_category
+    assert _parse_failure_category("```json\n{}\n```") == "fenced"
+    assert _parse_failure_category("no object here") == "no_json_object"
+    assert _parse_failure_category('{"a": 1') == "unbalanced_braces"
+    assert _parse_failure_category('prefix {"a":1} suffix') == "surrounding_text"
+    assert _parse_failure_category('{"a": "b" "c"}') == "invalid_json_balanced"
+    # the category never contains the input text
+    secret = "SENSITIVE_VALUE_XYZ"
+    assert secret not in _parse_failure_category('{"a":"' + secret + '" x}')
