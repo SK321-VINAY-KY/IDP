@@ -228,6 +228,13 @@ def run_arm(
         "parse_failures": summary["parse_failures"],
         "empty_result_calls": summary["empty_result_calls"],
         "throttling_exceptions": summary["throttling_exceptions"],
+        # audit #1 (2b/2c/2e) surfaced metrics:
+        "retry_attempts": summary.get("retry_attempts", 0),
+        "reask_count": summary.get("reask_count", 0),
+        "reask_recovered": summary.get("reask_recovered", 0),
+        "degraded_pages": summary.get("degraded_pages", 0),
+        "partial_pages": summary.get("partial_pages", 0),
+        "clean_pages": summary.get("clean_pages", 0),
         "total_calls": summary["total_calls"],
         "stop_reason_distribution": summary["stop_reason_distribution"],
         "all_stop_reasons": all_stop_reasons,
