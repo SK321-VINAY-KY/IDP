@@ -159,6 +159,17 @@ def test_storage_function_signatures_require_owner_without_default():
     with pytest.raises(TypeError):
         _ir_load(doc_id="d")  # type: ignore
 
+    # Phase 4 (commit 2): the chunker's public entry point must also require
+    # 'owner' with NO default — chunks are owner-scoped and ids are content-free.
+    from src.ai.layer3_extraction.chunker import chunk_page_irs as _chunk
+    sig = inspect.signature(_chunk)
+    assert "owner" in sig.parameters, "chunk_page_irs is missing required 'owner' parameter!"
+    assert sig.parameters["owner"].default is inspect.Parameter.empty, (
+        "chunk_page_irs 'owner' parameter must NOT have a default value!"
+    )
+    with pytest.raises(TypeError):
+        _chunk(doc_id="d", pages=[])  # type: ignore
+
     # Calling each storage function without owner must raise TypeError
     with pytest.raises(TypeError):
         save_document("test.pdf", b"bytes")  # type: ignore
