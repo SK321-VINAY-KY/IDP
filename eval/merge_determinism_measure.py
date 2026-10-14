@@ -155,6 +155,19 @@ def _e2e_run(client, pages, schema, scored_gt, doc_id):
     usage = _usage_totals(summ, coll, ADMIN_OWNER, doc_id)
     m.clear_run_context()
     fp = graph_fingerprint(recorder.merged_graph) if recorder.merged_graph else None
+    # Cross-page edges: edges whose source and target nodes have disjoint source_pages
+    # (counts only, no content). Measures how much cross-page linking survived.
+    cross_page_edges = 0
+    g = recorder.merged_graph
+    if g is not None:
+        for e in g.edges.values():
+            s = g.get_node(e.source_node)
+            t = g.get_node(e.target_node)
+            if s and t:
+                sp = set(s.source_pages or [])
+                tp = set(t.source_pages or [])
+                if sp and tp and sp.isdisjoint(tp):
+                    cross_page_edges += 1
     focus = {f: {"expected": scored_gt.get(f), "actual": res.model_dump().get(f),
                  "strict": ev["strict_field_results"].get(f)}
              for f in FOCUS_FIELDS if f in scored_gt}
@@ -162,6 +175,7 @@ def _e2e_run(client, pages, schema, scored_gt, doc_id):
         "strict_matched": ev["strict_matched_count"], "total_fields": ev["total_fields"],
         "strict_pct": ev["strict_pct"], "fuzzy_matched": ev["fuzzy_matched_count"],
         "graph_fingerprint": fp, "focus_fields": focus,
+        "cross_page_edges": cross_page_edges,
         "input_tokens": usage["input_tokens"], "output_tokens": usage["output_tokens"],
         "estimated_cost_usd": usage["estimated_cost_usd"],
     }
@@ -200,6 +214,14 @@ def run_e2e(page_mode: str, runs: int, out_path: str) -> Dict[str, Any]:
     return report
 
 
+def _count_stages(all_runs, fld):
+    out = {}
+    for t in all_runs:
+        key = t[fld]["value_lost_at_stage"].split(" ")[0]
+        out[key] = out.get(key, 0) + 1
+    return out
+
+
 def _num(v):
     import re as _re
     s = _re.sub(r"[^\d.]", "", str(v or ""))
@@ -226,6 +248,19 @@ def run_trace(out_path: str) -> Dict[str, Any]:
     captured = recorder.captured_deltas
     merged = recorder.merged_graph
     resolver_out = recorder.resolver_output or {}
+
+    def _node_features(node):
+        """Metadata-only numeric features the resolver can distinguish nodes on."""
+        return {
+            "node_id": node.id, "label": node.label, "type": node.type,
+            "schema_tag": node.properties.get("schema_field_name", ""),
+            "pages": sorted(node.source_pages), "n_pages": len(node.source_pages or []),
+            "evidence_count": len(node.evidence or []),
+            "confidence": round(float(getattr(node, "confidence", 0.0) or 0.0), 3),
+            "status": node.status, "category": node.category,
+            "n_observations": len((node.properties or {}).get("observations", [])),
+            "n_aliases": len(node.aliases or []),
+        }
 
     trace = {}
     for fld, tval in targets.items():
@@ -268,14 +303,39 @@ def run_trace(out_path: str) -> Dict[str, Any]:
         else:
             lost = "none (correct value survives to the resolver output)"
 
+        # Competing-candidate features: the node carrying the EXPECTED value vs the
+        # node carrying the value the resolver actually CHOSE (metadata only).
+        competing = []
+        if merged:
+            want_vals = {tval}
+            if chosen_num is not None:
+                want_vals.add(chosen_num)
+            seen_ids = set()
+            for nid, node in merged.nodes.items():
+                nv = _num(node.value)
+                if nv is not None and any(abs(nv - w) < 1e-6 for w in want_vals if w is not None):
+                    if nid not in seen_ids:
+                        feats = _node_features(node)
+                        feats["carries_value"] = nv
+                        feats["is_expected"] = (tval is not None and abs(nv - tval) < 1e-6)
+                        competing.append(feats)
+                        seen_ids.add(nid)
+
         trace[fld] = {
             "expected_value": tval,
             "stage1_page_hits": page_hits,
             "stage2_merged_hits": merged_hits,
             "stage2_kept_schema_tag": any(h["schema_tag"] == fld for h in merged_hits),
+            "stage2_merged_with_different_label": any(
+                len({o.get("label") for o in
+                     (merged.nodes[h["node_id"]].properties.get("observations", []) if merged and h["node_id"] in merged.nodes else [])
+                     if o.get("label")}) > 1
+                for h in merged_hits
+            ),
             "stage3_resolver_chose_value": chosen_val,
             "stage3_resolver_matches_expected": chosen_matches,
             "stage3_resolver_chosen_node": chosen_node,
+            "competing_candidates": competing,
             "value_lost_at_stage": lost,
         }
 
@@ -298,6 +358,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--replay", action="store_true")
     ap.add_argument("--trace", action="store_true")
+    ap.add_argument("--trace-runs", type=int, default=1)
     ap.add_argument("--e2e", action="store_true")
     ap.add_argument("--pages", type=str, default="12", choices=["12", "76"])
     ap.add_argument("--runs", type=int, default=5)
@@ -306,7 +367,36 @@ def main():
     if args.replay:
         run_replay(args.out)
     elif args.trace:
-        run_trace(args.out)
+        if args.trace_runs <= 1:
+            run_trace(args.out)
+        else:
+            all_runs = []
+            for i in range(args.trace_runs):
+                print(f"\n### TRACE RUN {i+1}/{args.trace_runs} ###", flush=True)
+                rep = run_trace(args.out.replace(".json", f"_run{i+1}.json"))
+                all_runs.append(rep["trace"])
+            # aggregate counts across runs
+            agg = {}
+            for fld in ("claimed_amount", "sanctioned_amount"):
+                agg[fld] = {
+                    "runs": args.trace_runs,
+                    "page_had_correct_value_with_tag": sum(
+                        1 for t in all_runs if any(h["schema_tag"] == fld for h in t[fld]["stage1_page_hits"])),
+                    "survived_merge": sum(1 for t in all_runs if t[fld]["stage2_merged_hits"]),
+                    "merged_with_different_label": sum(1 for t in all_runs if t[fld]["stage2_merged_with_different_label"]),
+                    "resolver_matched_expected": sum(1 for t in all_runs if t[fld]["stage3_resolver_matches_expected"]),
+                    "lost_at_stage_counts": _count_stages(all_runs, fld),
+                }
+            out = Path(args.out)
+            out.write_text(json.dumps({"aggregate": agg, "runs": all_runs}, indent=2, default=str), encoding="utf-8")
+            print("\n" + "=" * 70)
+            print(f"TRACE AGGREGATE across {args.trace_runs} runs:")
+            for fld, a in agg.items():
+                print(f"  {fld}: tag@page={a['page_had_correct_value_with_tag']}/{a['runs']} "
+                      f"survived_merge={a['survived_merge']}/{a['runs']} "
+                      f"resolver_correct={a['resolver_matched_expected']}/{a['runs']} "
+                      f"lost_at={a['lost_at_stage_counts']}")
+            print(f"  wrote -> {out}")
     elif args.e2e:
         run_e2e(args.pages, args.runs, args.out)
     else:
