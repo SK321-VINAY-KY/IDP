@@ -30,6 +30,18 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+async def merge_page_deltas_sorted(manager: Any, deltas: List[Any]) -> None:
+    """Merge a batch of PageDeltas into the manager's canonical graph in SORTED
+    page-number order, regardless of the order they were produced/arrived in
+    (merge-determinism task). Idempotent re-ingestion is handled by the manager's
+    checksum logic. This is the single contract the concurrent extractor and the
+    determinism tests share: merge order is page order, never completion order."""
+    from src.ai.layer3_extraction.storage import compute_page_delta_checksum
+    for delta in sorted(deltas, key=lambda d: d.page_number):
+        checksum = compute_page_delta_checksum(delta.to_dict())
+        await manager.ingest_page_delta(delta, delta_checksum=checksum)
+
+
 def extract_by_page_scan(
     pages_md: Union[List[str], List[Dict]],
     schema: type[BaseModel],
@@ -380,7 +392,13 @@ async def extract_with_graph_memory_concurrent(
     except Exception:
         pass
 
-    # Checkpoint recovery: check existing durable checkpoints
+    # Deltas awaiting the serial sorted merge. Keyed by page_number so the merge
+    # order is page order, NOT worker-completion/recovery order (merge-determinism
+    # task). Both recovered (checkpoint-replayed) and freshly-built deltas go here;
+    # a single sorted merge pass below guarantees a resumed run == a fresh run.
+    built_deltas: Dict[int, "PageDelta"] = {}
+
+    # Checkpoint recovery: collect recovered deltas (do NOT merge yet).
     recovered_pages: Set[int] = set()
     if doc_id:
         checkpoints = list_page_checkpoints(doc_id, owner=owner, pipeline_version=pipeline_version)
@@ -388,14 +406,13 @@ async def extract_with_graph_memory_concurrent(
             if cp.get("status") in ("DELTA_PERSISTED", "COMPLETED", "MERGED") and cp.get("page_delta_json"):
                 try:
                     replayed_delta = PageDelta.from_dict(cp["page_delta_json"])
-                    chk = cp.get("delta_checksum")
-                    await manager.ingest_page_delta(replayed_delta, delta_checksum=chk)
+                    built_deltas[cp["page_number"]] = replayed_delta
                     recovered_pages.add(cp["page_number"])
                     logger.info(
                         "page.checkpoint.recovered",
                         doc_id=doc_id,
                         page_number=cp["page_number"],
-                        checksum=chk,
+                        checksum=cp.get("delta_checksum"),
                     )
                 except Exception as exc:
                     logger.warning("page.checkpoint.replay_failed", page=cp.get("page_number"), error=str(exc))
@@ -407,7 +424,7 @@ async def extract_with_graph_memory_concurrent(
     pages_partial: List[int] = []    # audit #1 (2c): needed the salvage path
     failed_errors: Dict[int, str] = {}
 
-    async def _process_page(page_data: Dict[str, Any]) -> None:
+    async def _build_page(page_data: Dict[str, Any]) -> None:
         page_num = page_data.get("page_number", 1)
         page_md = page_data.get("markdown", "")
         page_blocks = page_data.get("blocks", [])
@@ -469,15 +486,36 @@ async def extract_with_graph_memory_concurrent(
                 pipeline_version=pipeline_version,
             )
 
-        # 5. Ingest delta into central GraphMemory (canonical merge under lock)
+        # Hand the built delta to the serial merge phase (do NOT merge here — merging
+        # in worker-completion order is the nondeterminism this task fixes).
+        built_deltas[page_num] = delta
+
+    # Build phase: concurrent LLM work, no canonical mutation.
+    tasks = [_build_page(p) for p in pages if p.get("page_number") not in recovered_pages]
+    if tasks:
+        await asyncio.gather(*tasks)
+
+    # Merge phase: SERIAL, in sorted page-number order (deterministic) over BOTH
+    # recovered and freshly-built deltas. This single sorted pass is what makes a
+    # resumed run produce the same graph as a fresh run. Each page's quality drives
+    # checkpointing exactly as before (degraded/partial not COMPLETED).
+    for page_num in sorted(built_deltas.keys()):
+        delta = built_deltas[page_num]
+        checksum = compute_page_delta_checksum(delta.to_dict())
+
+        # 5. Ingest delta into central GraphMemory (canonical merge under lock).
+        #    Recovered pages re-ingest idempotently (checksum match -> no-op).
         await manager.ingest_page_delta(delta, delta_checksum=checksum)
+
+        # Recovered pages were already counted/checkpointed on their original run;
+        # merge them (above) but don't re-checkpoint or double-count here.
+        if page_num in recovered_pages:
+            continue
 
         # 6. Mark page completed — BUT only if extraction was clean. A degraded
         #    page (truncated after retry / invalid JSON after re-ask) or a partial
         #    page (needed the salvage path) must NOT be checkpointed COMPLETED, so a
-        #    resumed run re-processes it. Its DELTA_PERSISTED checkpoint from step 4
-        #    is NOT in the recovery whitelist for a re-run of a degraded page below,
-        #    so we overwrite the status with DEGRADED / PARTIAL (audit #1, 2b/2c).
+        #    resumed run re-processes it (audit #1, 2b/2c).
         page_quality = getattr(delta, "quality", "clean") or "clean"
         if page_quality == "degraded":
             pages_degraded.append(page_num)
@@ -495,11 +533,6 @@ async def extract_with_graph_memory_concurrent(
             if doc_id:
                 save_page_checkpoint(doc_id, page_num, status="COMPLETED", owner=owner, pipeline_version=pipeline_version)
             pages_succeeded.append(page_num)
-
-    # Launch concurrent worker tasks for non-recovered pages
-    tasks = [_process_page(p) for p in pages if p.get("page_number") not in recovered_pages]
-    if tasks:
-        await asyncio.gather(*tasks)
 
     pages_succeeded.sort()
     pages_failed.sort()

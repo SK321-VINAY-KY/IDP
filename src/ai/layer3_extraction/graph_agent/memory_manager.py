@@ -185,6 +185,15 @@ class GraphMemoryManager:
     def _normalize(self, text: str) -> str:
         return re.sub(r"\s+", " ", text.strip().lower())
 
+    @staticmethod
+    def _det_suffix(*parts: Any) -> str:
+        """Deterministic 6-hex id suffix derived from stable inputs (merge-determinism
+        task). Replaces uuid.uuid4().hex[:6] so canonical node/edge ids are reproducible
+        when the same deltas are merged in the same (sorted page) order. Content only —
+        parts are ids/values/pages already present in the delta, never new secrets."""
+        raw = "|".join("" if p is None else str(p) for p in parts)
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:6]
+
     def clean_person_name(self, name: str) -> str:
         """Strip common honorifics and titles from person names."""
         norm = self._normalize(name)
@@ -779,7 +788,7 @@ class GraphMemoryManager:
 
                 elif decision.status == ResolutionStatus.UNCERTAIN_MATCH:
                     # Ambiguous / uncertain match: do NOT merge into candidate
-                    node_id = f"node_unc_{page_num}_{uuid.uuid4().hex[:6]}"
+                    node_id = f"node_unc_{page_num}_{self._det_suffix(page_num, raw_id, ent_val)}"
                     pages = list(ent.source_pages) if ent.source_pages else [page_num]
                     props = dict(ent.properties)
                     props["raw_id"] = raw_id
@@ -825,7 +834,7 @@ class GraphMemoryManager:
                     if raw_id and raw_id not in self.graph._nodes:
                         node_id = raw_id
                     else:
-                        node_id = f"node_{page_num}_{uuid.uuid4().hex[:6]}"
+                        node_id = f"node_{page_num}_{self._det_suffix(page_num, raw_id, ent_val)}"
 
                     pages = list(ent.source_pages) if ent.source_pages else [page_num]
                     props = dict(ent.properties)
@@ -947,7 +956,7 @@ class GraphMemoryManager:
                 )
                 duplicate = any(e.source_page == page_num for e in existing_edges)
                 if not duplicate:
-                    edge_id = f"edge_{page_num}_{uuid.uuid4().hex[:6]}"
+                    edge_id = f"edge_{page_num}_{self._det_suffix(page_num, canon_src, canon_tgt, edge.relationship)}"
                     canon_edge = GraphEdge(
                         id=edge_id,
                         source_node=canon_src,
@@ -1085,7 +1094,7 @@ class GraphMemoryManager:
                     duplicate = any(e.source_page == page_num for e in existing_edges)
                     if not duplicate:
                         ref_edge = GraphEdge(
-                            id=f"edge_ref_{page_num}_{uuid.uuid4().hex[:6]}",
+                            id=f"edge_ref_{page_num}_{self._det_suffix(page_num, canon_src, best_candidate.id, 'REFERS_TO')}",
                             source_node=canon_src,
                             target_node=best_candidate.id,
                             relationship="REFERS_TO",
