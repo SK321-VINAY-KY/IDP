@@ -40,6 +40,12 @@ async def merge_page_deltas_sorted(manager: Any, deltas: List[Any]) -> None:
     for delta in sorted(deltas, key=lambda d: d.page_number):
         checksum = compute_page_delta_checksum(delta.to_dict())
         await manager.ingest_page_delta(delta, delta_checksum=checksum)
+    # Deterministic post-merge cross-page linking (restore-linking task). Runs here so
+    # the shared merge contract (used by the eval replay AND the determinism tests)
+    # gets the same linking the production pipeline applies. Gated + no model calls.
+    from src.config.settings import settings as _settings
+    if getattr(_settings, "graph_crosspage_linking", True) and hasattr(manager, "link_cross_page"):
+        manager.link_cross_page()
 
 
 def extract_by_page_scan(
@@ -545,8 +551,17 @@ async def extract_with_graph_memory_concurrent(
             errors=failed_errors,
         )
 
-    # 7. Reconcile cross-page anaphoric references post-merge
+    # 7. Reconcile cross-page anaphoric references post-merge.
+    #    NOTE: in concurrent mode this is effectively dead — workers build against an
+    #    empty graph so the model emits no references to reconcile (restore-linking
+    #    Step 0a). Retained unchanged; cross-page linking is restored by step 7b.
     await manager.reconcile_cross_references()
+
+    # 7b. Deterministic post-merge cross-page linking (restore-linking task): add
+    #     SAME_ENTITY_AS edges between same-entity nodes on different pages. No model
+    #     calls; deterministic; gated by settings.graph_crosspage_linking (default on).
+    if getattr(settings, "graph_crosspage_linking", True):
+        manager.link_cross_page()
 
     # 8. Synthesize final target schema strictly from the complete Graph Memory
     result = resolve_schema_from_graph(graph=manager.graph, schema=schema, llm=llm)

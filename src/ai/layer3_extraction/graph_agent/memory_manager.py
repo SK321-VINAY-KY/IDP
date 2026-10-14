@@ -42,6 +42,17 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def getattr_settings(name: str, default):
+    """Lazily read a settings value without a module-level import (avoids import cycles).
+    Used by the deterministic cross-page linking pass (restore-linking task)."""
+    try:
+        from src.config.settings import settings as _s
+        return getattr(_s, name, default)
+    except Exception:
+        return default
+
+
 # Semantic keyword-to-anchor mapping covering medical, financial, legal, business domains
 ANCHOR_KEYWORD_MAP: List[Tuple[re.Pattern, str]] = [
     # Healthcare
@@ -455,6 +466,131 @@ class GraphMemoryManager:
         if not self._labels_compatible(incoming.label, candidate.label):
             return (True, "LABEL_INCOMPATIBLE")
         return (False, "")
+
+    # ------------------------------------------------------------------ #
+    # Deterministic post-merge cross-page linking (restore-linking task) #
+    # ------------------------------------------------------------------ #
+
+    # Normalized values that are too generic to key an identity link.
+    _LINK_VALUE_STOPLIST = frozenset({
+        "m", "f", "male", "female", "yes", "no", "true", "false", "na", "n/a",
+        "none", "nil", "approved", "pending", "active", "inactive", "paid", "unpaid",
+    })
+
+    def _link_eligible_value(self, value: str) -> bool:
+        """A node value is eligible to KEY a cross-page identity link only if it is not
+        generic: at least min length, not in the stoplist, and (if pure digits) at least
+        min length as well. Short codes / booleans / gender are excluded."""
+        min_len = int(getattr_settings("graph_crosspage_link_min_value_len", 4))
+        v = self._normalize(value)
+        if not v or len(v) < min_len:
+            return False
+        if v in self._LINK_VALUE_STOPLIST:
+            return False
+        return True
+
+    def _link_keys(self, node: GraphNode) -> set:
+        """Normalized identity keys for a node: its normalized value plus normalized
+        aliases, each paired with the normalized type. Amount/date types yield no keys
+        (never linked). Generic values are excluded."""
+        if self._is_amount_date(node.type):
+            return set()
+        ntype = self._normalize(node.type)
+        keys = set()
+        for raw in [node.value, *(node.aliases or [])]:
+            if self._link_eligible_value(raw):
+                keys.add((ntype, self._normalize(raw)))
+        return keys
+
+    def link_cross_page(self) -> int:
+        """Add deterministic SAME_ENTITY_AS edges between same-type nodes on DIFFERENT
+        pages that share a normalized identifier/name/alias. No model calls. Returns the
+        number of links created. Deterministic: nodes and keys iterated in sorted order,
+        fan-out capped, sequence-based edge ids. Never links amount/date nodes; never
+        mutates/merges nodes. Idempotent (skips existing SAME_ENTITY_AS pairs).
+        Counters recorded on self._link_stats for measurement."""
+        max_fanout = int(getattr_settings("graph_crosspage_link_max_fanout", 3))
+        created = 0
+        skipped_amount_date = 0
+        skipped_excluded_value = 0
+        skipped_fanout = 0
+
+        # Build key -> sorted list of node ids (deterministic).
+        key_to_nodes: Dict[Tuple[str, str], List[str]] = {}
+        for nid in sorted(self.graph._nodes.keys()):
+            node = self.graph._nodes[nid]
+            if self._is_amount_date(node.type):
+                skipped_amount_date += 1
+                continue
+            node_keys = self._link_keys(node)
+            if not node_keys:
+                skipped_excluded_value += 1
+                continue
+            for k in node_keys:
+                key_to_nodes.setdefault(k, [])
+                if nid not in key_to_nodes[k]:
+                    key_to_nodes[k].append(nid)
+
+        fanout: Dict[str, int] = {}
+        seq = 0
+        for key in sorted(key_to_nodes.keys()):
+            ids = sorted(key_to_nodes[key])
+            if len(ids) < 2:
+                continue
+            # Only link nodes that actually sit on DIFFERENT pages.
+            for i in range(len(ids)):
+                for j in range(i + 1, len(ids)):
+                    a, b = ids[i], ids[j]
+                    na, nb = self.graph._nodes[a], self.graph._nodes[b]
+                    pa, pb = set(na.source_pages or []), set(nb.source_pages or [])
+                    if not (pa and pb and pa.isdisjoint(pb)):
+                        continue  # same page (or page-set overlap) -> not a cross-page link
+                    # fan-out cap (deterministic over sorted ids)
+                    if fanout.get(a, 0) >= max_fanout or fanout.get(b, 0) >= max_fanout:
+                        skipped_fanout += 1
+                        continue
+                    # idempotency: skip if a SAME_ENTITY_AS edge already exists either way
+                    if self.graph.get_edges(source_node=a, target_node=b, relationship="SAME_ENTITY_AS") or \
+                       self.graph.get_edges(source_node=b, target_node=a, relationship="SAME_ENTITY_AS"):
+                        continue
+                    edge_id = f"edge_link_{seq}"
+                    seq += 1
+                    link_edge = GraphEdge(
+                        id=edge_id,
+                        source_node=a,
+                        target_node=b,
+                        relationship="SAME_ENTITY_AS",
+                        evidence="",  # derived; no document text
+                        source_page=min(min(pa), min(pb)),
+                        confidence=1.0,
+                        status="DERIVED",
+                        properties={
+                            "derived": True,
+                            "rule": "same_entity_normalized_value_or_alias_and_type",
+                        },
+                    )
+                    try:
+                        self.graph.create_edge(link_edge)
+                        created += 1
+                        fanout[a] = fanout.get(a, 0) + 1
+                        fanout[b] = fanout.get(b, 0) + 1
+                    except Exception as exc:
+                        logger.debug("graph.crosspage_link.skip", error=str(exc))
+
+        self._link_stats = {
+            "created": created,
+            "skipped_amount_date_nodes": skipped_amount_date,
+            "skipped_excluded_value_nodes": skipped_excluded_value,
+            "skipped_fanout": skipped_fanout,
+        }
+        logger.info(
+            "graph.crosspage_link.done",
+            links_created=created,
+            skipped_amount_date_nodes=skipped_amount_date,
+            skipped_excluded_value_nodes=skipped_excluded_value,
+            skipped_fanout=skipped_fanout,
+        )
+        return created
 
     def score_candidate(
         self,

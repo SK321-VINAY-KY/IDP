@@ -84,6 +84,17 @@ class Settings(BaseSettings):
     # mislabeled amount cannot fuse with a differently-roled one. Off reproduces the
     # old value-only merge for A/B measurement. Other node types are unaffected.
     graph_merge_label_gate: bool = True
+    # --- Deterministic post-merge cross-page linking (restore-linking task) ---
+    # When on, a deterministic pass after the sorted merge adds SAME_ENTITY_AS edges
+    # between same-type nodes on different pages that share a normalized identifier or
+    # name/alias. Never links amount/date-semantic nodes. No model calls; deterministic
+    # (sorted iteration, sequence-based edge ids). See GraphMemoryManager.link_cross_page.
+    graph_crosspage_linking: bool = True
+    # Max SAME_ENTITY_AS links per node (fan-out cap) so a common value can't form a hub.
+    graph_crosspage_link_max_fanout: int = 3
+    # Minimum normalized value length to be eligible for linking (excludes generic short
+    # values). Pure-digit values must be at least this long too.
+    graph_crosspage_link_min_value_len: int = 4
     # --- Converse throttling / transient-error retry (audit finding #1, 2e) ---
     # Bounded retry with exponential backoff + jitter for ThrottlingException and
     # transient service errors in _call_converse. 0 disables retry.
@@ -156,6 +167,18 @@ class Settings(BaseSettings):
                 raw_lg = os.getenv("IDP_GRAPH_MERGE_LABEL_GATE") or os.getenv("GRAPH_MERGE_LABEL_GATE")
                 if raw_lg is not None:
                     data["graph_merge_label_gate"] = raw_lg.lower() in ("true", "1", "yes", "on")
+            if "graph_crosspage_linking" not in data or data.get("graph_crosspage_linking") is None:
+                raw_cl = os.getenv("IDP_GRAPH_CROSSPAGE_LINKING") or os.getenv("GRAPH_CROSSPAGE_LINKING")
+                if raw_cl is not None:
+                    data["graph_crosspage_linking"] = raw_cl.lower() in ("true", "1", "yes", "on")
+            if not data.get("graph_crosspage_link_max_fanout"):
+                raw_fo = os.getenv("IDP_GRAPH_CROSSPAGE_LINK_MAX_FANOUT") or os.getenv("GRAPH_CROSSPAGE_LINK_MAX_FANOUT")
+                if raw_fo:
+                    data["graph_crosspage_link_max_fanout"] = int(raw_fo)
+            if not data.get("graph_crosspage_link_min_value_len"):
+                raw_ml = os.getenv("IDP_GRAPH_CROSSPAGE_LINK_MIN_VALUE_LEN") or os.getenv("GRAPH_CROSSPAGE_LINK_MIN_VALUE_LEN")
+                if raw_ml:
+                    data["graph_crosspage_link_min_value_len"] = int(raw_ml)
             if not data.get("bedrock_reasoning_model_markers"):
                 raw_markers = os.getenv("IDP_BEDROCK_REASONING_MODEL_MARKERS") or os.getenv("BEDROCK_REASONING_MODEL_MARKERS")
                 if raw_markers:
