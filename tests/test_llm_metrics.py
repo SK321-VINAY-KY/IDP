@@ -94,10 +94,11 @@ def test_empty_entities_tagged_empty_result(fresh_collector):
     assert s["empty_result_calls"] == 1
 
 
-def test_throttling_exception_recorded(fresh_collector):
-    def boom(**kw):
-        raise RuntimeError("ThrottlingException: rate exceeded")
-    # Name the exception type ThrottlingException so the recorder counts it.
+def test_throttling_exception_recorded(fresh_collector, monkeypatch):
+    # audit #1 (2e): throttling now triggers bounded backoff retries; mock sleep so
+    # the test is fast. After exhaustion a single exception record is kept, carrying
+    # the retry attempt count.
+    monkeypatch.setattr("time.sleep", lambda *_: None)
     class ThrottlingException(Exception):
         pass
     def boom2(**kw):
@@ -109,6 +110,7 @@ def test_throttling_exception_recorded(fresh_collector):
     assert len(recs) == 1
     assert recs[0].outcome == m.OUTCOME_EXCEPTION
     assert recs[0].stop_reason == "ThrottlingException"
+    assert recs[0].retry_attempts >= 1          # it retried before giving up
     s = fresh_collector.summarize()
     assert s["throttling_exceptions"] == 1
 

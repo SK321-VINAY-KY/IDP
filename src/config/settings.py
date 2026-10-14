@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     # call stops on max_tokens, it is retried once at this larger budget. If it
     # still truncates, the page is marked degraded (not COMPLETED).
     graph_extraction_max_tokens_ceiling: int = 12000
+    # --- Converse throttling / transient-error retry (audit finding #1, 2e) ---
+    # Bounded retry with exponential backoff + jitter for ThrottlingException and
+    # transient service errors in _call_converse. 0 disables retry.
+    bedrock_throttle_max_retries: int = 4
+    bedrock_throttle_base_delay_s: float = 0.5
+    bedrock_throttle_max_delay_s: float = 8.0
     graph_anchor_max_k: int = 5
     graph_anchor_types: list[str] = []
     page_concurrency_limit: int = 25

@@ -356,3 +356,94 @@ def test_parse_failure_category_is_metadata_only():
     # the category never contains the input text
     secret = "SENSITIVE_VALUE_XYZ"
     assert secret not in _parse_failure_category('{"a":"' + secret + '" x}')
+
+
+# --------------------------------------------------------------------------- #
+# 2e — throttling: bounded retry with exponential backoff + jitter
+# --------------------------------------------------------------------------- #
+
+class _Throttle(Exception):
+    pass
+_Throttle.__name__ = "ThrottlingException"
+
+
+class _Transient(Exception):
+    pass
+_Transient.__name__ = "ServiceUnavailableException"
+
+
+def test_throttling_then_success_retries(fresh, monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    calls = []
+    def seq(**kw):
+        calls.append(1)
+        if len(calls) <= 2:
+            raise _Throttle("rate exceeded")
+        return _resp("end_turn", ENTITIES_JSON)
+    client = _make_client(seq)
+    out = client.extract_graph_from_page("page", SCHEMA_FIELDS, [], page_number=1)
+    assert out["entities"]
+    assert len(calls) == 3                       # 2 throttles + 1 success
+    recs = fresh.records_for()
+    ok = [r for r in recs if r.outcome == m.OUTCOME_OK]
+    assert ok and ok[-1].retry_attempts == 2     # attempt count carried on the record
+
+
+def test_transient_service_error_retries(fresh, monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    calls = []
+    def seq(**kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise _Transient("try later")
+        return _resp("end_turn", ENTITIES_JSON)
+    client = _make_client(seq)
+    out = client.extract_graph_from_page("page", SCHEMA_FIELDS, [], page_number=1)
+    assert out["entities"]
+    assert len(calls) == 2
+
+
+def test_throttling_exhausted_raises_and_records(fresh, monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    monkeypatch.setattr(settings, "bedrock_throttle_max_retries", 3, raising=False)
+    def seq(**kw):
+        raise _Throttle("rate exceeded")
+    client = _make_client(seq)
+    with pytest.raises(_Throttle):
+        client.extract_graph_from_page("page", SCHEMA_FIELDS, [], page_number=1)
+    s = fresh.summarize()
+    assert s["throttling_exceptions"] == 1       # ONE record kept after exhaustion
+    recs = fresh.records_for()
+    assert recs[-1].retry_attempts == 3          # retried the configured max
+
+
+def test_non_transient_error_not_retried_by_throttle_loop(fresh, monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    # Use a non-reasoning model id so the pre-existing additionalModelRequestFields
+    # fallback-retry does not fire; then the throttle loop is the only retry path.
+    monkeypatch.setattr(settings, "bedrock_reasoning_model_markers", ["none-match"], raising=False)
+    calls = []
+    def seq(**kw):
+        calls.append(1)
+        raise ValueError("deterministic bug, not transient")
+    client = _make_client(seq)
+    with pytest.raises(ValueError):
+        client.extract_graph_from_page("page", SCHEMA_FIELDS, [], page_number=1)
+    assert len(calls) == 1                        # throttle loop does NOT retry a non-transient error
+
+
+def test_backoff_delays_grow_and_are_jittered(fresh, monkeypatch):
+    monkeypatch.setattr(settings, "bedrock_throttle_max_retries", 4, raising=False)
+    monkeypatch.setattr(settings, "bedrock_throttle_base_delay_s", 1.0, raising=False)
+    monkeypatch.setattr(settings, "bedrock_throttle_max_delay_s", 100.0, raising=False)
+    delays = []
+    monkeypatch.setattr("time.sleep", lambda d: delays.append(d))
+    # deterministic jitter so the growth is checkable
+    monkeypatch.setattr("random.random", lambda: 0.5)
+    def seq(**kw):
+        raise _Throttle("rate exceeded")
+    client = _make_client(seq)
+    with pytest.raises(_Throttle):
+        client.extract_graph_from_page("page", SCHEMA_FIELDS, [], page_number=1)
+    # base*2^n * (0.5+0.5) => 1,2,4,8 with the fixed jitter
+    assert delays == [1.0, 2.0, 4.0, 8.0]

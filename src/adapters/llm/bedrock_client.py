@@ -43,6 +43,29 @@ def _is_reasoning_model(model_id: str) -> bool:
     return any(str(mk).lower() in mid for mk in markers)
 
 
+_THROTTLE_MARKERS = (
+    "ThrottlingException", "TooManyRequestsException", "ServiceUnavailableException",
+    "ServiceUnavailable", "InternalServerException", "ModelTimeoutException",
+    "ModelNotReadyException",
+)
+
+
+def _is_throttling_or_transient(exc: Exception) -> bool:
+    """True for throttling / transient service errors that warrant a backoff retry
+    (audit #1, 2e). Matches on the exception class name and, for botocore
+    ClientError, the response error Code. Metadata only."""
+    name = type(exc).__name__
+    if any(mk in name for mk in _THROTTLE_MARKERS):
+        return True
+    # botocore ClientError carries the service error code in .response
+    resp = getattr(exc, "response", None)
+    if isinstance(resp, dict):
+        code = str(resp.get("Error", {}).get("Code", ""))
+        if any(mk in code for mk in _THROTTLE_MARKERS):
+            return True
+    return False
+
+
 def _parse_failure_category(raw: str) -> str:
     """Classify a parse failure using METADATA-ONLY features (audit #1, 2d).
     Returns a short category label — NEVER any response content. Mirrors the
@@ -188,34 +211,59 @@ class BedrockExtractionClient:
         # a pure observer: the response is returned UNCHANGED and behavior is identical
         # whether or not recording succeeds. Never reads prompt/response content.
         import time as _time
+        import random as _random
         from src.adapters.llm import llm_metrics as _m
-        _t0 = _time.perf_counter()
-        try:
+
+        def _invoke() -> Dict[str, Any]:
+            # Existing behavior: drop additionalModelRequestFields once and retry.
             try:
-                resp = self.client.converse(**kwargs)
+                return self.client.converse(**kwargs)
             except Exception as exc:
-                # Existing behavior: drop additionalModelRequestFields once and retry.
-                if "additionalModelRequestFields" in kwargs:
+                if "additionalModelRequestFields" in kwargs and not _is_throttling_or_transient(exc):
                     kwargs.pop("additionalModelRequestFields", None)
-                    resp = self.client.converse(**kwargs)
-                else:
-                    raise exc
-        except Exception as exc:
+                    return self.client.converse(**kwargs)
+                raise
+
+        # 2e: bounded exponential backoff + jitter for throttling / transient errors.
+        max_retries = int(getattr(settings, "bedrock_throttle_max_retries", 4))
+        base_delay = float(getattr(settings, "bedrock_throttle_base_delay_s", 0.5))
+        max_delay = float(getattr(settings, "bedrock_throttle_max_delay_s", 8.0))
+
+        _t0 = _time.perf_counter()
+        retry_attempts = 0
+        while True:
             try:
-                _m.record_converse(
-                    purpose=_purpose, model_id=self.model_id, max_tokens=max_tokens,
-                    response=None, latency_ms=(_time.perf_counter() - _t0) * 1000.0,
-                    outcome=_m.OUTCOME_EXCEPTION, owner=_owner, doc_id=_doc_id,
-                    page_number=_page_number, exception_type=type(exc).__name__,
-                )
-            except Exception:
-                pass
-            raise
+                resp = _invoke()
+                break
+            except Exception as exc:
+                transient = _is_throttling_or_transient(exc)
+                if transient and retry_attempts < max_retries:
+                    delay = min(max_delay, base_delay * (2 ** retry_attempts))
+                    delay = delay * (0.5 + _random.random())  # full-ish jitter
+                    logger.warning("bedrock.converse.throttled_retry",
+                                   purpose=_purpose, attempt=retry_attempts + 1,
+                                   exception_type=type(exc).__name__)
+                    _time.sleep(delay)
+                    retry_attempts += 1
+                    continue
+                # Exhausted or non-transient: record exception (with attempts) and raise.
+                try:
+                    _m.record_converse(
+                        purpose=_purpose, model_id=self.model_id, max_tokens=max_tokens,
+                        response=None, latency_ms=(_time.perf_counter() - _t0) * 1000.0,
+                        outcome=_m.OUTCOME_EXCEPTION, owner=_owner, doc_id=_doc_id,
+                        page_number=_page_number, exception_type=type(exc).__name__,
+                        retry_attempts=retry_attempts,
+                    )
+                except Exception:
+                    pass
+                raise
         try:
             _m.record_converse(
                 purpose=_purpose, model_id=self.model_id, max_tokens=max_tokens,
                 response=resp, latency_ms=(_time.perf_counter() - _t0) * 1000.0,
                 outcome=_m.OUTCOME_OK, owner=_owner, doc_id=_doc_id, page_number=_page_number,
+                retry_attempts=retry_attempts,
             )
         except Exception:
             pass

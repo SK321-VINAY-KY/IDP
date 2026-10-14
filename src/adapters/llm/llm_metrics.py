@@ -341,11 +341,13 @@ def record_converse(
     doc_id: Optional[str] = None,
     page_number: Optional[int] = None,
     exception_type: Optional[str] = None,
+    retry_attempts: int = 0,
 ) -> None:
     """Record ONE Converse call's metadata. Pure observer — returns None, mutates
     nothing the caller holds. `response` is read for stopReason + usage ONLY; its
     content blocks are never touched. On an exception path, pass response=None and
-    exception_type; stop_reason carries the exception type so throttling is countable."""
+    exception_type; stop_reason carries the exception type so throttling is countable.
+    retry_attempts = number of throttle/transient backoff retries this call needed."""
     usage = usage_from_response(response)
     stop_reason = stop_reason_from_response(response)
     if outcome == OUTCOME_EXCEPTION and exception_type:
@@ -368,6 +370,7 @@ def record_converse(
         owner=owner,
         doc_id=doc_id,
         page_number=page_number,
+        retry_attempts=int(retry_attempts or 0),
     )
     _collector.record(rec)
 
