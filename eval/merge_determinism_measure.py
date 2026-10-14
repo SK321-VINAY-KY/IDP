@@ -89,6 +89,95 @@ async def _replay_sorted(captured: Dict[int, PageDelta], arrival_order: List[int
     return mgr.graph
 
 
+async def _merge_with_gate(captured: Dict[int, PageDelta], schema, gate_on: bool):
+    """Merge the captured deltas (sorted) with the label gate off/on. Returns the graph."""
+    from src.ai.layer3_extraction.graph_agent.resolver import resolve_schema_from_graph  # noqa
+    old = getattr(settings, "graph_merge_label_gate", True)
+    settings.graph_merge_label_gate = gate_on
+    try:
+        mgr = GraphMemoryManager(
+            anchor_types=getattr(settings, "graph_anchor_types", None) or [],
+            anchor_max_k=getattr(settings, "graph_anchor_max_k", 5),
+            schema=schema, pipeline_version="v1",
+        )
+        await merge_page_deltas_sorted(mgr, [PageDelta.from_dict(captured[p].to_dict()) for p in sorted(captured)])
+        await mgr.reconcile_cross_references()
+        return mgr.graph
+    finally:
+        settings.graph_merge_label_gate = old
+
+
+def run_ab_replay(out_path: str, n_captures: int = 5, resolver_calls: int = 3) -> Dict[str, Any]:
+    """Step 2.1: capture n live runs' page deltas (12p); for each, merge with the gate
+    OFF and ON (model held constant), then run the REAL resolver `resolver_calls` times
+    on each merged graph. Count per-field correct out of (n_captures * resolver_calls)."""
+    import random
+    from eval.variance_attribution import graph_fingerprint
+    from src.ai.layer3_extraction.graph_agent.resolver import resolve_schema_from_graph
+    git_info = _git_commit_and_status()
+    pages = _load_pages("12")
+    schema, gt = load_document_metadata(CHANDER_MD)
+    scored_gt = _scored_ground_truth(gt)
+    client = get_extraction_client()
+
+    def _num(v):
+        import re as _re
+        s = _re.sub(r"[^\d.]", "", str(v or ""))
+        try:
+            return float(s) if s else None
+        except Exception:
+            return None
+
+    FIELDS = ["claimed_amount", "sanctioned_amount", "patient_uhid", "admission_date"]
+    want = {f: _num(scored_gt.get(f)) if f in ("claimed_amount", "sanctioned_amount") else str(scored_gt.get(f, "")).strip()
+            for f in FIELDS}
+
+    captures = []
+    for i in range(n_captures):
+        print(f"  capture {i+1}/{n_captures} ...", flush=True)
+        rec = CaptureRecorder()
+        with hook_pipeline_capture(rec):
+            asyncio.run(extract_with_graph_memory_concurrent(
+                pages_md=pages, schema=schema, llm=client, owner=ADMIN_OWNER, doc_id=None))
+        captures.append(rec.captured_deltas)
+
+    def _field_correct(resolved_val, field):
+        if field in ("claimed_amount", "sanctioned_amount"):
+            rv = _num(resolved_val)
+            return rv is not None and want[field] is not None and abs(rv - want[field]) < 1e-6
+        return str(resolved_val or "").strip() == want[field] or (
+            want[field] and want[field] in str(resolved_val or ""))
+
+    results = {}
+    for gate_on in (False, True):
+        cond = "on" if gate_on else "off"
+        per_field = {f: 0 for f in FIELDS}
+        total_calls = 0
+        fps = set()
+        for cap in captures:
+            g = asyncio.run(_merge_with_gate(cap, schema, gate_on))
+            fps.add(graph_fingerprint(g))
+            for _ in range(resolver_calls):
+                res = resolve_schema_from_graph(graph=g, schema=schema, llm=client).model_dump()
+                total_calls += 1
+                for f in FIELDS:
+                    if _field_correct(res.get(f), f):
+                        per_field[f] += 1
+        results[cond] = {
+            "per_field_correct": per_field,
+            "total_resolver_calls": total_calls,
+            "distinct_merged_graphs": len(fps),
+        }
+        print(f"  gate {cond}: {per_field} / {total_calls} calls | distinct_graphs={len(fps)}", flush=True)
+
+    report = {"git": git_info, "n_captures": n_captures, "resolver_calls_per_graph": resolver_calls,
+              "results": results}
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_path).write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    print(f"\nA/B REPLAY commit {git_info['commit'][:10]} {git_info['working_tree']} -> {out_path}")
+    return report
+
+
 def run_replay(out_path: str) -> Dict[str, Any]:
     import random
     git_info = _git_commit_and_status()
@@ -357,6 +446,7 @@ def run_trace(out_path: str) -> Dict[str, Any]:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--replay", action="store_true")
+    ap.add_argument("--ab-replay", action="store_true")
     ap.add_argument("--trace", action="store_true")
     ap.add_argument("--trace-runs", type=int, default=1)
     ap.add_argument("--e2e", action="store_true")
@@ -366,6 +456,8 @@ def main():
     args = ap.parse_args()
     if args.replay:
         run_replay(args.out)
+    elif args.ab_replay:
+        run_ab_replay(args.out)
     elif args.trace:
         if args.trace_runs <= 1:
             run_trace(args.out)
