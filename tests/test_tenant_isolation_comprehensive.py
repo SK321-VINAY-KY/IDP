@@ -140,6 +140,25 @@ def test_storage_function_signatures_require_owner_without_default():
             f"{fn.__name__} 'owner' parameter must NOT have a default value (got {param.default})!"
         )
 
+    # Phase 4 (commit 1): the per-owner DocumentIR persistence functions must also
+    # require 'owner' with NO default, so IR files can't be written/read ownerless.
+    from src.ai.layer3_extraction.ir_store import (
+        save_page_irs as _ir_save,
+        load_page_irs as _ir_load,
+        ir_path as _ir_path,
+    )
+    for fn in (_ir_save, _ir_load, _ir_path):
+        sig = inspect.signature(fn)
+        assert "owner" in sig.parameters, f"{fn.__name__} is missing required 'owner' parameter!"
+        param = sig.parameters["owner"]
+        assert param.default is inspect.Parameter.empty, (
+            f"{fn.__name__} 'owner' parameter must NOT have a default value (got {param.default})!"
+        )
+    with pytest.raises(TypeError):
+        _ir_save(doc_id="d", pages=[])  # type: ignore
+    with pytest.raises(TypeError):
+        _ir_load(doc_id="d")  # type: ignore
+
     # Calling each storage function without owner must raise TypeError
     with pytest.raises(TypeError):
         save_document("test.pdf", b"bytes")  # type: ignore

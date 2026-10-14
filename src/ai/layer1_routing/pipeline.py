@@ -545,6 +545,7 @@ def process_document(
     output_dir: str | None = None,
     overwrite: bool = True,
     extraction_requirements: dict | None = None,
+    ir_owner: str | None = None,
 ) -> list[tuple[PageOutput, PageMetadata]]:
     """
     Process every page in a document.
@@ -626,5 +627,30 @@ def process_document(
             document=document_name,
             output_path=out_path,
         )
+
+    # Phase 4 (commit 1): persist DocumentIR per owner, OPT-IN. Only runs when the
+    # caller explicitly supplies ir_owner (the web layer knows the tenant; this
+    # Layer-1/2 function is otherwise owner-agnostic). The blocks already attached
+    # to each PageOutput by the digital (Docling) and local OCR (Paddle) paths are
+    # wrapped as PageIR and written under the owner partition via ir_store. Does not
+    # change what process_document returns.
+    if ir_owner and str(ir_owner).strip() and document_name:
+        try:
+            from pathlib import Path as _Path
+            from src.ai.schemas.document_ir import PageIR as _PageIR
+            from src.ai.layer3_extraction.ir_store import save_page_irs as _save_page_irs
+
+            _doc_id = document_id or _Path(document_name).stem
+            _page_irs = [
+                _PageIR(
+                    page_number=o.page_number,
+                    blocks=list(getattr(o, "blocks", []) or []),
+                    source_engine=(o.engines_used[0] if getattr(o, "engines_used", None) else ""),
+                )
+                for o, _m in results
+            ]
+            _save_page_irs(owner=str(ir_owner), doc_id=_doc_id, pages=_page_irs)
+        except Exception as _ir_exc:  # IR persistence must never break the pipeline
+            logger.warning("pipeline.ir_persist_failed", document=document_name, error=str(_ir_exc))
 
     return results

@@ -37,6 +37,10 @@ output/
 tests/fixtures/*.pdf
 tests/fixtures/*.md
 
+# DocumentIR persistence (Phase 4) — contains document text, never commit.
+# (Already covered by dataset_output/ and output/, but ignore explicitly too.)
+*.ir.json
+
 # HuggingFace model cache (downloaded at runtime)
 .cache/
 *.bin
