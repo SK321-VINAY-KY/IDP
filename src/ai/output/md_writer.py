@@ -89,26 +89,19 @@ def write_document(
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write(content)
 
-    # ── Write sibling <stem>.ir.json DocumentIR representation ────────
-    ir_path = os.path.join(output_dir, f"{stem}.ir.json")
-    ir_pages = [
-        {
-            "page_number": o.page_number,
-            "blocks": [b.model_dump() for b in getattr(o, "blocks", [])],
-            "engines_used": o.engines_used,
-            "confidence": o.confidence,
-        }
-        for o, _ in pages
-    ]
-    with open(ir_path, "w", encoding="utf-8") as fh:
-        json.dump({"document_name": document_name, "pages": ir_pages}, fh, indent=2)
+    # NOTE (Phase 4 commit 3): this writer used to also drop a sibling
+    # "<stem>.ir.json" here, into the SAME flat output_dir. That was removed.
+    # It wrote document text to a shared, non-owner-scoped location (two owners
+    # with the same filename overwrote each other) and used an ad-hoc shape that
+    # NOTHING in the repo read. DocumentIR persistence is now owner-scoped and
+    # schema-versioned via src/ai/layer3_extraction/ir_store.save_page_irs,
+    # wired through process_document(ir_owner=...). The .md output is unchanged.
 
     total_chars = sum(len(o.markdown.strip()) for o, _ in pages)
     logger.info(
         "md_writer.document_written",
         document=document_name,
         output_path=out_path,
-        ir_path=ir_path,
         pages=len(pages),
         total_chars=total_chars,
     )

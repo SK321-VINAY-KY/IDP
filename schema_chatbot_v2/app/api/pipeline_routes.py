@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT))
 from src.adapters.llm.base import LLMClient
 from src.ai.schemas.page import PageClassification, PageOutput, VLMAnalysis
 from src.ai.layer1_routing.pipeline import process_document
+from src.ai.layer3_extraction.ir_store import save_page_irs, delete_page_irs
 from src.config.settings import settings as a_settings
 from src.utils.logger import get_logger
 
@@ -678,11 +679,31 @@ def _run_pipeline_job(
                     write_output=True,
                     output_dir=str(job_out_dir),
                     overwrite=True,
+                    ir_owner=job_owner,
                 )
             except Exception as proc_exc:
                 logger.warning("pipeline.process_document_failed", pdf=pdf.name, error=str(proc_exc))
                 if not existing_md_text:
                     raise
+
+            # Persist DocumentIR per owner (doc_id == full filename, matching the
+            # Query Bot / graph store doc_id). Never fails the job; records a flag.
+            ir_persisted = False
+            try:
+                from src.ai.schemas.document_ir import PageIR as _PageIR
+                _page_irs = [
+                    _PageIR(
+                        page_number=o.page_number,
+                        blocks=list(getattr(o, "blocks", []) or []),
+                        source_engine=(o.engines_used[0] if getattr(o, "engines_used", None) else ""),
+                    )
+                    for o, _m in (results or [])
+                ]
+                if _page_irs:
+                    save_page_irs(owner=job_owner, doc_id=pdf.name, pages=_page_irs)
+                    ir_persisted = True
+            except Exception as _ir_exc:
+                logger.warning("pipeline.job.ir_persist_failed", pdf=pdf.name, error=str(_ir_exc))
 
             outputs = [r[0] for r in results] if results else []
             total_chars = sum(len(o.markdown.strip()) for o in outputs)
@@ -878,6 +899,7 @@ def _run_pipeline_job(
                 "extract_elapsed_s": extract_elapsed,
                 "db_run_id": db_id,
                 "db_error": db_error,
+                "ir_persisted": ir_persisted,
             })
         except Exception as exc:
             logger.error("pipeline.doc_failed", pdf=pdf.name, error=str(exc), error_type=type(exc).__name__)
@@ -1360,6 +1382,13 @@ async def extract_uploaded_document(
     def _execute():
         t_start = time.time()
 
+        # Owner-scoped output dir: the same filename for two owners must never
+        # collide on disk. Reuse the existing per-owner path helper + traversal
+        # guard (resolve_owner_output_dir). This is a normal (non-admin) route,
+        # so the owner is always the authenticated user.
+        owner_out_dir = resolve_owner_output_dir(user.username)
+        owner_out_dir.mkdir(parents=True, exist_ok=True)
+
         # Render directly from the in-memory upload bytes (no local disk write).
         pages = _build_pages_for_pdf(Path(filename), pdf_bytes=pdf_bytes)
         try:
@@ -1373,12 +1402,34 @@ async def extract_uploaded_document(
             document_name=filename,
             document_id=f"extract-{uuid.uuid4().hex[:6]}",
             write_output=True,
-            output_dir=str(OUTPUT_DIR),
+            output_dir=str(owner_out_dir),
             overwrite=True,
+            ir_owner=user.username,
         )
 
+        # Persist DocumentIR per owner. doc_id == the FULL filename, matching the
+        # doc_id the Query Bot / graph store use for the same document (save_document,
+        # save_document_graph, and the query-bot all key on `filename`). This never
+        # fails the request; a metadata-only warning is logged and ir_persisted is
+        # surfaced in the response meta.
+        ir_persisted = False
+        try:
+            from src.ai.schemas.document_ir import PageIR as _PageIR
+            _page_irs = [
+                _PageIR(
+                    page_number=o.page_number,
+                    blocks=list(getattr(o, "blocks", []) or []),
+                    source_engine=(o.engines_used[0] if getattr(o, "engines_used", None) else ""),
+                )
+                for o, _m in results
+            ]
+            save_page_irs(owner=user.username, doc_id=filename, pages=_page_irs)
+            ir_persisted = True
+        except Exception as _ir_exc:
+            logger.warning("pipeline.extract.ir_persist_failed", document=filename, error=str(_ir_exc))
+
         stem = Path(filename).stem
-        md_file = OUTPUT_DIR / f"{stem}.md"
+        md_file = owner_out_dir / f"{stem}.md"
 
         # Persist converted Markdown (.md) into PostgreSQL document_markdowns table
         try:
@@ -1409,7 +1460,7 @@ async def extract_uploaded_document(
         elapsed = round(time.time() - t_start, 2)
         result_dict = extracted_result.model_dump()
 
-        json_out_path = OUTPUT_DIR / f"{stem}.extracted.json"
+        json_out_path = owner_out_dir / f"{stem}.extracted.json"
         out_payload = {
             "source_pdf": filename,
             "schema_used": schema_name,
@@ -1471,6 +1522,7 @@ async def extract_uploaded_document(
                 "saved_to_db": db_id is not None,
                 "db_run_id": db_id,
                 "db_error": db_error,
+                "ir_persisted": ir_persisted,
             }
         }
 

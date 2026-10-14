@@ -133,8 +133,17 @@ def delete_my_document(filename: str, user: User = Depends(get_current_user)) ->
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to delete '{safe_name}': {exc}")
 
-    log_activity(user.username, "document_delete", {"file": safe_name})
-    return {"deleted": safe_name}
+    # Clean up this owner's persisted DocumentIR for the same doc_id (== filename).
+    # Best-effort: a failure here must not fail the document delete.
+    ir_removed = False
+    try:
+        from src.ai.layer3_extraction.ir_store import delete_page_irs
+        ir_removed = delete_page_irs(owner=user.username, doc_id=safe_name)
+    except Exception:
+        ir_removed = False
+
+    log_activity(user.username, "document_delete", {"file": safe_name, "ir_removed": ir_removed})
+    return {"deleted": safe_name, "ir_removed": ir_removed}
 
 
 @router.get("/outputs")

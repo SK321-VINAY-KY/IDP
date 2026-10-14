@@ -226,3 +226,22 @@ def test_ir_store_functions_require_owner_without_default():
         save_page_irs(doc_id="d", pages=[])  # type: ignore
     with pytest.raises(TypeError):
         load_page_irs(doc_id="d")  # type: ignore
+
+
+def test_delete_page_irs_removes_only_that_owner(tmp_path):
+    from src.ai.layer3_extraction.ir_store import delete_page_irs
+    from src.ai.schemas.document_ir import Block, BlockType, PageIR
+
+    root_a = tmp_path / "a"
+    root_b = tmp_path / "b"
+    page = PageIR(page_number=1, blocks=[Block(block_id="b1", type=BlockType.PARAGRAPH, text="x")], source_engine="docling")
+    save_page_irs(owner="a", doc_id="shared.pdf", pages=[page], output_root=root_a)
+    save_page_irs(owner="b", doc_id="shared.pdf", pages=[page], output_root=root_b)
+
+    # delete owner a's IR only
+    assert delete_page_irs(owner="a", doc_id="shared.pdf", output_root=root_a) is True
+    assert load_page_irs(owner="a", doc_id="shared.pdf", output_root=root_a) is None
+    # owner b untouched
+    assert load_page_irs(owner="b", doc_id="shared.pdf", output_root=root_b) is not None
+    # deleting a missing file returns False, never raises
+    assert delete_page_irs(owner="a", doc_id="shared.pdf", output_root=root_a) is False

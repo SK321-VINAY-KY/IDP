@@ -174,3 +174,23 @@ def load_page_irs(
         logger.warning("ir_store.load_invalid",
                        owner=_safe_owner(owner), doc_id=_safe_doc_id(doc_id), reason="pageir_validation_failed")
         return None
+
+
+def delete_page_irs(
+    owner: str,
+    doc_id: str,
+    output_root: Optional[Path] = None,
+) -> bool:
+    """Delete a document's owner-scoped IR file. owner REQUIRED (no default).
+
+    Returns True if a file was removed, False if there was nothing to remove.
+    Never raises on a missing file; a removal error is logged (metadata only)
+    and re-raised so a caller can decide — delete endpoints wrap this so a
+    failure doesn't break the overall document delete."""
+    _safe_owner(owner)
+    path = ir_path(owner, doc_id, output_root=output_root)
+    if not path.exists():
+        return False
+    os.remove(str(path))
+    logger.info("ir_store.deleted", owner=_safe_owner(owner), doc_id=_safe_doc_id(doc_id), path=str(path))
+    return True

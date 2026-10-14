@@ -146,8 +146,9 @@ def test_storage_function_signatures_require_owner_without_default():
         save_page_irs as _ir_save,
         load_page_irs as _ir_load,
         ir_path as _ir_path,
+        delete_page_irs as _ir_delete,
     )
-    for fn in (_ir_save, _ir_load, _ir_path):
+    for fn in (_ir_save, _ir_load, _ir_path, _ir_delete):
         sig = inspect.signature(fn)
         assert "owner" in sig.parameters, f"{fn.__name__} is missing required 'owner' parameter!"
         param = sig.parameters["owner"]
@@ -158,6 +159,8 @@ def test_storage_function_signatures_require_owner_without_default():
         _ir_save(doc_id="d", pages=[])  # type: ignore
     with pytest.raises(TypeError):
         _ir_load(doc_id="d")  # type: ignore
+    with pytest.raises(TypeError):
+        _ir_delete(doc_id="d")  # type: ignore
 
     # Phase 4 (commit 2): the chunker's public entry point must also require
     # 'owner' with NO default — chunks are owner-scoped and ids are content-free.
