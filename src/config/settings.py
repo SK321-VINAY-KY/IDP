@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     # call stops on max_tokens, it is retried once at this larger budget. If it
     # still truncates, the page is marked degraded (not COMPLETED).
     graph_extraction_max_tokens_ceiling: int = 12000
+    # --- Merge label/role-compatibility gate (audit #2) ---
+    # When on (default), value-based merging of Amount/Date-semantic nodes is blocked
+    # when their labels are incompatible OR their schema_field_name tags differ, so a
+    # mislabeled amount cannot fuse with a differently-roled one. Off reproduces the
+    # old value-only merge for A/B measurement. Other node types are unaffected.
+    graph_merge_label_gate: bool = True
     # --- Converse throttling / transient-error retry (audit finding #1, 2e) ---
     # Bounded retry with exponential backoff + jitter for ThrottlingException and
     # transient service errors in _call_converse. 0 disables retry.
@@ -146,6 +152,10 @@ class Settings(BaseSettings):
                 raw_gc = os.getenv("IDP_GRAPH_EXTRACTION_MAX_TOKENS_CEILING") or os.getenv("GRAPH_EXTRACTION_MAX_TOKENS_CEILING")
                 if raw_gc:
                     data["graph_extraction_max_tokens_ceiling"] = int(raw_gc)
+            if "graph_merge_label_gate" not in data or data.get("graph_merge_label_gate") is None:
+                raw_lg = os.getenv("IDP_GRAPH_MERGE_LABEL_GATE") or os.getenv("GRAPH_MERGE_LABEL_GATE")
+                if raw_lg is not None:
+                    data["graph_merge_label_gate"] = raw_lg.lower() in ("true", "1", "yes", "on")
             if not data.get("bedrock_reasoning_model_markers"):
                 raw_markers = os.getenv("IDP_BEDROCK_REASONING_MODEL_MARKERS") or os.getenv("BEDROCK_REASONING_MODEL_MARKERS")
                 if raw_markers:

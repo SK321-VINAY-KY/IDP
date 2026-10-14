@@ -370,6 +370,61 @@ class GraphMemoryManager:
 
         return (len(reasons) > 0, reasons)
 
+    # Node types with amount/date semantics for which a value match alone is NOT
+    # sufficient to merge — their ROLE (label/tag) must also be compatible (audit #2).
+    _AMOUNT_DATE_TYPES = frozenset({
+        "amount", "money", "currency", "value", "quantity",
+        "date", "datetime", "time", "period",
+    })
+
+    # Conservative label equivalence table (normalized). Only labels listed together
+    # here are treated as the same role; everything else requires an EXACT normalized
+    # label match. Unknown labels for amount/date types therefore do NOT merge unless
+    # identical. Kept deliberately small and auditable.
+    _LABEL_EQUIVALENCE = [
+        {"requestedamount", "requested", "claimedamount", "claimed", "amountclaimed", "amountrequested"},
+        {"sanctionedamount", "sanctioned", "approvedamount", "approved", "amountapproved", "amountsanctioned"},
+        {"totalbillamount", "totalamount", "grossamount", "billamount", "totalhospitalbill"},
+        {"admissiondate", "dateofadmission", "doa"},
+        {"dischargedate", "dateofdischarge", "dod"},
+    ]
+
+    def _is_amount_date(self, node_type: str) -> bool:
+        t = self._normalize(node_type)
+        return any(k in t for k in self._AMOUNT_DATE_TYPES)
+
+    def _labels_compatible(self, label_a: str, label_b: str) -> bool:
+        """Conservative role compatibility: exact normalized match, or both labels in
+        the same documented equivalence set. Unknown/empty-vs-set cases are NOT
+        compatible (returns False) so they will not merge for amount/date types."""
+        na = re.sub(r"[\s_\-]", "", self._normalize(label_a))
+        nb = re.sub(r"[\s_\-]", "", self._normalize(label_b))
+        if na and na == nb:
+            return True
+        for grp in self._LABEL_EQUIVALENCE:
+            if na in grp and nb in grp:
+                return True
+        return False
+
+    def _merge_role_incompatible(self, incoming: GraphNode, candidate: GraphNode) -> Tuple[bool, str]:
+        """Audit #2 gate: for amount/date-semantic nodes, block a value-based merge when
+        labels are incompatible OR schema_field_name tags differ. Returns (block, reason).
+        Only applies when the setting is on and at least one node is amount/date typed."""
+        from src.config.settings import settings as _settings
+        if not getattr(_settings, "graph_merge_label_gate", True):
+            return (False, "")
+        if not (self._is_amount_date(incoming.type) or self._is_amount_date(candidate.type)):
+            return (False, "")
+        # schema tag disagreement (both tagged, tags differ) blocks the merge
+        tag_in = str(incoming.properties.get("schema_field_name", "")).strip()
+        tag_cand = str(candidate.properties.get("schema_field_name", "")).strip()
+        if tag_in and tag_cand and tag_in != tag_cand:
+            return (True, f"TAG_MISMATCH:{tag_in}!={tag_cand}")
+        # label incompatibility blocks the merge
+        if not self._labels_compatible(incoming.label, candidate.label):
+            return (True, "LABEL_INCOMPATIBLE")
+        return (False, "")
+
     def score_candidate(
         self,
         incoming: GraphNode,
@@ -519,6 +574,13 @@ class GraphMemoryManager:
         evaluations: List[CandidateEvaluation] = []
         for cand_id, cand_node in candidate_nodes.items():
             has_contradiction, reasons = self.check_hard_contradictions(incoming, cand_node)
+            # Audit #2 label/role-compatibility gate: for amount/date-semantic nodes,
+            # an incompatible label or a differing schema tag is a hard block, applied
+            # alongside the existing contradiction gates (does NOT touch scoring/tiebreak).
+            role_block, role_reason = self._merge_role_incompatible(incoming, cand_node)
+            if role_block:
+                has_contradiction = True
+                reasons = list(reasons) + [role_reason]
             score, signals = self.score_candidate(incoming, cand_node, proposed_reused_id)
             compat = self.check_type_compatibility(incoming.type, cand_node.type)
 
