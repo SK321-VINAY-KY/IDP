@@ -176,3 +176,109 @@ def test_page_delta_carries_quality_through_agent():
     # round-trips through checkpoint serialization
     from src.ai.layer3_extraction.graph_agent.models import PageDelta
     assert PageDelta.from_dict(delta.to_dict()).quality == "degraded"
+
+
+# --------------------------------------------------------------------------- #
+# 2c — parse failures: re-ask once; salvage -> partial; invalid twice -> degraded
+# --------------------------------------------------------------------------- #
+
+# The exact Step-1 observed signature: a structurally complete single object with an
+# unescaped inner double-quote in a string value -> json.loads raises
+# "Expecting ',' delimiter" though braces balance; stopReason end_turn, under budget.
+UNESCAPED_QUOTE_JSON = (
+    '{"entities": [{"id":"e1","type":"Amount","value":"he said "hi" to me",'
+    '"evidence":"x"}], "relationships": [], "reference_resolutions": []}'
+)
+
+
+def test_observed_signature_invalid_quote_reask_then_accepts(fresh):
+    """First parse fails on the unescaped-quote signature -> one re-ask -> valid
+    second response accepted. Exactly one re-ask is issued."""
+    calls = []
+    def seq(**kw):
+        calls.append(1)
+        if len(calls) == 1:
+            return _resp("end_turn", UNESCAPED_QUOTE_JSON, out_tokens=2000)
+        return _resp("end_turn", ENTITIES_JSON, out_tokens=2100)
+    client = _make_client(seq)
+    out = client.extract_graph_from_page("page", SCHEMA_FIELDS, [], page_number=17)
+    assert len(calls) == 2                       # exactly one re-ask
+    assert out["entities"]                       # second valid response accepted
+    assert out["quality"] == "clean"
+    s = fresh.summarize()
+    assert s["reask_count"] == 1
+    assert s["reask_recovered"] == 1
+    assert s["degraded_pages"] == 0
+
+
+def test_invalid_json_twice_leaves_page_degraded(fresh):
+    def seq(**kw):
+        return _resp("end_turn", UNESCAPED_QUOTE_JSON, out_tokens=2000)
+    client = _make_client(seq)
+    out = client.extract_graph_from_page("page", SCHEMA_FIELDS, [], page_number=17)
+    assert out["quality"] == "degraded"
+    assert out["entities"] == []
+    s = fresh.summarize()
+    assert s["reask_count"] == 1
+    assert s["reask_recovered"] == 0
+    assert s["degraded_pages"] == 1
+
+
+def test_salvage_path_flags_partial_not_clean(fresh):
+    """Trailing non-JSON after the object -> deterministic substring salvage
+    recovers it; flagged partial (never clean), no re-ask."""
+    salvageable = ENTITIES_JSON + "   trailing noise not json"
+    client = _make_client(lambda **kw: _resp("end_turn", salvageable, out_tokens=2000))
+    out = client.extract_graph_from_page("page", SCHEMA_FIELDS, [], page_number=4)
+    assert out["entities"]                       # salvaged
+    assert out["quality"] == "partial"
+    s = fresh.summarize()
+    assert s["partial_pages"] == 1
+    assert s["reask_count"] == 0                 # salvage is deterministic, no re-ask
+
+
+def test_fenced_json_is_clean_no_reask(fresh):
+    fenced = "```json\n" + ENTITIES_JSON + "\n```"
+    client = _make_client(lambda **kw: _resp("end_turn", fenced, out_tokens=2000))
+    out = client.extract_graph_from_page("page", SCHEMA_FIELDS, [], page_number=1)
+    assert out["entities"]
+    assert out["quality"] == "clean"             # fence strip is deterministic
+    s = fresh.summarize()
+    assert s["reask_count"] == 0
+
+
+def test_reask_tokens_and_cost_recorded_as_extra_call(fresh):
+    """The re-ask must go through Converse so its tokens are recorded separately."""
+    calls = []
+    def seq(**kw):
+        calls.append(1)
+        if len(calls) == 1:
+            return _resp("end_turn", UNESCAPED_QUOTE_JSON, out_tokens=2000, in_tokens=1500)
+        return _resp("end_turn", ENTITIES_JSON, out_tokens=300, in_tokens=1600)
+    client = _make_client(seq)
+    client.extract_graph_from_page("page", SCHEMA_FIELDS, [], page_number=17)
+    reask_recs = [r for r in fresh.records_for() if r.purpose == m.PURPOSE_GRAPH_REASK]
+    assert len(reask_recs) == 1
+    assert reask_recs[0].output_tokens == 300    # the extra call's tokens are captured
+    assert reask_recs[0].input_tokens == 1600
+
+
+def test_combined_18_scored_fields_resolver_reask(fresh):
+    """Resolver also re-asks once on invalid JSON (both methods per amendment)."""
+    from pydantic import BaseModel, Field
+
+    class S(BaseModel):
+        a: str = Field(default="", description="x")
+
+    calls = []
+    def seq(**kw):
+        calls.append(1)
+        if len(calls) == 1:
+            return _resp("end_turn", '{"a": "v" bad}', out_tokens=50)
+        return _resp("end_turn", '{"a": "value"}', out_tokens=50)
+    client = _make_client(seq)
+    out = client.resolve_schema_from_graph("evidence", S)
+    assert out.a == "value"                      # recovered on re-ask
+    assert len(calls) == 2
+    reask = [r for r in fresh.records_for() if r.purpose == m.PURPOSE_RESOLVER_REASK]
+    assert len(reask) == 1

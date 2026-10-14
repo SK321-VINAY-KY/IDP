@@ -43,6 +43,31 @@ def _is_reasoning_model(model_id: str) -> bool:
     return any(str(mk).lower() in mid for mk in markers)
 
 
+def _parse_graph_json(raw: str):
+    """Parse a graph-extraction JSON payload (audit #1, 2c).
+
+    Returns (parsed_dict | None, used_salvage: bool):
+      - direct json.loads success        -> (dict, False)   [clean]
+      - needed the substring-{...} salvage -> (dict, True)   [partial]
+      - unparseable even after salvage    -> (None, False)   [invalid -> re-ask]
+    The salvage recovers deterministic trailing/leading noise; it does NOT repair
+    the model-side invalid JSON (unescaped inner quotes) found in Step 1 — those
+    fall through to None so the caller can issue a single re-ask."""
+    try:
+        parsed = json.loads(raw)
+        return (parsed if isinstance(parsed, dict) else {}), False
+    except json.JSONDecodeError:
+        start, end = raw.find("{"), raw.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                parsed = json.loads(raw[start:end + 1])
+                if isinstance(parsed, dict):
+                    return parsed, True
+            except Exception:
+                pass
+        return None, False
+
+
 def _extract_text_from_converse_response(response: Dict[str, Any]) -> str:
     """Safely extract plain text from Bedrock Converse API response, skipping reasoningContent."""
     output = response.get("output", {})
@@ -411,17 +436,53 @@ class BedrockExtractionClient:
                            page_number=page_number, out_len=len(raw))
             return _finish([], [], [], _m.PAGE_QUALITY_DEGRADED)
 
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                return _finish(parsed.get("entities", []), parsed.get("relationships", []),
-                               parsed.get("reference_resolutions", []), _m.PAGE_QUALITY_CLEAN)
-            return _finish([], [], [], _m.PAGE_QUALITY_CLEAN)
-        except json.JSONDecodeError:
-            _m.amend_outcome(_m.PURPOSE_GRAPH_EXTRACTION, _m.OUTCOME_PARSE_FAILED, page_number=page_number)
-            logger.warning("bedrock.extract_graph.parse_failed",
-                           page_number=page_number, raw_len=len(raw))
-            return _finish([], [], [], _m.PAGE_QUALITY_DEGRADED)
+        # 2c: parse. Clean = direct parse. Partial = needed the deterministic
+        # substring salvage. Invalid = unparseable even after salvage -> one re-ask.
+        parsed, used_salvage = _parse_graph_json(raw)
+        if parsed is not None:
+            quality = _m.PAGE_QUALITY_PARTIAL if used_salvage else _m.PAGE_QUALITY_CLEAN
+            if used_salvage:
+                logger.warning("bedrock.extract_graph.salvaged_partial", page_number=page_number)
+            return _finish(parsed.get("entities", []), parsed.get("relationships", []),
+                           parsed.get("reference_resolutions", []), quality)
+
+        # Invalid JSON after salvage. Tag the first call parse_failed, then do ONE
+        # bounded re-ask: same prompt + a short GENERIC instruction (no document
+        # content) that the previous reply was not valid JSON. The re-ask goes
+        # through _call_converse under a distinct purpose so its tokens/cost are
+        # recorded; its recovered/still_invalid outcome is captured.
+        _m.amend_outcome(_m.PURPOSE_GRAPH_EXTRACTION, _m.OUTCOME_PARSE_FAILED, page_number=page_number)
+        logger.warning("bedrock.extract_graph.parse_failed",
+                       page_number=page_number, raw_len=len(raw))
+
+        reask_messages = base_messages + [
+            {"role": "assistant", "content": [{"text": "(previous reply omitted)"}]},
+            {"role": "user", "content": [{"text":
+                "Your previous reply was not valid JSON. Reply with ONE valid JSON "
+                "object only, matching the structure requested above. No prose, no "
+                "code fences, and make sure every string value is properly escaped."}]},
+        ]
+        reask_resp = self._call_converse(
+            messages=reask_messages,
+            system=base_system,
+            temperature=params.get("temperature", 0.0),
+            max_tokens=ceiling,
+            _purpose=_m.PURPOSE_GRAPH_REASK,
+            _page_number=page_number,
+        )
+        reask_raw = _strip_fences(_extract_text_from_converse_response(reask_resp))
+        reask_parsed, reask_salvage = _parse_graph_json(reask_raw)
+        if reask_parsed is not None and _m.stop_reason_from_response(reask_resp) != "max_tokens":
+            # re-ask recovered: the reask record stays OUTCOME_OK (counts as recovered).
+            quality = _m.PAGE_QUALITY_PARTIAL if reask_salvage else _m.PAGE_QUALITY_CLEAN
+            return _finish(reask_parsed.get("entities", []), reask_parsed.get("relationships", []),
+                           reask_parsed.get("reference_resolutions", []), quality)
+
+        # Still invalid after the single re-ask -> degraded.
+        _m.amend_outcome(_m.PURPOSE_GRAPH_REASK, _m.OUTCOME_PARSE_FAILED, page_number=page_number)
+        logger.warning("bedrock.extract_graph.reask_still_invalid",
+                       page_number=page_number, raw_len=len(reask_raw))
+        return _finish([], [], [], _m.PAGE_QUALITY_DEGRADED)
 
     def resolve_schema_from_graph(
         self,
@@ -443,31 +504,57 @@ class BedrockExtractionClient:
         params = prompt_params("graph_schema_resolution")
 
         from src.adapters.llm import llm_metrics as _m
+        base_messages = [{"role": "user", "content": [{"text": prompt}]}]
+        base_system = "You extract structured schema fields using a Document Knowledge Graph. Return ONLY valid JSON matching the schema."
+        resolver_budget = max(params.get("max_tokens", 4000), 4000)
         resp = self._call_converse(
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            system="You extract structured schema fields using a Document Knowledge Graph. Return ONLY valid JSON matching the schema.",
+            messages=base_messages,
+            system=base_system,
             temperature=params.get("temperature", 0.0),
-            max_tokens=max(params.get("max_tokens", 4000), 4000),
+            max_tokens=resolver_budget,
             _purpose=_m.PURPOSE_RESOLVER,
         )
-        raw = _extract_text_from_converse_response(resp)
-        raw = _strip_fences(raw)
-        try:
-            parsed = json.loads(raw)
-            return schema.model_validate(parsed)
-        except Exception:
-            start = raw.find("{")
-            end = raw.rfind("}")
-            if start != -1 and end != -1:
-                try:
-                    parsed = json.loads(raw[start : end + 1])
-                    return schema.model_validate(parsed)
-                except Exception:
-                    pass
-            # MEASUREMENT ONLY: tag resolver parse failure (unchanged return).
-            _m.amend_outcome(_m.PURPOSE_RESOLVER, _m.OUTCOME_PARSE_FAILED)
-            logger.warning("bedrock.resolve_schema.parse_failed", raw=raw[:200])
-            return schema.model_validate({})
+        raw = _strip_fences(_extract_text_from_converse_response(resp))
+
+        def _validate(obj) -> Optional[BaseModel]:
+            try:
+                return schema.model_validate(obj)
+            except Exception:
+                return None
+
+        parsed, _salvage = _parse_graph_json(raw)
+        if parsed is not None:
+            model = _validate(parsed)
+            if model is not None:
+                return model
+
+        # 2c: invalid JSON (or schema-invalid) -> one bounded re-ask, generic
+        # instruction only, no document content in the added message.
+        _m.amend_outcome(_m.PURPOSE_RESOLVER, _m.OUTCOME_PARSE_FAILED)
+        logger.warning("bedrock.resolve_schema.parse_failed", raw_len=len(raw))
+        reask_messages = base_messages + [
+            {"role": "assistant", "content": [{"text": "(previous reply omitted)"}]},
+            {"role": "user", "content": [{"text":
+                "Your previous reply was not valid JSON. Reply with ONE valid JSON "
+                "object only, matching the requested schema field names as keys. No "
+                "prose, no code fences, and properly escape every string value."}]},
+        ]
+        reask_resp = self._call_converse(
+            messages=reask_messages,
+            system=base_system,
+            temperature=params.get("temperature", 0.0),
+            max_tokens=resolver_budget,
+            _purpose=_m.PURPOSE_RESOLVER_REASK,
+        )
+        reask_raw = _strip_fences(_extract_text_from_converse_response(reask_resp))
+        reask_parsed, _ = _parse_graph_json(reask_raw)
+        if reask_parsed is not None:
+            model = _validate(reask_parsed)
+            if model is not None:
+                return model
+        _m.amend_outcome(_m.PURPOSE_RESOLVER_REASK, _m.OUTCOME_PARSE_FAILED)
+        logger.warning("bedrock.resolve_schema.reask_still_invalid", raw_len=len(reask_raw))
+        return schema.model_validate({})
 
 
 class BedrockLLMClient(LLMClient):
