@@ -157,3 +157,71 @@ def test_resolver_fallback_reads_union_tag():
     out = resolve_schema_from_graph(graph=g, schema=S, llm=FakeLLM())
     # claimed_amount should be filled from the union-tagged node
     assert out.claimed_amount == "500"
+
+
+# --------------------------------------------------------------------------- #
+# 3. contradiction gates: dead property-key checks removed; live gates kept
+# --------------------------------------------------------------------------- #
+
+def test_contradiction_gate_retained_and_works_when_keys_populated():
+    """DECISION (audit #3): the id_keys / DOB / gender property-key checks are RETAINED,
+    not removed. They are inert for the live pipeline (the agent never writes those
+    keys) but are correct, defensive, and test-covered: when a caller DOES populate
+    them, a conflict must still block the merge. This asserts that behaviour so the
+    gate's retention is justified by an exercised path."""
+    from src.ai.layer3_extraction.graph_agent.memory_manager import GraphMemoryManager
+
+    class S4(BaseModel):
+        patient_name: str = Field(default="", description="n")
+
+    mgr = GraphMemoryManager(anchor_types=[], anchor_max_k=5, schema=S4, pipeline_version="v1")
+    # conflicting UHID property on same-value nodes -> blocked
+    a = GraphNode(id="a", type="Patient", label="Patient", value="John Doe",
+                  properties={"uhid": "UHID-123"}, source_pages=[1], confidence=0.9,
+                  status="ASSERTED", category="EXPLICIT")
+    b = GraphNode(id="b", type="Patient", label="Patient", value="John Doe",
+                  properties={"uhid": "UHID-456"}, source_pages=[2], confidence=0.9,
+                  status="ASSERTED", category="EXPLICIT")
+    has_c, reasons = mgr.check_hard_contradictions(a, b)
+    assert has_c and any("CONFLICTING_IDENTIFIERS" in r for r in reasons), reasons
+    # conflicting DOB -> blocked
+    c = GraphNode(id="c", type="Patient", label="Patient", value="John Doe",
+                  properties={"dob": "1950-01-01"}, source_pages=[1], confidence=0.9,
+                  status="ASSERTED", category="EXPLICIT")
+    d = GraphNode(id="d", type="Patient", label="Patient", value="John Doe",
+                  properties={"dob": "1960-02-02"}, source_pages=[2], confidence=0.9,
+                  status="ASSERTED", category="EXPLICIT")
+    has_c2, reasons2 = mgr.check_hard_contradictions(c, d)
+    assert has_c2 and any("CONFLICTING_DOB" in r for r in reasons2), reasons2
+
+
+def test_contradiction_gate_live_identifier_value_conflict_still_blocks():
+    # Two identifier-type nodes with different values must still be a contradiction
+    # (this is a LIVE gate that acts on the node value, not a dead property key).
+    from src.ai.layer3_extraction.graph_agent.memory_manager import GraphMemoryManager
+
+    class S2(BaseModel):
+        patient_uhid: str = Field(default="", description="uhid")
+
+    mgr = GraphMemoryManager(anchor_types=[], anchor_max_k=5, schema=S2, pipeline_version="v1")
+    a = GraphNode(id="a", type="Identifier", label="uhid", value="111",
+                  properties={}, source_pages=[1], confidence=0.9, status="ASSERTED", category="EXPLICIT")
+    b = GraphNode(id="b", type="Identifier", label="uhid", value="222",
+                  properties={}, source_pages=[2], confidence=0.9, status="ASSERTED", category="EXPLICIT")
+    has_c, reasons = mgr.check_hard_contradictions(a, b)
+    assert has_c and any("IDENTIFIER" in r for r in reasons), f"identifier value conflict should block: {reasons}"
+
+
+def test_contradiction_gate_person_name_conflict_still_blocks():
+    from src.ai.layer3_extraction.graph_agent.memory_manager import GraphMemoryManager
+
+    class S3(BaseModel):
+        patient_name: str = Field(default="", description="n")
+
+    mgr = GraphMemoryManager(anchor_types=[], anchor_max_k=5, schema=S3, pipeline_version="v1")
+    a = GraphNode(id="a", type="Person", label="patient_name", value="Arun Sharma",
+                  properties={}, source_pages=[1], confidence=0.9, status="ASSERTED", category="EXPLICIT")
+    b = GraphNode(id="b", type="Person", label="patient_name", value="Ramesh Sharma",
+                  properties={}, source_pages=[2], confidence=0.9, status="ASSERTED", category="EXPLICIT")
+    has_c, reasons = mgr.check_hard_contradictions(a, b)
+    assert has_c and any("PERSON_NAMES" in r for r in reasons), f"distinct names should block: {reasons}"

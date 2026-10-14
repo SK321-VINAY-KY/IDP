@@ -293,7 +293,13 @@ class GraphMemoryManager:
                 f"INCOMPATIBLE_TYPES: incoming '{incoming.type}' is incompatible with candidate '{candidate.type}'"
             )
 
-        # 2. Explicit conflicting identifiers gate (UHID, SSN, PAN, Account No, etc.)
+        # 2. Explicit conflicting identifiers gate (UHID, SSN, PAN, Account No, etc.).
+        #    NOTE (audit #3): these property keys are NOT populated by the current
+        #    Layer-3 agent (which writes only raw_id/schema_field_name/reused_node_id),
+        #    so this gate is inert for the live pipeline. It is RETAINED (not removed)
+        #    because it is a defensive, test-covered gate that works whenever a caller
+        #    does populate the keys (see test_layer3_hardening fm_4/5/6). It is correct,
+        #    just dormant for this pipeline's inputs.
         id_keys = (
             "uhid", "ssn", "pan", "account_no", "account_number",
             "policy_no", "policy_number", "case_number", "id_number",
@@ -322,7 +328,9 @@ class GraphMemoryManager:
                     f"CONFLICTING_IDENTIFIER_VALUES: '{incoming.value}' != '{candidate.value}'"
                 )
 
-        # 3. Strong identity attributes (DOB, Gender)
+        # 3. Strong identity attributes (DOB, Gender). Same note as above: dormant for
+        #    the live pipeline (keys unpopulated) but retained as a correct defensive,
+        #    test-covered gate.
         dob_in = (
             incoming.properties.get("dob")
             or incoming.properties.get("birth_date")
