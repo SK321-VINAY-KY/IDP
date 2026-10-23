@@ -23,17 +23,31 @@ if os.path.exists("/opt/paddleocr") and not os.path.exists("/tmp/.paddleocr"):
     except Exception:
         shutil.copytree("/opt/paddleocr", "/tmp/.paddleocr", dirs_exist_ok=True)
 
-_paddle_engine: Any = None
+_paddle_engines: Dict[str, Any] = {}
 
 
-def get_paddle_engine() -> Any:
-    """Lazy singleton initializer for PaddleOCR printed engine."""
-    global _paddle_engine
-    if _paddle_engine is None:
+def _normalize_lang(lang: Optional[str]) -> str:
+    """Normalize an optional lang code: None or empty -> 'en'."""
+    if lang is None:
+        return "en"
+    lang = str(lang).strip()
+    return lang or "en"
+
+
+def get_paddle_engine(lang: Optional[str] = None) -> Any:
+    """Lazy, lang-keyed cache initializer for PaddleOCR printed engine.
+
+    Keeps the existing constructor kwargs unchanged; only `lang` varies. For lang
+    "en" this preserves today's behavior (plain PaddleOCR); for any other lang a
+    plain PaddleOCR(lang=...) is built with the same kwargs.
+    """
+    norm_lang = _normalize_lang(lang)
+    engine = _paddle_engines.get(norm_lang)
+    if engine is None:
         from paddleocr import PaddleOCR
-        _paddle_engine = PaddleOCR(
+        engine = PaddleOCR(
             ocr_version="PP-OCRv6",
-            lang="en",
+            lang=norm_lang,
             device="cpu",
             enable_mkldnn=False,
             use_doc_unwarping=False,
@@ -41,7 +55,8 @@ def get_paddle_engine() -> Any:
             use_textline_orientation=False,
             text_recognition_batch_size=16,
         )
-    return _paddle_engine
+        _paddle_engines[norm_lang] = engine
+    return engine
 
 
 try:
@@ -65,13 +80,19 @@ def _rollup_confidence(result: Any) -> Tuple[List[str], List[float]]:
     return lines, confs
 
 
-def process_image(image_input: Any, page_number: int) -> Dict[str, Any]:
+def process_image(
+    image_input: Any,
+    page_number: int,
+    lang: Optional[str] = None,
+    image_source: str = "pdf",
+) -> Dict[str, Any]:
     """
     Executes PaddleOCR printed extraction on a numpy image array or image file path.
     """
+    norm_lang = _normalize_lang(lang)
     t0 = time.monotonic()
     try:
-        engine = get_paddle_engine()
+        engine = get_paddle_engine(norm_lang)
         ocr_result = engine.ocr(image_input)
         lines, confs, blocks = _rollup_confidence_with_blocks(
             ocr_result, page_number, "paddleocr_printed"
@@ -89,6 +110,8 @@ def process_image(image_input: Any, page_number: int) -> Dict[str, Any]:
             "blocks": [b.model_dump() for b in blocks],
             "latency_ms": round(latency_ms, 2),
             "status": "SUCCESS",
+            "ocr_lang": norm_lang,
+            "image_source": image_source,
         }
     except Exception as exc:
         latency_ms = (time.monotonic() - t0) * 1000
@@ -102,14 +125,22 @@ def process_image(image_input: Any, page_number: int) -> Dict[str, Any]:
             "latency_ms": round(latency_ms, 2),
             "status": "ERROR",
             "error": str(exc),
+            "ocr_lang": norm_lang,
+            "image_source": image_source,
         }
 
 
-def process_pdf_pages(pdf_stream_or_path: Any, page_numbers: List[int]) -> List[Dict[str, Any]]:
+def process_pdf_pages(
+    pdf_stream_or_path: Any,
+    page_numbers: List[int],
+    lang: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """
     Renders specified PDF pages into images and runs PaddleOCR printed extraction.
     """
     import fitz
+
+    norm_lang = _normalize_lang(lang)
 
     if isinstance(pdf_stream_or_path, (bytes, bytearray)):
         doc = fitz.open(stream=pdf_stream_or_path, filetype="pdf")
@@ -132,6 +163,8 @@ def process_pdf_pages(pdf_stream_or_path: Any, page_numbers: List[int]) -> List[
                     "latency_ms": 0.0,
                     "status": "ERROR",
                     "error": f"Page number {p} out of range (document has {len(doc)} pages)",
+                    "ocr_lang": norm_lang,
+                    "image_source": "pdf",
                 })
                 continue
 
@@ -142,7 +175,7 @@ def process_pdf_pages(pdf_stream_or_path: Any, page_numbers: List[int]) -> List[
             if pix.n == 4:
                 img_array = img_array[:, :, :3]
 
-            res = process_image(img_array, p)
+            res = process_image(img_array, p, lang=norm_lang, image_source="pdf")
             results.append(res)
     finally:
         doc.close()

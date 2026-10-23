@@ -27,6 +27,17 @@ def get_s3_client() -> Any:
     return _s3_client
 
 
+def _resolve_probe_key(event: Dict[str, Any], key: str) -> Any:
+    """Resolve an optional probe key from the top level of the event, falling back
+    to event["page"][key] when the top level does not contain it. Top-level wins."""
+    if key in event:
+        return event[key]
+    page = event.get("page")
+    if isinstance(page, dict):
+        return page.get(key)
+    return None
+
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     AWS Lambda entry point for PaddleOCR handwritten text extraction.
@@ -41,6 +52,12 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     document_id = event.get("document_id") or (os.path.basename(s3_key) if s3_key else f"doc_{request_id[:8]}")
 
+    # Resolve optional probe keys (top level, else nested under event["page"]).
+    image_s3_bucket = _resolve_probe_key(event, "image_s3_bucket")
+    image_s3_key = _resolve_probe_key(event, "image_s3_key")
+    ocr_lang = _resolve_probe_key(event, "ocr_lang")
+    use_structure = _resolve_probe_key(event, "use_structure")  # recorded only, not acted on
+
     pages: List[int] = []
     if "pages" in event and isinstance(event["pages"], list):
         pages = [int(p) for p in event["pages"]]
@@ -54,8 +71,35 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
 
     try:
+        results = None
+
+        # 1.5 Probe image path: if an image S3 key is provided, OCR the pre-rendered
+        # JPEG instead of downloading the PDF. Any failure falls back to the PDF path.
+        if image_s3_key:
+            try:
+                import io
+                from PIL import Image
+                import numpy as np
+
+                img_bucket = image_s3_bucket or s3_bucket
+                img_key = urllib.parse.unquote_plus(image_s3_key)
+                obj = get_s3_client().get_object(Bucket=img_bucket, Key=img_key)
+                img_bytes = obj["Body"].read()
+                img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                img_array = np.array(img)
+                target_page = pages[0] if pages else 1
+                result = engine.process_image(
+                    img_array, target_page, lang=ocr_lang, image_source="s3_image"
+                )
+                results = [result]
+            except Exception as img_exc:
+                print(f"[paddleocr_handwritten] image S3 path failed, falling back to PDF: {img_exc}")
+                results = None
+
         # 2. Handle direct base64 image
-        if "image_base64" in event and event["image_base64"]:
+        if results is not None:
+            pass
+        elif "image_base64" in event and event["image_base64"]:
             import io
             from PIL import Image
             import numpy as np
