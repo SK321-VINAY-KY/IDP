@@ -1,0 +1,24 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "NEW line-crop extractor module src/ai/layer1_probe/line_crops.py (ITEM 1), plus synthetic unit tests tests/test_line_crops.py. Pure numpy/OpenCV, reuses imaging.ink_mask, drops ruled lines, dilates horizontally to merge words into lines, crops tight from the GRAY image in reading order. Foundational: FEAT-002 uses this extractor to cut Latin line crops from rendered PDF pages. Independent of FEAT-003.",
+  "status": "completed",
+  "steps": [
+    "Create src/ai/layer1_probe/line_crops.py with: def extract_line_crops(gray: np.ndarray, mask: Optional[np.ndarray] = None, *, min_height: int = 10, max_height_frac: float = 0.5, pad: int = 3, min_width: int = 15) -> list[tuple[np.ndarray, tuple[int,int,int,int]]]. Imports: numpy, cv2, and `from src.ai.layer1_probe import imaging`. NO torch, NO onnxruntime, NO fitz.",
+    "Algorithm: (1) if mask is None compute mask = imaging.ink_mask(gray); (2) detect+drop ruled lines by morphological open with a wide horizontal kernel (e.g. cv2.getStructuringElement(cv2.MORPH_RECT, (max(25, w//25), 1)), mirroring cv_features.detect_table) and subtract those strokes from the mask; (3) dilate the de-ruled mask horizontally with a wide short kernel (width ~ max(15, w//30), height 1..3) to merge words of one line; (4) cv2.connectedComponentsWithStats to get boxes; (5) keep boxes with min_height <= box_h <= max_height_frac*H and box_w >= min_width; (6) crop each kept box from `gray` (NOT the mask) with `pad` px clamped to bounds; (7) sort top-to-bottom then left-to-right (reading order) and return [(crop, (x,y,w,h)), ...]. Document the defaults and the return shape in the docstring.",
+    "Create tests/test_line_crops.py (numpy/cv2 synthetic pages, no PDF/fonts, small ~400x300 images): (a) ruled-line-only page (several long thin horizontal black lines on white) -> assert extract_line_crops returns 0 line-sized crops; (b) single-text-line page (one text-height horizontal blob/bar in the middle) -> assert exactly 1 crop and its bbox lies within the drawn band; (c) blank white page -> assert 0 crops. Keep fast (sub-second)."
+  ],
+  "acceptance_criteria": [
+    "src/ai/layer1_probe/line_crops.py exists and defines extract_line_crops with the exact signature above.",
+    "Importing the module does not import torch, onnxruntime, or fitz.",
+    "Running `c:\\Users\\Dell\\Desktop\\IDP\\engineer_a\\.venv\\Scripts\\python.exe -m pytest tests/test_line_crops.py -q` passes all three synthetic cases.",
+    "The existing suite still passes: `...python.exe -m pytest tests/test_probe.py -q` = 27 passed (unchanged)."
+  ],
+  "verification": [
+    "c:\\Users\\Dell\\Desktop\\IDP\\engineer_a\\.venv\\Scripts\\python.exe -c \"import sys; import src.ai.layer1_probe.line_crops as m; assert hasattr(m,'extract_line_crops'); assert 'torch' not in sys.modules and 'onnxruntime' not in sys.modules\"",
+    "c:\\Users\\Dell\\Desktop\\IDP\\engineer_a\\.venv\\Scripts\\python.exe -m pytest tests/test_line_crops.py -q",
+    "c:\\Users\\Dell\\Desktop\\IDP\\engineer_a\\.venv\\Scripts\\python.exe -m pytest tests/test_probe.py -q"
+  ],
+  "blocked_reason": null,
+  "findings": "DONE. src/ai/layer1_probe/line_crops.py defines extract_line_crops(gray, mask=None, *, min_height=10, max_height_frac=0.5, pad=3, min_width=15) -> list[(crop_gray_ndarray, (x,y,w,h))]. Pure numpy/cv2; imports only `from src.ai.layer1_probe import imaging` (reuses imaging.ink_mask); NO torch/onnxruntime/fitz. IMPORTANT NUANCE for FEAT-002: a naive wide horizontal MORPH_OPEN erases a solid text band too (it fully survives the open and gets subtracted), so the ruled-line drop opens horizontally THEN keeps only THIN components (height <= max(2, min_height//2)) as rules before subtracting. Word-merge dilation kernel is (max(15, W//30), 3); this WIDENS each line box left/right by ~half the kernel (reflected in returned bbox). Returned bbox is the PADDED, CLAMPED box (pad=3) in analysis-image (gray) coordinates; crops are copies from gray (not the mask). Reading order = sort by (y, x). FEAT-002 must scale these analysis-DPI bboxes to full-res rgb coords itself. tests/test_line_crops.py has 3 synthetic cases (ruled-only=0, single band=1 within band, blank=0) all passing; tests/test_probe.py still 27 passed (unchanged)."
+}
