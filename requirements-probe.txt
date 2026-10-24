@@ -1,0 +1,9 @@
+# Layer 1.5 probe Lambda — small, CPU-only, always-warm candidate
+pymupdf>=1.26.0
+numpy>=1.26.0
+opencv-python-headless>=4.9.0
+onnxruntime>=1.18.0      # lipika script observer; model baked at src/ai/layer1_probe/models/ when present, VLM-only fallback when absent
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+boto3>=1.34.0

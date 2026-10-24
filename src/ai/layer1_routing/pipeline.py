@@ -16,8 +16,9 @@ Owner: engineer-a@idp-pilot
 Created: 2026-08-19 | Updated: 2026-08-20 (routing_mode dispatch, PageMetadata wiring)
 Deps: pydantic
 """
+import os
 import time
-from typing import Any
+from typing import Any, Optional
 
 from src.adapters.llm.base import LLMClient
 from src.ai.layer1_routing.inspect import inspect_page
@@ -33,6 +34,7 @@ from src.ai.layer2_conversion.scanned import (
     convert_handwritten_via_paddle,
     convert_scanned_page,
 )
+from src.ai.layer2_conversion.vlm_block_rollup import blocks_from_vlm_markdown
 from src.ai.output import write_document
 from src.ai.schemas.page import EngineTask, PageCapabilities, PageOutput, VLMAnalysis
 from src.ai.schemas.page_metadata import PageMetadata
@@ -51,6 +53,43 @@ _ROUTE_TO_ENGINE: dict[str, str] = {
     "skip":           "skip",
 }
 _ENGINE_TO_ROUTE: dict[str, str] = {v: k for k, v in _ROUTE_TO_ENGINE.items()}
+
+
+# ---------------------------------------------------------------------------
+# Internal: Layer 1.5 probe hook (default-OFF, in-process)
+# ---------------------------------------------------------------------------
+
+def _probe_enabled() -> bool:
+    return (os.getenv("IDP_ENABLE_PROBE") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _should_probe(profile, primary_engine: str) -> bool:
+    # digital/blank passthrough — never probe
+    if primary_engine in ("docling", "skip"):
+        return False
+    # probe iff Layer 1 could not confidently read the page as digital text
+    return (profile.is_scanned
+            or not profile.has_text
+            or profile.primary_script == "unknown")
+
+
+def _maybe_probe_route(profile, page_context: dict, primary_engine: str,
+                       page_number: int) -> Optional[Any]:
+    # The flag guard runs BEFORE importing anything from layer1_probe so prod
+    # (flag off) pays zero import cost and behaves byte-for-byte as today.
+    if not _probe_enabled():
+        return None
+    if not _should_probe(profile, primary_engine):
+        return None
+    try:
+        from src.ai.layer1_probe.inprocess import probe_page_route
+        from src.ai.layer1_probe.types import ProbeConfig
+        cfg = ProbeConfig.from_env()
+        render_dpi = page_context.get("render_dpi", cfg.page_image_dpi)
+        return probe_page_route(page_context, page_number, profile, cfg, render_dpi=render_dpi)
+    except Exception as exc:
+        logger.warning("pipeline.probe_hook_failed", page_number=page_number, error=str(exc))
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +120,7 @@ def _run_engine_task(
                 page_context.get("image_array"),
                 page_context["page_number"],
                 image_bytes=page_context.get("image_bytes"),
+                ocr_lang=page_context.get("ocr_lang"),
             )
 
         elif task.engine == "paddleocr_handwritten":
@@ -96,7 +136,14 @@ def _run_engine_task(
                 page_number=page_context.get("page_number"),
             )
             text, conf = llm_client.transcribe_handwriting(page_context["image_bytes"])
-            blocks = []
+            # The VLM returns full-page Markdown with no coordinates. Synthesize
+            # ordered Blocks from it so scanned pages that escalate to the VLM
+            # still produce usable DocumentIR (bbox=None; chunker handles that).
+            blocks = blocks_from_vlm_markdown(
+                text,
+                page_number=page_context["page_number"],
+                confidence=conf,
+            )
 
         elif task.engine == "skip":
             text, conf, blocks = "", 1.0, []
@@ -382,6 +429,17 @@ def process_page(
         metadata.add_capability(cap)
 
     primary_task = plan[0] if plan else None
+
+    # ── Layer 1.5 probe hook (default-OFF; refines scanned/undetected pages) ──
+    if primary_task is not None:
+        _choice = _maybe_probe_route(profile, page_context, primary_task.engine, page_number)
+        if _choice is not None:
+            primary_task = EngineTask(engine=_choice.route, priority=1,
+                                      reason=f"probe:{_choice.reason}")
+            plan = [primary_task]
+            if _choice.ocr_lang:
+                page_context["ocr_lang"] = _choice.ocr_lang
+
     planned_engines = [primary_task.engine] if primary_task else []
     metadata.set_routing(
         engine_plan=planned_engines,
@@ -448,8 +506,9 @@ def process_page(
         esc_markdown, esc_confidence, esc_latency, esc_blocks = _run_engine_task(
             esc_task, page_context, llm_client
         )
-        if esc_blocks:
-            page_blocks.extend(esc_blocks)
+        # NOTE: esc_blocks are attached to page_blocks only when the escalation
+        # result is actually ADOPTED (see the win/lose branches below), so the
+        # page's blocks stay consistent with the markdown that is kept.
 
         # Record escalation in metadata before re-merging
         metadata.add_escalation(
@@ -473,14 +532,23 @@ def process_page(
                 # VLM provides full-page transcription. When escalating because Paddle OCR failed
                 # or had low confidence (< 0.75), VLM's markdown takes precedence.
                 if esc_confidence >= confidence or not markdown.strip():
+                    # VLM wins: its markdown replaces the prior text, so the page's
+                    # blocks become the VLM-derived blocks (drop prior low-confidence
+                    # OCR blocks that belong to text we no longer keep).
                     markdown = esc_markdown
                     confidence = esc_confidence
+                    page_blocks = list(esc_blocks)
                     if escalation_engine not in engines_used:
                         engines_used.append(escalation_engine)
                 else:
+                    # VLM loses: keep the prior OCR markdown AND its blocks; do not
+                    # mix in VLM blocks that contradict the kept text.
                     if escalation_engine not in engines_used:
                         engines_used.append(escalation_engine)
             else:
+                # OCR-to-OCR escalation: merge text, and accumulate the new blocks.
+                if esc_blocks:
+                    page_blocks.extend(esc_blocks)
                 all_results = mergeable_results + [(esc_task, esc_markdown, esc_confidence, esc_latency)]
                 markdown, confidence, engines_used = _merge_results(all_results)
 

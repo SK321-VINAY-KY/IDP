@@ -13,6 +13,8 @@ pytest>=8.2
 pymupdf>=1.28.0
 pillow>=11.0.0
 numpy>=1.24.0
+onnxruntime>=1.18.0           # Layer 1.5 in-process probe (IDP_ENABLE_PROBE); idle when the flag is off
+opencv-python-headless>=4.9.0 # probe hook imports cv2 via imaging/cv_features
 paddleocr>=2.7.3
 paddlepaddle>=2.6.0; sys_platform == 'linux' or sys_platform == 'darwin'
 sqlalchemy>=2.0
@@ -31,4 +33,12 @@ google-generativeai>=0.8.0
 tenacity>=8.5.0
 networkx>=3.0
 pyyaml>=6.0
+
+# Query Bot hybrid retrieval (Phase 4). The Layer 3 web app imports
+# query_service -> evidence_retriever, which uses this model for semantic
+# evidence-span retrieval. Pinned model: all-MiniLM-L6-v2 @
+# 1110a243fdf4706b3f48f1d95db1a4f5529b4d41 (384-dim, ~90MB).
+# Without this, evidence_retriever degrades to keyword-only (feature silently off).
+# See DEPLOYMENT_NOTES_PHASE4.md for the model-weights-in-container caveat.
+sentence-transformers==3.3.1
 

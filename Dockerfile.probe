@@ -1,0 +1,25 @@
+# ==============================================================================
+# Dockerfile for IDP Layer 1.5 Probe (script / handwriting / table detection)
+# Build with the REPO ROOT as context (same convention as Dockerfile.layer1):
+#   docker build --provenance=false --platform linux/amd64 -f Dockerfile.probe -t <tag> .
+# ==============================================================================
+FROM public.ecr.aws/lambda/python:3.12
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/var/task \
+    IDP_PROBE_PAGE_IMAGE_DPI=144
+
+# libGL is not needed: opencv-python-headless
+WORKDIR /var/task
+COPY requirements-probe.txt .
+RUN pip install --no-cache-dir -r requirements-probe.txt
+
+# The lipika script ONNX ships via the COPY src/ below, at the module-relative
+# path src/ai/layer1_probe/models/ (.dockerignore passes *.onnx / *.json).
+# IDP_PROBE_ONNX_MODEL / IDP_PROBE_ONNX_LABELS are optional overrides, not set
+# by default — the observer resolves the baked model relative to its own module.
+
+COPY src/ /var/task/src/
+
+CMD [ "src.api.lambda_probe_handler.lambda_handler" ]

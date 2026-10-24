@@ -156,6 +156,7 @@ def _build_pages_for_pdf(pdf_path: Path, pdf_bytes: Optional[bytes] = None) -> L
                 "pdf_path": str(pdf_path),
                 "image_array": arr,
                 "image_bytes": png,
+                "render_dpi": RENDER_DPI,
             },
             "image_bytes": png,
         })
@@ -545,7 +546,7 @@ async def run_pipeline(
             raise HTTPException(status_code=400, detail="No documents to process")
 
     job_id = f"job_{uuid.uuid4().hex[:12]}"
-    _pipeline_jobs[job_id] = {
+    job = {
         "job_id": job_id,
         "status": "queued",
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -558,12 +559,15 @@ async def run_pipeline(
         "started_at": None,
         "finished_at": None,
         "wall_time_s": None,
+        "owner": user.username,
+        "current_document": None,
     }
+    _pipeline_jobs[job_id] = job
     _job_controls[job_id] = JobControl()
 
     thread = threading.Thread(
         target=_run_pipeline_job,
-        args=(job_id, targets, schema_path, schema_record, selected_strategy, job.get("owner")),
+        args=(job_id, targets, schema_path, schema_record, selected_strategy, user.username),
         daemon=True,
     )
     thread.start()
@@ -609,6 +613,7 @@ def _run_pipeline_job(
     selected_strategy = strategy or job.get("strategy") or getattr(a_settings, "layer3_strategy", "graph_memory_concurrent")
     job["strategy"] = selected_strategy
     job_owner = owner or job.get("owner") or "_admin"
+    job["owner"] = job_owner
     job["status"] = "running"
     job["started_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -706,7 +711,7 @@ def _run_pipeline_job(
                 logger.warning("pipeline.job.ir_persist_failed", pdf=pdf.name, error=str(_ir_exc))
 
             outputs = [r[0] for r in results] if results else []
-            total_chars = sum(len(o.markdown.strip()) for o in outputs)
+            total_chars = sum(len(str(getattr(o, "markdown", "") or "").strip()) for o in outputs)
             avg_conf = sum(o.confidence for o in outputs) / len(outputs) if outputs else 0.0
 
             pages_for_layer3 = [{"markdown": r[0].markdown, "page_number": r[0].page_number} for r in results] if results else []
@@ -723,7 +728,7 @@ def _run_pipeline_job(
                 parsed_pages = _parse_pages_from_markdown(existing_md_text)
                 if parsed_pages and any(p.get("markdown") for p in parsed_pages):
                     pages_for_layer3 = parsed_pages
-                    total_chars = sum(len(p.get("markdown", "").strip()) for p in parsed_pages)
+                    total_chars = sum(len(str((p.get("markdown") if isinstance(p, dict) else "") or "").strip()) for p in parsed_pages)
                     conf_match = re.search(r"Avg conf\s*:\s*([\d\.]+)", existing_md_text)
                     if conf_match:
                         try:
@@ -742,13 +747,21 @@ def _run_pipeline_job(
                 "document_type": schema_record.get("document_type") or (schema_record.get("schema") or {}).get("document_type"),
                 "pages": [
                     {
-                        "page_number": p.get("page_number", idx + 1),
+                        "page_number": p.get("page_number", idx + 1) if isinstance(p, dict) else idx + 1,
                         "engines_used": getattr(results[idx][0], "engines_used", ["paddleocr_printed"]) if (results and idx < len(results)) else ["paddleocr_printed"],
                         "capabilities": getattr(results[idx][0], "capabilities", ["has_printed_scan"]) if (results and idx < len(results)) else ["has_printed_scan"],
-                        "confidence": avg_conf if total_chars > 0 and (not results or not any(r[0].markdown.strip() for r in results)) else (results[idx][0].confidence if (results and idx < len(results)) else avg_conf),
+                        "confidence": avg_conf if total_chars > 0 and (not results or not any(str(getattr(r[0], "markdown", "") or "").strip() for r in results)) else (results[idx][0].confidence if (results and idx < len(results)) else avg_conf),
                         "escalated": getattr(results[idx][0], "escalated", False) if (results and idx < len(results)) else False,
                         "low_confidence": False if total_chars > 0 else (results[idx][0].low_confidence if (results and idx < len(results)) else True),
-                        "chars": len(p.get("markdown", "").strip()),
+                        "chars": (
+                            p.get("chars")
+                            if isinstance(p, dict) and isinstance(p.get("chars"), int)
+                            else (
+                                p.get("markdown")
+                                if isinstance(p, dict) and isinstance(p.get("markdown"), int)
+                                else len(str((p.get("markdown") if isinstance(p, dict) else "") or "").strip())
+                            )
+                        ),
                     }
                     for idx, p in enumerate(pages_for_layer3)
                 ],
@@ -863,7 +876,7 @@ def _run_pipeline_job(
                             llm_provider=a_settings.extraction_backend,
                             model_name=a_settings.bedrock_model_id if a_settings.extraction_backend == "bedrock" else (a_settings.sarvam_model_name if a_settings.extraction_backend == "sarvam" else a_settings.extraction_model_name),
                             processing_time_seconds=extract_elapsed,
-                            page_outputs=outputs if total_chars > 0 and results and any(r[0].markdown.strip() for r in results) else None,
+                            page_outputs=outputs if total_chars > 0 and results and any(str(getattr(r[0], "markdown", "") or "").strip() for r in results) else None,
                         )
                         if graph_meta and graph_meta.get("snapshot"):
                             save_document_graph(
@@ -1975,6 +1988,7 @@ async def ask_query_bot(
             or "bedrock"
         ).lower()
 
+        llm_error = None
         try:
             if backend == "bedrock":
                 bedrock_model_id = (
@@ -2081,6 +2095,7 @@ async def ask_query_bot(
             else:
                 pass
         except Exception as e:
+            llm_error = str(e)
             logger.warning("query_bot.llm_call_failed", error=str(e))
 
         # Deterministic extraction fallback from extracted_data if LLM was unavailable
@@ -2093,7 +2108,7 @@ async def ask_query_bot(
         except Exception:
             pass
 
-        return f"Error communicating with LLM: {str(e)}" if "e" in locals() else "Unable to answer: no response from primary LLM provider."
+        return f"Error communicating with LLM: {llm_error}" if llm_error else "Unable to answer: no response from primary LLM provider."
 
     try:
         answer = await run_in_threadpool(_query_llm)

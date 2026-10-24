@@ -1,0 +1,36 @@
+{
+  "labels": [
+    "bengali",
+    "devanagari",
+    "gujarati",
+    "gurmukhi",
+    "kannada",
+    "latin",
+    "malayalam",
+    "other",
+    "odia",
+    "other",
+    "arabic",
+    "other",
+    "tamil",
+    "telugu"
+  ],
+  "input_size": [
+    224,
+    224
+  ],
+  "mean": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "std": [
+    1.0,
+    1.0,
+    1.0
+  ],
+  "preprocessing": "single_forward",
+  "shipped_default": "fp32",
+  "source_model": "loopdesk-ai/lipika",
+  "exported_at": "2026-10-23T12:25:01.624623+00:00"
+}

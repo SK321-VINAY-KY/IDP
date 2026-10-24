@@ -61,6 +61,7 @@ def _invoke_paddle_lambda(
     page_number: int,
     mode: str,
     image_bytes: Optional[bytes] = None,
+    ocr_lang: Optional[str] = None,
 ) -> Optional[tuple[str, float, list[Block]]]:
     """
     Invokes the dedicated AWS Lambda PaddleOCR engine (printed or handwritten).
@@ -105,6 +106,10 @@ def _invoke_paddle_lambda(
             "image_base64": b64_str,
             "page_number": page_number,
         }
+        # Only add ocr_lang when truthy so the payload is byte-identical to today
+        # when the probe is off or yields no lang.
+        if ocr_lang:
+            payload["ocr_lang"] = ocr_lang
 
         resp = client.invoke(
             FunctionName=fn_name,
@@ -231,6 +236,7 @@ def _ocr_convert(
     page_number: int,
     mode: str,
     image_bytes: Optional[bytes] = None,
+    ocr_lang: Optional[str] = None,
 ) -> tuple[str, float, list[Block]]:
     """
     Common execution path for PaddleOCR conversion (printed or handwritten).
@@ -241,7 +247,7 @@ def _ocr_convert(
 
     # 1. Try AWS Lambda PaddleOCR offload first if preferred
     if getattr(settings, "paddle_prefer_lambda", True):
-        lambda_result = _invoke_paddle_lambda(image_array, page_number, mode, image_bytes)
+        lambda_result = _invoke_paddle_lambda(image_array, page_number, mode, image_bytes, ocr_lang=ocr_lang)
         if lambda_result is not None:
             return lambda_result
 
@@ -283,7 +289,7 @@ def _ocr_convert(
             fallback="lambda",
         )
         # If lambda was not preferred or failed initially, attempt Lambda invocation now
-        lambda_result = _invoke_paddle_lambda(image_array, page_number, mode, image_bytes)
+        lambda_result = _invoke_paddle_lambda(image_array, page_number, mode, image_bytes, ocr_lang=ocr_lang)
         if lambda_result is not None:
             return lambda_result
 
@@ -302,7 +308,7 @@ def _ocr_convert(
             page_number=page_number,
             error=str(exc),
         )
-        lambda_result = _invoke_paddle_lambda(image_array, page_number, mode, image_bytes)
+        lambda_result = _invoke_paddle_lambda(image_array, page_number, mode, image_bytes, ocr_lang=ocr_lang)
         if lambda_result is not None:
             return lambda_result
 
@@ -323,12 +329,14 @@ def convert_scanned_page(
     image_array: Any,
     page_number: int,
     image_bytes: Optional[bytes] = None,
+    ocr_lang: Optional[str] = None,
 ) -> tuple[str, float, list[Block]]:
     """
     Converts a single scanned/printed page image (numpy array or bytes) to markdown-ish
     text via PaddleOCR. Returns (text, avg_confidence, blocks).
     """
-    return _ocr_convert(image_array, page_number, mode="printed", image_bytes=image_bytes)
+    return _ocr_convert(image_array, page_number, mode="printed", image_bytes=image_bytes,
+                        ocr_lang=ocr_lang)
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +347,7 @@ def convert_handwritten_via_paddle(
     image_array: Any,
     page_number: int,
     image_bytes: Optional[bytes] = None,
+    ocr_lang: Optional[str] = None,
 ) -> tuple[str, float, list[Block]]:
     """
     Converts a handwritten page image (numpy array or bytes) to text via PaddleOCR
@@ -349,7 +358,8 @@ def convert_handwritten_via_paddle(
 
     Returns (text, avg_confidence, blocks) with the same contract as convert_scanned_page().
     """
-    return _ocr_convert(image_array, page_number, mode="handwritten", image_bytes=image_bytes)
+    return _ocr_convert(image_array, page_number, mode="handwritten", image_bytes=image_bytes,
+                        ocr_lang=ocr_lang)
 
 
 
