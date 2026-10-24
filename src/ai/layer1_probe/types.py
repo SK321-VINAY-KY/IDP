@@ -81,6 +81,10 @@ class ProbeConfig:
     vlm_enabled: bool = True
     min_script_conf: float = 0.60
 
+    # --- handwriting (flag-gated; re-added in Phase 2 item 4) ---
+    vlm_for_handwriting: bool = True     # IDP_PROBE_VLM_FOR_HANDWRITING
+    hw_threshold: float = 0.30           # latin page routes to handwritten engine at/above this
+
     # --- models ---
     onnx_model_path: Optional[str] = None
     onnx_labels_path: Optional[str] = None
@@ -105,6 +109,8 @@ class ProbeConfig:
         c.max_samples = int(_env("MAX_SAMPLES", str(c.max_samples)))
         c.vlm_enabled = _env("VLM_ENABLED", "1") == "1"
         c.min_script_conf = float(_env("MIN_SCRIPT_CONF", str(c.min_script_conf)))
+        c.vlm_for_handwriting = _env("VLM_FOR_HANDWRITING", "1") == "1"
+        c.hw_threshold = float(_env("HW_THRESHOLD", str(c.hw_threshold)))
         c.onnx_model_path = os.environ.get("IDP_PROBE_ONNX_MODEL") or None
         c.onnx_labels_path = os.environ.get("IDP_PROBE_ONNX_LABELS") or None
         c.vlm_model_id = (
@@ -129,6 +135,7 @@ class SampleObs(BaseModel):
     script_confidence: float = 0.0
     mixed_scripts: bool = False
     has_table: Optional[bool] = None
+    handwriting_prob: Optional[float] = None
     source: str = "none"          # onnx | vlm | none
 
 
@@ -136,6 +143,7 @@ class DocPrior(BaseModel):
     script: str = "unknown"
     script_confidence: float = 0.0
     mixed_scripts: bool = False
+    handwriting_prob: Optional[float] = None
     heterogeneous: bool = False   # samples disagreed -> per-page nearest-sample inheritance matters
     source: str = "none"
     sampled_pages: List[int] = Field(default_factory=list)
@@ -161,6 +169,7 @@ class PageProbe(BaseModel):
     script_confidence: float = 0.0
     script_source: str = "none"   # sample | prior | embedded | none
     mixed_scripts: bool = False
+    handwriting_prob: Optional[float] = None
     has_table: bool = False
     table_confidence: float = 0.0
     is_blank: bool = False

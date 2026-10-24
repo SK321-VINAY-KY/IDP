@@ -49,10 +49,13 @@ def aggregate_doc(obs: List[SampleObs]) -> DocPrior:
     share = weight[script] / sum(weight.values())
     conf = round(share * (sum(o.script_confidence for o in agreeing) / len(agreeing)), 3)
     srcs = sorted({o.source for o in obs})
+    hw_vals = [o.handwriting_prob for o in obs if o.handwriting_prob is not None]
+    hw = round(sum(hw_vals) / len(hw_vals), 3) if hw_vals else None
     return DocPrior(
         script=script,
         script_confidence=conf,
         mixed_scripts=any(o.mixed_scripts for o in obs),
+        handwriting_prob=hw,
         heterogeneous=samples_disagree(obs),
         source="+".join(srcs) or "none",
         sampled_pages=[o.page_number for o in obs],

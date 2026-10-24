@@ -6,14 +6,17 @@ Deps: stdlib
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from src.ai.layer1_probe.types import (
     ProbeConfig, RouteChoice, SCRIPT_TO_PADDLE_LANG,
-    ROUTE_PRINTED, ROUTE_SKIP, ROUTE_VLM,
+    ROUTE_HANDWRITTEN, ROUTE_PRINTED, ROUTE_SKIP, ROUTE_VLM,
 )
 
 
 def decide_route(*, script: str, script_conf: float, mixed: bool,
-                 is_blank: bool, has_table: bool, cfg: ProbeConfig) -> RouteChoice:
+                 is_blank: bool, has_table: bool, cfg: ProbeConfig,
+                 handwriting_prob: Optional[float] = None) -> RouteChoice:
     if is_blank:
         return RouteChoice(route=ROUTE_SKIP, reason="blank_page")
     if script in ("unknown", "other") or script_conf < cfg.min_script_conf:
@@ -21,6 +24,9 @@ def decide_route(*, script: str, script_conf: float, mixed: bool,
     if mixed:
         return RouteChoice(route=ROUTE_VLM, reason="mixed_scripts")
     if script == "latin":
+        if handwriting_prob is not None and handwriting_prob >= cfg.hw_threshold:
+            return RouteChoice(route=ROUTE_HANDWRITTEN, ocr_lang=SCRIPT_TO_PADDLE_LANG["latin"],
+                               use_structure=has_table, reason="latin_handwritten")
         return RouteChoice(route=ROUTE_PRINTED, ocr_lang=SCRIPT_TO_PADDLE_LANG["latin"],
                            use_structure=has_table, reason="latin_print")
     # Future: dedicated per-script OCR (Telugu/Devanagari/Tamil/...). For now every

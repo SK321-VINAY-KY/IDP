@@ -111,14 +111,15 @@ class StubS3:
 
 
 class StubVLM:
-    def __init__(self, script="latin", conf=0.95, table=False, per_page=None):
+    def __init__(self, script="latin", conf=0.95, table=False, per_page=None, hw=None):
         self.script, self.conf, self.table, self.per_page = script, conf, table, per_page or {}
+        self.hw = hw
         self.calls = []
     def observe(self, pn, jpeg):
         self.calls.append(pn)
         s, c = self.per_page.get(pn, (self.script, self.conf))
         return SampleObs(page_number=pn, script=s, script_confidence=c,
-                         has_table=self.table, source="vlm")
+                         has_table=self.table, handwriting_prob=self.hw, source="vlm")
 
 
 def _cfg(**kw):
@@ -354,7 +355,81 @@ def test_onnx_classifier_contract(tmp_path):
     rgb = np.array(_text_page(LINES)); g_ = imaging.analysis_gray(rgb, 150, 100)
     obs = clf.observe(1, g_, imaging.ink_mask(g_), rgb=rgb)
     assert obs.script == "devanagari" and obs.source == "onnx"
-    assert "hw" + "_prob" not in SampleObs.model_fields  # no handwriting field on the contract
+    assert "hw" + "_prob" not in SampleObs.model_fields  # no abbreviated hw field on the contract
+
+
+# ---------------------------------------------------------------- handwriting flag (ITEM 4)
+def _onnx_peaking(tmp_path, labels, peak_index):
+    """Injected OnnxScriptClassifier whose fake session peaks on labels[peak_index]."""
+    from src.ai.layer1_probe.script_classifier import OnnxScriptClassifier
+    meta = {"labels": labels, "input_size": [224, 224], "mean": [0, 0, 0], "std": [1, 1, 1],
+            "preprocessing": "single_forward", "shipped_default": "fp32"}
+    lp = tmp_path / "hw_labels.json"
+    lp.write_text(json.dumps(meta))
+
+    class FakeSession:
+        def get_inputs(self):
+            class _I:
+                name = "pixel_values"
+            return [_I()]
+        def run(self, _out, _feeds):
+            logits = np.zeros((1, len(labels)), dtype=np.float32)
+            logits[0, peak_index] = 9.0
+            return [logits]
+
+    return OnnxScriptClassifier(str(tmp_path / "x.onnx"), str(lp), session=FakeSession())
+
+
+_HW_LABELS = ["latin", "devanagari", "telugu", "other"]
+
+
+def test_hw_flag_on_confident_latin_handwritten_routes_to_handwritten(tmp_path):
+    pdf = _pdf_from_images([_text_page(LINES)])
+    onnx = _onnx_peaking(tmp_path, _HW_LABELS, 0)      # confident latin
+    vlm = StubVLM(hw=0.9)                               # VLM reports handwriting
+    out = probe_document(pdf, document_id="d.pdf", s3_bucket="b", s3_key="k.pdf", pages_in=None,
+                         cfg=_cfg(vlm_for_handwriting=True), s3=StubS3(), vlm=vlm, onnx=onnx)
+    pg = out["pages"][0]
+    assert pg["route"] == "paddleocr_handwritten"
+    assert vlm.calls                                   # the extra VLM call happened
+
+
+def test_hw_flag_off_confident_latin_skips_vlm_and_routes_printed(tmp_path):
+    pdf = _pdf_from_images([_text_page(LINES)])
+    onnx = _onnx_peaking(tmp_path, _HW_LABELS, 0)
+    vlm = StubVLM(hw=0.9)
+    out = probe_document(pdf, document_id="d.pdf", s3_bucket="b", s3_key="k.pdf", pages_in=None,
+                         cfg=_cfg(vlm_for_handwriting=False), s3=StubS3(), vlm=vlm, onnx=onnx)
+    pg = out["pages"][0]
+    assert pg["route"] == "paddleocr_printed"
+    assert vlm.calls == []                              # no extra VLM call for confident latin
+
+
+def test_hw_flag_non_latin_confident_never_triggers_vlm_for_handwriting(tmp_path):
+    pdf = _pdf_from_images([_text_page(LINES)])
+    onnx = _onnx_peaking(tmp_path, _HW_LABELS, 1)       # confident devanagari
+    vlm = StubVLM(script="devanagari", hw=0.9)
+    out = probe_document(pdf, document_id="d.pdf", s3_bucket="b", s3_key="k.pdf", pages_in=None,
+                         cfg=_cfg(vlm_for_handwriting=True), s3=StubS3(), vlm=vlm, onnx=onnx)
+    pg = out["pages"][0]
+    assert pg["route"] == "vlm_transcribe"
+    assert vlm.calls == []                              # confident non-latin skips the VLM
+
+
+def test_decide_route_handwriting_param_optional_and_gated():
+    c = _cfg()
+    # no handwriting_prob -> byte-identical to today
+    base = decide_route(script="latin", script_conf=.9, mixed=False, is_blank=False,
+                        has_table=False, cfg=c)
+    assert (base.route, base.ocr_lang) == ("paddleocr_printed", "en")
+    # latin + handwriting above threshold -> handwritten engine
+    hw = decide_route(script="latin", script_conf=.9, mixed=False, is_blank=False,
+                      has_table=False, cfg=c, handwriting_prob=0.9)
+    assert hw.route == "paddleocr_handwritten" and hw.ocr_lang == "en"
+    # below threshold stays printed
+    lo = decide_route(script="latin", script_conf=.9, mixed=False, is_blank=False,
+                      has_table=False, cfg=c, handwriting_prob=0.1)
+    assert lo.route == "paddleocr_printed"
 
 
 # ---------------------------------------------------------------- handler

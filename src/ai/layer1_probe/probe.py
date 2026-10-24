@@ -168,6 +168,16 @@ def probe_document(
             stats["vlm_calls"] += 1
             if v is not None:
                 obs = v
+        elif (cfg.vlm_for_handwriting and obs is not None and obs.script == "latin"
+              and obs.script_confidence >= cfg.onnx_min_conf and not obs.mixed_scripts
+              and vlm is not None and cfg.vlm_enabled):
+            # Confident-latin pages normally SKIP the VLM; when the handwriting flag is
+            # on, make ONE extra call and adopt ONLY its handwriting_prob (keep ONNX
+            # script/confidence) so latin handwritten pages can route correctly.
+            v = vlm.observe(pn, jpeg)
+            stats["vlm_calls"] += 1
+            if v is not None:
+                obs.handwriting_prob = v.handwriting_prob
         if obs is None:
             obs = SampleObs(page_number=pn, source="none")
         return obs
@@ -206,25 +216,30 @@ def probe_document(
     def _page_values(pn: int):
         samp = nearest_sample(pn, prior.samples)
         if prior.heterogeneous and samp is not None:
+            hw = samp.handwriting_prob if samp.handwriting_prob is not None else prior.handwriting_prob
             return (samp.script, samp.script_confidence,
-                    samp.mixed_scripts, samp.source, samp)
+                    samp.mixed_scripts, samp.source, samp, hw)
+        hw = prior.handwriting_prob
+        if hw is None and samp is not None:
+            hw = samp.handwriting_prob
         return (prior.script, prior.script_confidence,
-                prior.mixed_scripts, prior.source, samp)
+                prior.mixed_scripts, prior.source, samp, hw)
 
     for pn in nonblank:
         f = feats[pn]
-        script, sconf, mixed, hsrc, samp = _page_values(pn)
+        script, sconf, mixed, hsrc, samp, hw = _page_values(pn)
         has_table = bool(f["table"])
         if pn in sampled and samp is not None and samp.page_number == pn and samp.has_table:
             has_table = True
         choice = decide_route(script=script, script_conf=sconf, mixed=mixed,
-                              is_blank=False, has_table=has_table, cfg=cfg)
+                              is_blank=False, has_table=has_table, cfg=cfg,
+                              handwriting_prob=hw)
         results[pn] = PageProbe(
             page_number=pn, probed=True, status="ok", route=choice.route, ocr_lang=choice.ocr_lang,
             use_structure=choice.use_structure, route_reason=choice.reason,
             script=script, script_confidence=sconf,
             script_source="sample" if pn in sampled else "prior",
-            mixed_scripts=mixed, has_table=has_table, table_confidence=f["tconf"],
+            mixed_scripts=mixed, handwriting_prob=hw, has_table=has_table, table_confidence=f["tconf"],
             is_blank=False, ink_ratio=round(f["ink"], 5),
             image_s3_bucket=img_bucket if image_keys.get(pn) else None,
             image_s3_key=image_keys.get(pn), image_width=f["w"], image_height=f["h"],
@@ -237,13 +252,15 @@ def probe_document(
                                     ink_ratio=round(feats[pn]["ink"], 5))
 
     for pn in timed_out:                                  # budget ran out: prior-only routing
-        script, sconf, mixed, hsrc, _ = _page_values(pn)
+        script, sconf, mixed, hsrc, _, hw = _page_values(pn)
         choice = decide_route(script=script, script_conf=sconf, mixed=mixed,
-                              is_blank=False, has_table=False, cfg=cfg)
+                              is_blank=False, has_table=False, cfg=cfg,
+                              handwriting_prob=hw)
         results[pn] = PageProbe(page_number=pn, probed=False, status="skipped_timeout",
                                 route=choice.route, ocr_lang=choice.ocr_lang,
                                 route_reason=f"timeout_prior:{choice.reason}",
-                                script=script, script_confidence=sconf, script_source="prior")
+                                script=script, script_confidence=sconf, handwriting_prob=hw,
+                                script_source="prior")
 
     pages_out = [results[pn].model_dump() for pn in sorted(results)]
     stats.update(elapsed_s=round(time.monotonic() - t0, 2), probed=len(feats),

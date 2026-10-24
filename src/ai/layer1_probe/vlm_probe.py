@@ -25,6 +25,7 @@ _PROMPT = (
     "gurmukhi, kannada, malayalam, odia, telugu, arabic, cyrillic, greek, thai, hebrew, chinese, "
     'japanese, korean, other>, "script_confidence": <0-1>, '
     '"mixed_scripts": <true if a second writing system covers more than ~20% of the text>, '
+    '"handwriting_fraction": <0-1, fraction of text that is handwritten>, '
     '"has_table": <true if a table/grid of rows and columns is present>}\n'
     "Ignore logos, stamps and signatures when judging script."
 )
@@ -99,6 +100,7 @@ class BedrockScriptProbe:
             script=_norm_script(data.get("script")),
             script_confidence=_clip01(data.get("script_confidence"), 0.5),
             mixed_scripts=bool(data.get("mixed_scripts", False)),
+            handwriting_prob=_clip01(data.get("handwriting_fraction"), 0.0),
             has_table=bool(data.get("has_table", False)),
             source="vlm",
         )
