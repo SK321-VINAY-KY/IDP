@@ -108,6 +108,14 @@ class Settings(BaseSettings):
     # --- PostgreSQL Storage ---
     database_url: str = "postgresql://postgres:password@localhost:5432/idp"
 
+    # --- S3 Document Storage ---
+    # Bucket that holds uploaded source PDFs. When set, the web app reads/writes
+    # documents from S3 instead of the local dataset/ folder.
+    s3_bucket: str = ""
+    s3_region: str = "ap-south-1"
+    # Prefix under which source documents live (matches the existing bucket layout).
+    s3_documents_prefix: str = "documents"
+
     @field_validator("page_concurrency_limit")
     @classmethod
     def _validate_page_concurrency_limit(cls, v: int) -> int:
@@ -234,6 +242,26 @@ class Settings(BaseSettings):
                 env_db = os.getenv("IDP_DATABASE_URL") or os.getenv("DATABASE_URL")
                 if env_db:
                     data["database_url"] = env_db
+            if not data.get("s3_bucket"):
+                data["s3_bucket"] = (
+                    os.getenv("IDP_S3_BUCKET")
+                    or os.getenv("S3_BUCKET_NAME")
+                    or os.getenv("S3_BUCKET")
+                    or ""
+                )
+            if not data.get("s3_region"):
+                data["s3_region"] = (
+                    os.getenv("IDP_S3_REGION")
+                    or os.getenv("AWS_REGION")
+                    or os.getenv("AWS_DEFAULT_REGION")
+                    or "ap-south-1"
+                )
+            if not data.get("s3_documents_prefix"):
+                data["s3_documents_prefix"] = (
+                    os.getenv("IDP_S3_DOCUMENTS_PREFIX")
+                    or os.getenv("S3_PREFIX")
+                    or "documents"
+                )
             env_routing = os.getenv("IDP_ROUTING_MODE") or os.getenv("ROUTING_MODE")
             if env_routing:
                 data["routing_mode"] = env_routing.strip()
@@ -311,6 +339,9 @@ class Settings(BaseSettings):
     handwriting_pct_handwritten_floor: float = 0.30
     vlm_direct_extraction_confidence_threshold: float = 0.85
     enable_vlm_direct: bool = False  # Disabled: pages route to Paddle first; VLM is only invoked on failure or confidence < 0.75
+    # Pilot flag (env IDP_PROBE_ENABLED): when True, process_document drives routing
+    # from the in-process probe. OFF by default -> behaviour byte-identical to today.
+    probe_enabled: bool = False
 
     # --- Escalation ladder ---
     # Pages first run OCR (PaddleOCR). If PaddleOCR fails or confidence < 0.75,

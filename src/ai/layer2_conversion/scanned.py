@@ -27,8 +27,8 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Per-mode singleton cache for local PaddleOCR engines
-_paddle_engines: dict[str, Any] = {}
+# Per-(mode, lang) singleton cache for local PaddleOCR engines
+_paddle_engines: dict[tuple[str, str], Any] = {}
 _lambda_client: Any = None
 
 
@@ -171,18 +171,23 @@ def _invoke_paddle_lambda(
         return None
 
 
-def _get_paddle_engine(mode: str = "printed") -> Any:
+def _get_paddle_engine(mode: str = "printed", lang: str = "en") -> Any:
     """
-    Return a lazily-loaded PaddleOCR engine for the given mode.
+    Return a lazily-loaded PaddleOCR engine for the given mode and language.
 
     mode="printed"     — default settings, det_db_thresh=0.3 (PaddleOCR default)
     mode="handwritten" — lower det_db_thresh (from settings) so thinner/more
                          irregular handwriting strokes are not missed at detection;
                          use_angle_cls=True kept because handwriting line angles
                          are less predictable than printed scans.
+
+    Engines are cached per (mode, lang) so a document whose probe yields a
+    non-default ocr_lang does not thrash a single shared engine. Today only
+    latin reaches Paddle, so lang is "en" in practice.
     """
     global _paddle_engines
-    if mode not in _paddle_engines:
+    key = (mode, lang)
+    if key not in _paddle_engines:
         from paddleocr import PaddleOCR
 
         if mode == "handwritten":
@@ -191,7 +196,7 @@ def _get_paddle_engine(mode: str = "printed") -> Any:
             # enable_mkldnn=False avoids an oneDNN ConvertPirAttribute crash on
             # CPUs without full oneDNN support.
             engine = PaddleOCR(
-                lang="en",
+                lang=lang,
                 device="cpu",
                 enable_mkldnn=False,
                 use_textline_orientation=True,
@@ -200,21 +205,22 @@ def _get_paddle_engine(mode: str = "printed") -> Any:
             logger.info(
                 "layer2.paddle_engine_loaded",
                 mode=mode,
+                lang=lang,
                 text_det_thresh=settings.paddle_handwriting_det_db_thresh,
                 device="cpu",
             )
         else:  # "printed" — keep all PaddleOCR defaults
             engine = PaddleOCR(
-                lang="en",
+                lang=lang,
                 device="cpu",
                 enable_mkldnn=False,
                 use_textline_orientation=True,
             )
-            logger.info("layer2.paddle_engine_loaded", mode=mode, device="cpu")
+            logger.info("layer2.paddle_engine_loaded", mode=mode, lang=lang, device="cpu")
 
-        _paddle_engines[mode] = engine
+        _paddle_engines[key] = engine
 
-    return _paddle_engines[mode]
+    return _paddle_engines[key]
 
 
 # _bbox_from_quad and _rollup_confidence_with_blocks are imported from
@@ -261,7 +267,7 @@ def _ocr_convert(
 
     # 2. In-process PaddleOCR engine (local execution for dev/test)
     try:
-        engine = _get_paddle_engine(mode=mode)
+        engine = _get_paddle_engine(mode=mode, lang=(ocr_lang or "en"))
         result = engine.ocr(image_array)
         lines, word_confidences, blocks = _rollup_confidence_with_blocks(
             result, page_number=page_number, engine_name=engine_name

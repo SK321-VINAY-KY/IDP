@@ -74,11 +74,26 @@ class BedrockScriptProbe:
             )
         self.client = client
 
+    @staticmethod
+    def _image_format(data: bytes) -> str:
+        """Detect the Converse image format from the leading magic bytes.
+
+        PNG (\\x89PNG) -> 'png'; JPEG (\\xff\\xd8\\xff) -> 'jpeg'; anything else or
+        ambiguous -> 'jpeg' (preserves the Lambda path, which feeds real JPEG).
+        Raw bytes are passed through unchanged (no decode/re-encode).
+        """
+        if data[:4] == b"\x89PNG":
+            return "png"
+        if data[:3] == b"\xff\xd8\xff":
+            return "jpeg"
+        return "jpeg"
+
     def _call(self, jpeg: bytes) -> str:
+        fmt = self._image_format(jpeg)
         resp = self.client.converse(
             modelId=self.model_id,
             messages=[{"role": "user", "content": [
-                {"image": {"format": "jpeg", "source": {"bytes": jpeg}}},
+                {"image": {"format": fmt, "source": {"bytes": jpeg}}},
                 {"text": _PROMPT},
             ]}],
             inferenceConfig={"maxTokens": 300, "temperature": 0.0},
