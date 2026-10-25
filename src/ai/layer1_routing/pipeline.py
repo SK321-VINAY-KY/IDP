@@ -73,6 +73,22 @@ def _should_probe(profile, primary_engine: str) -> bool:
             or profile.primary_script == "unknown")
 
 
+def _build_probe_deps(cfg) -> tuple[Any, Any]:
+    """Build the (vlm, onnx) dependencies for the per-document probe.
+
+    Kept as a module-level seam so tests can monkeypatch it to inject a StubVLM
+    and a fake/None onnx observer, avoiding any real Bedrock/boto/onnx load.
+    """
+    from src.ai.layer1_probe import inprocess
+    from src.ai.layer1_probe.vlm_probe import BedrockScriptProbe
+
+    vlm = None
+    if cfg.vlm_enabled and cfg.vlm_model_id:
+        vlm = BedrockScriptProbe(model_id=cfg.vlm_model_id, region=cfg.vlm_region)
+    onnx = inprocess._get_observer()
+    return vlm, onnx
+
+
 def _maybe_probe_route(profile, page_context: dict, primary_engine: str,
                        page_number: int) -> Optional[Any]:
     # The flag guard runs BEFORE importing anything from layer1_probe so prod
@@ -430,8 +446,19 @@ def process_page(
 
     primary_task = plan[0] if plan else None
 
-    # ── Layer 1.5 probe hook (default-OFF; refines scanned/undetected pages) ──
-    if primary_task is not None:
+    # ── Layer 1.5 probe seam ─────────────────────────────────────────────────
+    # Per-document probe (process_document) wins: when a 'probe' decision was
+    # attached upstream, consume it directly and SKIP the dormant per-page hook.
+    if "probe" in page_context:
+        _probe = page_context["probe"]
+        primary_task = EngineTask(engine=_probe["route"], priority=1,
+                                  reason=f"probe:{_probe.get('route_reason', '')}")
+        plan = [primary_task]
+        if _probe.get("ocr_lang"):
+            page_context["ocr_lang"] = _probe["ocr_lang"]
+        metadata.extra["probe"] = dict(_probe)
+    elif primary_task is not None:
+        # Dormant per-page hook (default-OFF; refines scanned/undetected pages).
         _choice = _maybe_probe_route(profile, page_context, primary_task.engine, page_number)
         if _choice is not None:
             primary_task = EngineTask(engine=_choice.route, priority=1,
@@ -604,6 +631,78 @@ def process_page(
 # Public: process a whole document
 # ---------------------------------------------------------------------------
 
+def _run_document_probe(pages: list[dict], document_id: str = "") -> None:
+    """Run the per-document in-process probe ONCE and attach decisions.
+
+    Gated by the caller on settings.probe_enabled. Computes which pages need
+    probing (reuse probe.needs_probe over the Layer-1 profile + single-engine
+    route), gathers their in-memory images, and runs probe.probe_document_images
+    a single time. On success, attaches page_data['context']['probe'] to each
+    routable probed page (status != 'not_needed'); pages the probe marks
+    not_needed get NO 'probe' key. On ANY failure, logs 'probe.failed' and
+    attaches nothing so every page falls back to today's routing. Never renders
+    pages again and never touches S3; never aborts the document.
+    """
+    from src.ai.layer1_probe import probe as _probe
+    from src.ai.layer1_probe.types import ProbeConfig
+
+    cfg = ProbeConfig.from_env()
+
+    images: dict[int, Any] = {}
+    page_numbers: list[int] = []
+    profiles: dict[int, Any] = {}
+    page_by_number: dict[int, dict] = {}
+
+    for page_data in pages:
+        pn = page_data["page_number"]
+        profile = inspect_page(page_data["page"], pn)
+        # route_from_profile returns Layer-1 vocab (digital/scanned/skip/None);
+        # needs_probe expects the engine-name vocab the probe uses, so translate.
+        _l1_route = route_from_profile(profile)
+        given_route = _ROUTE_TO_ENGINE.get(_l1_route, _l1_route) if _l1_route else None
+        if not _probe.needs_probe(profile.model_dump(), given_route, cfg):
+            continue
+        context = page_data.get("context", {})
+        img = context.get("image_array")
+        if img is None:
+            img = context.get("image_bytes") or page_data.get("image_bytes")
+        if img is None:
+            continue
+        images[pn] = img
+        page_numbers.append(pn)
+        profiles[pn] = profile.model_dump()
+        page_by_number[pn] = page_data
+
+    if not page_numbers:
+        return
+
+    try:
+        vlm, onnx = _build_probe_deps(cfg)
+        decisions = _probe.probe_document_images(
+            images, page_numbers, profiles=profiles, cfg=cfg, vlm=vlm, onnx=onnx,
+        )
+    except Exception as exc:
+        logger.error("probe.failed", document_id=document_id, error=str(exc))
+        return
+
+    for pn, pp in decisions.items():
+        if pp.status == "not_needed":
+            continue
+        page_data = page_by_number.get(pn)
+        if page_data is None:
+            continue
+        page_data.setdefault("context", {})["probe"] = {
+            "route": pp.route,
+            "ocr_lang": pp.ocr_lang,
+            "script": pp.script,
+            "script_confidence": pp.script_confidence,
+            "handwriting_prob": pp.handwriting_prob,
+            "has_table": pp.has_table,
+            "is_blank": pp.is_blank,
+            "route_reason": pp.route_reason,
+        }
+
+
 def process_document(
     pages: list[dict],
     llm_client: LLMClient,
@@ -630,6 +729,16 @@ def process_document(
     """
     results: list[tuple[PageOutput, PageMetadata]] = []
     concurrency_limit = max(1, getattr(settings, "page_concurrency_limit", 25))
+
+    # ── Layer 1.5 per-document probe (flag-guarded, default-OFF) ─────────────
+    # When settings.probe_enabled and at least one page needs probing, run the
+    # in-process probe ONCE over the already-supplied page images. Any failure
+    # logs 'probe.failed' and falls back to today's routing for every page;
+    # successful decisions are attached as page_data['context']['probe'] on the
+    # routable probed pages only. With the flag OFF this block is a no-op and the
+    # pipeline is byte-identical to before.
+    if settings.probe_enabled:
+        _run_document_probe(pages, document_id)
 
     if len(pages) <= 1 or concurrency_limit == 1:
         for page_data in pages:
