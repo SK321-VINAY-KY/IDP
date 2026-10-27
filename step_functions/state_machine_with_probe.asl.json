@@ -1,0 +1,257 @@
+{
+  "Comment": "IDP orchestrator: Layer 1 manifest -> Probe (script/handwriting/table, page images to S3) -> Map of OCR engines",
+  "StartAt": "ProbeDocument",
+  "States": {
+    "ProbeDocument": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PROBE_LAMBDA_ARN}",
+        "Payload.$": "$"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.probe_error",
+          "Next": "ProbeFallbackToLayer1Routes"
+        }
+      ],
+      "ResultSelector": {
+        "pages.$": "$.Payload.body.pages",
+        "doc_prior.$": "$.Payload.body.doc_prior"
+      },
+      "ResultPath": "$.probe",
+      "Next": "UseProbePages"
+    },
+    "UseProbePages": {
+      "Type": "Pass",
+      "Parameters": {
+        "document_id.$": "$.document_id",
+        "s3_bucket.$": "$.s3_bucket",
+        "s3_key.$": "$.s3_key",
+        "pages.$": "$.probe.pages"
+      },
+      "Next": "ProcessDocumentPages"
+    },
+    "ProbeFallbackToLayer1Routes": {
+      "Type": "Pass",
+      "Comment": "Probe failed: continue with Layer 1 routes unchanged (input already has $.pages)",
+      "Next": "ProcessDocumentPages"
+    },
+    "ProcessDocumentPages": {
+      "Type": "Map",
+      "ItemsPath": "$.pages",
+      "ItemSelector": {
+        "document_id.$": "$.document_id",
+        "s3_bucket.$": "$.s3_bucket",
+        "s3_key.$": "$.s3_key",
+        "page_number.$": "$$.Map.Item.Value.page_number",
+        "route.$": "$$.Map.Item.Value.route",
+        "page.$": "$$.Map.Item.Value"
+      },
+      "MaxConcurrency": 10,
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "RouteEngineChoice",
+        "States": {
+          "RouteEngineChoice": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.route",
+                "StringEquals": "skip",
+                "Next": "SkipPage"
+              },
+              {
+                "Variable": "$.route",
+                "StringEquals": "docling",
+                "Next": "InvokeDocling"
+              },
+              {
+                "Variable": "$.route",
+                "StringEquals": "paddleocr_handwritten",
+                "Next": "InvokePaddleHandwritten"
+              },
+              {
+                "Variable": "$.route",
+                "StringEquals": "vlm_transcribe",
+                "Next": "InvokeVlmTranscribe"
+              }
+            ],
+            "Default": "InvokePaddlePrinted"
+          },
+          "InvokeDocling": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${DOCLING_LAMBDA_ARN}",
+              "Payload": {
+                "document_id.$": "$.document_id",
+                "s3_bucket.$": "$.s3_bucket",
+                "s3_key.$": "$.s3_key",
+                "page_number.$": "$.page_number",
+                "engine": "docling",
+                "page.$": "$.page"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "ResultSelector": {
+              "result.$": "$.Payload.body.results[0]"
+            },
+            "OutputPath": "$.result",
+            "End": true
+          },
+          "InvokePaddlePrinted": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${PADDLE_PRINTED_LAMBDA_ARN}",
+              "Payload": {
+                "document_id.$": "$.document_id",
+                "s3_bucket.$": "$.s3_bucket",
+                "s3_key.$": "$.s3_key",
+                "page_number.$": "$.page_number",
+                "engine": "paddleocr_printed",
+                "page.$": "$.page"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "ResultSelector": {
+              "result.$": "$.Payload.body.results[0]"
+            },
+            "OutputPath": "$.result",
+            "End": true
+          },
+          "InvokePaddleHandwritten": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${PADDLE_HANDWRITTEN_LAMBDA_ARN}",
+              "Payload": {
+                "document_id.$": "$.document_id",
+                "s3_bucket.$": "$.s3_bucket",
+                "s3_key.$": "$.s3_key",
+                "page_number.$": "$.page_number",
+                "engine": "paddleocr_handwritten",
+                "page.$": "$.page"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "ResultSelector": {
+              "result.$": "$.Payload.body.results[0]"
+            },
+            "OutputPath": "$.result",
+            "End": true
+          },
+          "SkipPage": {
+            "Type": "Pass",
+            "Parameters": {
+              "page_number.$": "$.page_number",
+              "engine": "skip",
+              "status": "SKIPPED",
+              "markdown": "",
+              "confidence": 1.0,
+              "blocks": []
+            },
+            "End": true
+          },
+          "InvokeVlmTranscribe": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${VLM_LAMBDA_ARN}",
+              "Payload": {
+                "document_id.$": "$.document_id",
+                "s3_bucket.$": "$.s3_bucket",
+                "s3_key.$": "$.s3_key",
+                "page_number.$": "$.page_number",
+                "engine": "vlm_transcribe",
+                "page.$": "$.page"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "ResultSelector": {
+              "result.$": "$.Payload.body.results[0]"
+            },
+            "OutputPath": "$.result",
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.results",
+      "Next": "FormatWorkflowOutput"
+    },
+    "FormatWorkflowOutput": {
+      "Type": "Pass",
+      "Parameters": {
+        "document_id.$": "$.document_id",
+        "s3_bucket.$": "$.s3_bucket",
+        "s3_key.$": "$.s3_key",
+        "total_pages.$": "States.ArrayLength($.results)",
+        "results.$": "$.results"
+      },
+      "End": true
+    }
+  }
+}

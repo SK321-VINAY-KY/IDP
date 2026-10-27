@@ -1,0 +1,54 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "HIGH",
+      "title": "test_e2e_heterogeneous_doc_uses_nearest_sample_and_widens_sampling asserts paddleocr_handwritten and is missing from the teardown inventory",
+      "where": "tests/test_probe.py line ~300; design-doc.md \u00a75 'Repo-wide cleanup grep', \u00a78, \u00a710, \u00a712.2 Finding 1",
+      "problem": "The test asserts pg[10]['route'] == 'paddleocr_handwritten' (driven by StubVLM per_page hw=0.9). Under the new script-only decide_route no input can ever yield paddleocr_handwritten, so the assertion fails. The design claims an exhaustive eight-test inventory but this test is absent; the mandated pre-implementation grep only covers hw_prob/printed_scripts, which this handwriting-routing test does not contain as tokens.",
+      "fix": "Add the test to the \u00a75/\u00a78/\u00a710 inventory with an explicit rewrite (page-10 expectation becomes paddleocr_printed; repurpose the pages-6-10 disagreement to a different script so the nearest-sample/widening behavior is still exercised). Broaden the pre-implementation grep to include 'paddleocr_handwritten' and 'hw=' over tests/."
+    },
+    {
+      "id": 2,
+      "severity": "MEDIUM",
+      "title": "Two tests read SampleObs.handwriting_prob after the field is removed; neither is listed",
+      "where": "tests/test_probe.py line ~228 (VLM-parse assertion) and line ~206 (test_aggregate_and_disagreement_and_nearest); design-doc.md \u00a75 types.py changes, \u00a78, \u00a710",
+      "problem": "Removing handwriting_prob from SampleObs makes the line-228 assertion 'o.handwriting_prob == 0.2' raise AttributeError, and line-206 builds SampleObs(handwriting_prob=...). Neither test is in the design's teardown inventory.",
+      "fix": "Add both to \u00a78/\u00a710. VLM-parse: assert (o.script, o.script_confidence, o.has_table) == ('devanagari', 1.0, True). Aggregate: drop the handwriting_prob= kwargs and keep the script-based disagreement assertion."
+    },
+    {
+      "id": 3,
+      "severity": "MEDIUM",
+      "title": "StubVLM test helper constructs SampleObs(handwriting_prob=...) and is never mentioned",
+      "where": "tests/test_probe.py line ~114-122; design-doc.md \u00a710 tests edit set",
+      "problem": "Every e2e test uses StubVLM, which builds SampleObs(handwriting_prob=h) and carries hw/per_page handwriting plumbing. After the field removal the kwarg is silently ignored (pydantic extra='ignore'), so no crash, but the stub stays misleading and tests relying on its hw behavior change silently. The design's modified-files list touches test_probe.py but never names StubVLM.",
+      "fix": "State in \u00a710 that StubVLM.__init__'s hw=/per_page handwriting element and the handwriting_prob=h kwarg are removed (per_page tuple shrinks to (script, conf)), so no test depends on the dropped field."
+    },
+    {
+      "id": 4,
+      "severity": "NIT",
+      "title": "\u00a74 Perso-Arabic remap is specified only for the ONNX path, not the VLM fallback",
+      "where": "design-doc.md \u00a74; src/ai/layer1_probe/vlm_probe.py::_norm_script",
+      "problem": "The 'Perso-Arabic'\u2192'arabic' remap is baked into the ONNX labels.json only. A VLM returning 'perso-arabic'/'persian' falls through _norm_script to 'other'\u2192VLM. Harmless (route-equivalent) but the design claims name-mismatch handling is fully specified.",
+      "fix": "Add a sentence noting the remap applies to labels.json only; the VLM path already routes unrecognized scripts to other\u2192VLM, which is route-equivalent, so no _norm_script change is needed."
+    },
+    {
+      "id": 5,
+      "severity": "NIT",
+      "title": "ONNX contract test rewrite guidance omits the handwriting_prob assertion it contains",
+      "where": "tests/test_probe.py line ~379; design-doc.md \u00a78a, \u00a710",
+      "problem": "The existing test_onnx_classifier_contract asserts obs.handwriting_prob > 0.9. The rewrite guidance names the input-shape change but not that this assertion must be deleted (it would AttributeError).",
+      "fix": "State that the rewritten observer test asserts obs.script and obs.source == 'onnx' only, with no handwriting_prob assertion."
+    },
+    {
+      "id": 6,
+      "severity": "NIT",
+      "title": "requirements-probe.txt onnxruntime comment reword is inaccurate under the no-model fallback",
+      "where": "requirements-probe.txt; design-doc.md \u00a77",
+      "problem": "Rewording the comment to 'required: lipika script model is baked in' is not strictly true under the \u00a79 STOP-AND-ASK no-model branch, where onnxruntime is installed but idle and the model is absent.",
+      "fix": "Reword to a branch-accurate note, e.g. 'lipika script observer; model baked at src/ai/layer1_probe/models/ when present, VLM-only fallback when absent'."
+    }
+  ],
+  "reviewDoc": "c:\\Users\\Dell\\Desktop\\IDP\\engineer_a\\.agents\\tasks\\probe-lipika-design-review.md"
+}

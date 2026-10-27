@@ -1,0 +1,3 @@
+{"event": "pipeline.page_complete", "correlation_id": "docFmt", "page_number": 1, "engines_used": ["docling"], "confidence": 0.95, "escalated": false}
+{"event": "probe.lipika_vs_vlm", "correlation_id": "docFmt", "page_number": 1, "lipika_script": "latin", "lipika_conf": 0.9, "margin": 0.4, "n_windows": 12, "vlm_script": "latin", "agree": true}
+not valid json at all

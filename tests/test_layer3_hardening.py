@@ -52,6 +52,8 @@ from src.ai.layer3_extraction.storage import (
     init_db,
     list_page_checkpoints,
     save_page_checkpoint,
+    SessionLocal,
+    DocumentGraphRecord,
 )
 
 
@@ -713,6 +715,19 @@ async def test_chk_4_crash_recovery_skips_completed_pages():
     assert result.hospital_name == "Saved Hospital"
     assert graph_out["pages_succeeded"] == 2
     assert graph_out["stats"]["total_nodes"] == 2
+
+    # Regression: the concurrent extractor must persist the graph record WITH the
+    # owner (it previously called save_document_graph without owner -> ownerless
+    # record -> query-bot 403 for a normal user).
+    _sess = SessionLocal()
+    try:
+        _rec = _sess.query(DocumentGraphRecord).filter_by(doc_id=doc_id).order_by(
+            DocumentGraphRecord.created_at.desc()
+        ).first()
+        assert _rec is not None, "graph record was not persisted"
+        assert _rec.owner == "_admin", f"graph record persisted ownerless (owner={_rec.owner!r})"
+    finally:
+        _sess.close()
 
     delete_page_checkpoints(doc_id, owner="_admin")
 

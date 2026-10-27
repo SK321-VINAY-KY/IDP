@@ -39,6 +39,15 @@ psycopg2-binary>=2.9.9
 reportlab>=4.0.0
 python-jose[cryptography]>=3.3.0
 
+# Query Bot hybrid retrieval (Phase 4) — local embedding model for
+# semantic evidence-span retrieval alongside the existing keyword seed search.
+# Pinned exact model revision used: all-MiniLM-L6-v2 @ 1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+# (384-dim). Runs offline/CPU; no AWS dependency for retrieval.
+# NOTE: pulls transformers/tokenizers/scikit-learn as transitive deps and
+# downgraded transformers 5.x -> 4.57.6 in this env; no project code imports
+# transformers directly, so this is isolated to sentence-transformers' own use.
+sentence-transformers==3.3.1
+
 # Testing
 pytest>=8.0.0
 

@@ -169,13 +169,22 @@ def _sample_and_aggregate(nonblank: List[int], jpegs: Dict[int, bytes], cfg: Pro
     if not nonblank:
         return DocPrior()
     _observe = _make_observe(cfg, vlm, onnx, jpegs, stats)
+
+    def _workers(n: int) -> int:
+        # Each sample observer may issue one VLM (Bedrock) call; run them in
+        # parallel. cfg.vlm_concurrency caps the pool; <=0 keeps the prior
+        # "one thread per page in this wave" behaviour.
+        if cfg.vlm_concurrency > 0:
+            return max(1, min(n, cfg.vlm_concurrency))
+        return max(1, n)
+
     wave = pick_sample_pages(nonblank, cfg.n_samples)
-    with ThreadPoolExecutor(max_workers=max(1, len(wave))) as ex:
+    with ThreadPoolExecutor(max_workers=_workers(len(wave))) as ex:
         obs = list(ex.map(_observe, wave))
     if samples_disagree(obs) and len(nonblank) > len(wave) and cfg.max_samples > len(wave):
         more = additional_sample_pages(nonblank, wave, cfg.max_samples - len(wave))
         if more:
-            with ThreadPoolExecutor(max_workers=len(more)) as ex:
+            with ThreadPoolExecutor(max_workers=_workers(len(more))) as ex:
                 obs += list(ex.map(_observe, more))
     return aggregate_doc(obs)
 

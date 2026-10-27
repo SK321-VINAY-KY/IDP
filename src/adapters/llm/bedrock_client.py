@@ -125,6 +125,52 @@ def _extract_text_from_converse_response(response: Dict[str, Any]) -> str:
     return ""
 
 
+def _bedrock_runtime_config():
+    """Explicit botocore timeouts + BOUNDED retries for bedrock-runtime.
+
+    read_timeout bounds a single attempt; max_attempts bounds how many attempts
+    botocore makes. Together they cap a dead call's worst case. Default
+    max_attempts=2 (one retry) => ~2 x 240s = ~8 min worst case, versus the
+    botocore legacy default of 5 attempts (~20 min) that previously let timed-out
+    calls hang. All three are env-overridable so they can be tuned without a
+    redeploy."""
+    from botocore.config import Config  # lazy import, same style as vlm_probe.py
+
+    def _env_seconds(name: str, default: float) -> float:
+        raw = os.getenv(name)
+        if raw is None or not raw.strip():
+            return default
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning("bedrock.config.invalid_timeout", env=name)
+            return default
+        if value <= 0:
+            logger.warning("bedrock.config.invalid_timeout", env=name)
+            return default
+        return value
+
+    def _env_int(name: str, default: int) -> int:
+        raw = os.getenv(name)
+        if raw is None or not raw.strip():
+            return default
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning("bedrock.config.invalid_int", env=name)
+            return default
+        if value < 1:
+            logger.warning("bedrock.config.invalid_int", env=name)
+            return default
+        return value
+
+    return Config(
+        connect_timeout=_env_seconds("IDP_BEDROCK_CONNECT_TIMEOUT", 10),
+        read_timeout=_env_seconds("IDP_BEDROCK_READ_TIMEOUT", 240),
+        retries={"max_attempts": _env_int("IDP_BEDROCK_MAX_ATTEMPTS", 2), "mode": "standard"},
+    )
+
+
 class BedrockExtractionClient:
     """
     Amazon Bedrock extraction client using Bedrock Runtime Converse API.
@@ -174,9 +220,13 @@ class BedrockExtractionClient:
             profile = os.getenv("AWS_PROFILE") or os.getenv("IDP_AWS_PROFILE")
             if profile:
                 session = boto3.Session(profile_name=profile, region_name=self.region)
-                self._client = session.client("bedrock-runtime", region_name=self.region)
+                self._client = session.client(
+                    "bedrock-runtime", region_name=self.region, config=_bedrock_runtime_config()
+                )
             else:
-                self._client = boto3.client("bedrock-runtime", region_name=self.region)
+                self._client = boto3.client(
+                    "bedrock-runtime", region_name=self.region, config=_bedrock_runtime_config()
+                )
         return self._client
 
     def _call_converse(

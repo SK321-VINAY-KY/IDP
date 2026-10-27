@@ -1,0 +1,7 @@
+{
+  "task_id": "task-probe-phase2",
+  "task_description": "Phase-2 build of the Layer-1.5 probe script detector: (1) a NEW line-crop extractor module in src/ai/layer1_probe/line_crops.py with synthetic unit tests; (2) a NEW offline eval harness scripts/eval_lipika_crops.py comparing fp32 vs int8 lipika under three input strategies on real dataset crops + Latin crops rendered from English PDFs; (3) a flag-gated handwriting regression fix behind IDP_PROBE_VLM_FOR_HANDWRITING (default on) re-adding handwriting_prob end-to-end and a latin+handwriting routing branch, with tests. LOCAL build only, NO AWS. Leave the two unstaged .onnx model binaries untouched; do not edit docker/, step_functions/, or src/ai/layer1_routing/; do not restore PP-Structure; no behavior change beyond the one flag.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003"],
+  "blocked_reason": null
+}

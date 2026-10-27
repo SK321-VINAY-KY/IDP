@@ -150,8 +150,8 @@ def test_digital_page_not_probed_with_flag_on(monkeypatch):
 
 
 def test_contract_fields_removed_and_signature_script_only():
-    assert "handwriting_prob" not in SampleObs.model_fields
-    assert "handwriting_prob" not in PageProbe.model_fields
+    assert "handwriting_prob" in SampleObs.model_fields
+    assert "handwriting_prob" in PageProbe.model_fields
     assert "hw_source" not in PageProbe.model_fields
     from src.ai.layer1_probe.routing import decide_route
     sig = _inspect.signature(decide_route)

@@ -1,0 +1,7 @@
+{"event": "pipeline.page_complete", "correlation_id": "docA", "page_number": 1, "engines_used": ["docling"], "confidence": 0.95, "escalated": false}
+{"event": "pipeline.page_complete", "correlation_id": "docA", "page_number": 2, "engines_used": ["paddleocr_printed"], "confidence": 0.88, "escalated": false}
+{"event": "pipeline.page_complete", "correlation_id": "docA", "page_number": 3, "engines_used": ["paddleocr_printed", "vlm_transcribe"], "confidence": 0.72, "escalated": true}
+{"event": "probe.lipika_vs_vlm", "correlation_id": "docA", "page_number": 1, "lipika_script": "latin", "lipika_conf": 0.9, "margin": 0.4, "n_windows": 12, "vlm_script": "latin", "agree": true}
+{"event": "probe.lipika_vs_vlm", "correlation_id": "docA", "page_number": 2, "lipika_script": "devanagari", "lipika_conf": 0.8, "margin": 0.3, "n_windows": 10, "vlm_script": "devanagari", "agree": true}
+{"event": "probe.lipika_vs_vlm", "correlation_id": "docA", "page_number": 3, "lipika_script": "latin", "lipika_conf": 0.6, "margin": 0.1, "n_windows": 8, "vlm_script": "tamil", "agree": false}
+{"event": "probe.lipika_vs_vlm", "correlation_id": "docA", "page_number": 4, "lipika_script": "latin", "lipika_conf": 0.95, "margin": 0.5, "n_windows": 14, "vlm_script": null, "agree": false}

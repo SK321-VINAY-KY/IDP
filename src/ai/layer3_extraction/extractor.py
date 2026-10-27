@@ -286,7 +286,7 @@ async def extract_with_graph_memory_ordered(
 
     if doc_id:
         try:
-            save_document_graph(doc_id=doc_id, graph_dict=manager.graph.snapshot(), strategy="graph_memory_ordered")
+            save_document_graph(doc_id=doc_id, graph_dict=manager.graph.snapshot(), owner=owner, strategy="graph_memory_ordered")
         except Exception as exc:
             logger.warning("layer3.save_graph_failed", error=str(exc))
 
@@ -457,6 +457,7 @@ async def extract_with_graph_memory_concurrent(
                     total_pages=total_pages,
                     context=context,
                     blocks=page_blocks,
+                    executor=llm_executor,
                 )
             except Exception as exc:
                 logger.error("layer3.concurrent.worker_failed", page_number=page_num, error=str(exc))
@@ -499,7 +500,13 @@ async def extract_with_graph_memory_concurrent(
     # Build phase: concurrent LLM work, no canonical mutation.
     tasks = [_build_page(p) for p in pages if p.get("page_number") not in recovered_pages]
     if tasks:
-        await asyncio.gather(*tasks)
+        # Dedicated pool sized from the same concurrency_limit as the semaphore, so each
+        # admitted page gets a thread. Shut down (wait=True) when the build phase ends.
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(concurrency_limit, 32),
+            thread_name_prefix="graph-llm",
+        ) as llm_executor:
+            await asyncio.gather(*tasks)
 
     # Merge phase: SERIAL, in sorted page-number order (deterministic) over BOTH
     # recovered and freshly-built deltas. This single sorted pass is what makes a
@@ -568,7 +575,7 @@ async def extract_with_graph_memory_concurrent(
 
     if doc_id:
         try:
-            save_document_graph(doc_id=doc_id, graph_dict=manager.graph.snapshot(), strategy="graph_memory_concurrent")
+            save_document_graph(doc_id=doc_id, graph_dict=manager.graph.snapshot(), owner=owner, strategy="graph_memory_concurrent")
         except Exception as exc:
             logger.warning("layer3.save_graph_failed", error=str(exc))
 
@@ -728,7 +735,7 @@ async def extract_with_graph_memory_batched(
 
     if doc_id:
         try:
-            save_document_graph(doc_id=doc_id, graph_dict=manager.graph.snapshot(), strategy="graph_memory_batched")
+            save_document_graph(doc_id=doc_id, graph_dict=manager.graph.snapshot(), owner=owner, strategy="graph_memory_batched")
         except Exception as exc:
             logger.warning("layer3.save_graph_failed", error=str(exc))
 

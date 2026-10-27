@@ -346,9 +346,12 @@ def test_onnx_classifier_contract(tmp_path):
             class _I:  # noqa: E301
                 name = "pixel_values"
             return [_I()]
-        def run(self, _out, _feeds):
-            # strongly peak on devanagari (index 1)
-            return [np.array([[0.0, 9.0, 0.0, 0.0]], dtype=np.float32)]
+        def run(self, _out, feeds):
+            # strongly peak on devanagari (index 1), one row per window.
+            n = next(iter(feeds.values())).shape[0]
+            logits = np.zeros((n, 4), dtype=np.float32)
+            logits[:, 1] = 9.0
+            return [logits]
 
     clf = OnnxScriptClassifier(str(tmp_path / "x.onnx"), str(tmp_path / "l.json"),
                                session=FakeSession())
@@ -372,9 +375,10 @@ def _onnx_peaking(tmp_path, labels, peak_index):
             class _I:
                 name = "pixel_values"
             return [_I()]
-        def run(self, _out, _feeds):
-            logits = np.zeros((1, len(labels)), dtype=np.float32)
-            logits[0, peak_index] = 9.0
+        def run(self, _out, feeds):
+            n = next(iter(feeds.values())).shape[0]
+            logits = np.zeros((n, len(labels)), dtype=np.float32)
+            logits[:, peak_index] = 9.0
             return [logits]
 
     return OnnxScriptClassifier(str(tmp_path / "x.onnx"), str(lp), session=FakeSession())

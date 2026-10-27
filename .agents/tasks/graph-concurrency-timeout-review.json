@@ -1,0 +1,41 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "label": "Retry worst case for dead Bedrock calls",
+      "blocking": false,
+      "confidence": "confirmed",
+      "issue": "With read_timeout=240 and botocore's default 5 attempts (retries unchanged, as deferred), a dead endpoint can block a page for up to about 20 minutes, versus about 5 minutes before.",
+      "action": "Get explicit user acceptance, or cap retries in the deferred retry task before production use."
+    },
+    {
+      "label": "Event loop blocked on build-phase failure",
+      "blocking": false,
+      "confidence": "likely",
+      "issue": "If gather raises in extract_with_graph_memory_concurrent, the ThreadPoolExecutor context exit calls shutdown(wait=True) on the loop thread, blocking the loop until in-flight LLM calls return.",
+      "action": "Run the shutdown off-loop (await loop.run_in_executor(None, llm_executor.shutdown, True)) in a try/finally, and add a test for this path."
+    },
+    {
+      "label": "Non-finite timeout env values accepted",
+      "blocking": false,
+      "confidence": "possible",
+      "issue": "float('inf') and float('nan') pass the <= 0 check in _env_seconds, so IDP_BEDROCK_READ_TIMEOUT=inf disables the read timeout.",
+      "action": "Add a math.isfinite check that falls back to the default, and test inf and nan."
+    },
+    {
+      "label": "Read timeout may be tight for large graph responses",
+      "blocking": false,
+      "confidence": "possible",
+      "issue": "Graph calls can use up to 8000 tokens (ceiling retry 12000). Non-streaming Converse on a slow model may exceed 240 s.",
+      "action": "Measure output throughput for the graph model before relying on the 240 s default."
+    },
+    {
+      "label": "No test for build-phase exception path",
+      "blocking": false,
+      "confidence": "likely",
+      "issue": "Executor tests cover success, sizing, ordering, and context only. The path where a page raises outside the build_page_delta_async try block is untested.",
+      "action": "Add a test asserting prompt return or raise with no leaked graph-llm threads."
+    }
+  ],
+  "reviewDoc": "c:\\Users\\Dell\\Desktop\\IDP\\engineer_a\\.agents\\tasks\\graph-concurrency-timeout-review.md"
+}

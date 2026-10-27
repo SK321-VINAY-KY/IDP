@@ -1,13 +1,16 @@
 """
-Fast, fully-mocked tests for the lipika whole-image ONNX script observer.
+Fast, fully-mocked tests for the lipika LINE-WISE ONNX script observer.
 No torch, no real model load: every observer result comes from an injected fake
-InferenceSession (or a patched _get_session) whose .run() returns canned logits.
+InferenceSession (or a patched _get_session) whose .run() returns canned logits
+for every window in the batch.
 """
 import json
 
+import cv2
 import numpy as np
 import pytest
 
+from src.ai.layer1_probe import imaging
 from src.ai.layer1_probe import script_classifier as sc
 from src.ai.layer1_probe.script_classifier import LipikaOnnxScriptObserver
 from src.ai.layer1_probe.types import PageProbe, SampleObs
@@ -15,6 +18,17 @@ from src.ai.layer1_probe.types import PageProbe, SampleObs
 LABELS = ["latin", "devanagari", "telugu", "other"]
 _META = {"labels": LABELS, "input_size": [224, 224], "mean": [0, 0, 0], "std": [1, 1, 1],
          "preprocessing": "single_forward", "shipped_default": "fp32"}
+
+
+def _wide_text_gray(n_lines=8, H=600, W=1000):
+    """White grayscale page with wide black text bands -> enough line windows to
+    clear the observer's lipika_min_windows gate."""
+    gray = np.full((H, W), 255, dtype=np.uint8)
+    step = (H - 120) // max(1, n_lines)
+    for i in range(n_lines):
+        y = 60 + i * step
+        cv2.rectangle(gray, (40, y), (W - 40, y + 22), 0, -1)
+    return gray
 
 
 @pytest.fixture
@@ -36,9 +50,11 @@ def _fake_session(peak_index, construct_counter=None):
         def get_inputs(self):
             return [_Input()]
 
-        def run(self, _out, _feeds):
-            logits = np.full((1, len(LABELS)), -5.0, dtype=np.float32)
-            logits[0, peak_index] = 9.0
+        def run(self, _out, feeds):
+            # one logits row per window in the batch, all peaking peak_index.
+            n = next(iter(feeds.values())).shape[0]
+            logits = np.full((n, len(LABELS)), -5.0, dtype=np.float32)
+            logits[:, peak_index] = 9.0
             return [logits]
 
     return FakeSession()
@@ -47,17 +63,17 @@ def _fake_session(peak_index, construct_counter=None):
 @pytest.mark.parametrize("peak,script", [(0, "latin"), (1, "devanagari"), (2, "telugu")])
 def test_canned_logits_map_to_script(peak, script, labels_file):
     obs = LipikaOnnxScriptObserver(labels_path=labels_file, session=_fake_session(peak))
-    gray = np.zeros((40, 80), dtype=np.uint8)
-    rgb = np.zeros((40, 80, 3), dtype=np.uint8)
-    out = obs.observe(1, gray, np.zeros_like(gray), rgb=rgb)
+    gray = _wide_text_gray()
+    rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+    out = obs.observe(1, gray, imaging.ink_mask(gray), rgb=rgb)
     assert out is not None
     assert out.script == script
     assert out.source == "onnx"
 
 
 def test_no_handwriting_field_on_contracts():
-    assert "handwriting_prob" not in SampleObs.model_fields
-    assert "handwriting_prob" not in PageProbe.model_fields
+    assert "handwriting_prob" in SampleObs.model_fields
+    assert "handwriting_prob" in PageProbe.model_fields
     assert "hw_source" not in PageProbe.model_fields
 
 
@@ -77,9 +93,10 @@ def test_module_session_constructed_once(monkeypatch, labels_file):
         def get_inputs(self):
             return [_Input()]
 
-        def run(self, _out, _feeds):
-            logits = np.full((1, len(LABELS)), -5.0, dtype=np.float32)
-            logits[0, 2] = 9.0  # telugu
+        def run(self, _out, feeds):
+            n = next(iter(feeds.values())).shape[0]
+            logits = np.full((n, len(LABELS)), -5.0, dtype=np.float32)
+            logits[:, 2] = 9.0  # telugu
             return [logits]
 
     # fake onnxruntime so no real session/model is needed
@@ -98,10 +115,10 @@ def test_module_session_constructed_once(monkeypatch, labels_file):
     monkeypatch.setenv("IDP_PROBE_ONNX_LABELS", labels_file)
 
     obs = LipikaOnnxScriptObserver()  # no injected session -> uses module singleton
-    gray = np.zeros((40, 80), dtype=np.uint8)
-    rgb = np.zeros((40, 80, 3), dtype=np.uint8)
-    o1 = obs.observe(1, gray, np.zeros_like(gray), rgb=rgb)
-    o2 = obs.observe(2, gray, np.zeros_like(gray), rgb=rgb)
+    gray = _wide_text_gray()
+    rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+    o1 = obs.observe(1, gray, imaging.ink_mask(gray), rgb=rgb)
+    o2 = obs.observe(2, gray, imaging.ink_mask(gray), rgb=rgb)
     assert o1 is not None and o2 is not None
     assert o1.script == "telugu" and o2.script == "telugu"
     assert sum(counter) == 1  # constructed exactly once

@@ -1,0 +1,24 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "id": "dry-run-hits-aws",
+      "severity": "non-blocking",
+      "confidence": "confirmed",
+      "summary": "deploy_probe_service.py --dry-run performs live describe_services/describe_task_definition read calls before the dry-run branch, unlike the plan's no-creds fallback. Read-only, no mutation, no secret printed. Optional: guard the describes behind a credentials check so dry-run is fully offline."
+    },
+    {
+      "id": "account-constant-in-dry-run-uri",
+      "severity": "non-blocking",
+      "confidence": "confirmed",
+      "summary": "The dry-run image URI embeds the mirrored EXPECTED_ACCOUNT constant. Sanctioned by the plan as a source-cited mirror (not a new hard-coded id); the real run derives the account from STS and asserts it. No action required."
+    },
+    {
+      "id": "ecr-tag-resource-swallowed",
+      "severity": "non-blocking",
+      "confidence": "confirmed",
+      "summary": "deploy_probe_image.py wraps ECR repo tag_resource in a broad except that only warns, so a missing ecr:TagResource permission fails silently. Acceptable since push must not depend on tagging; list ecr:TagResource in the hand-off IAM notes."
+    }
+  ],
+  "reviewDoc": "c:\\Users\\Dell\\Desktop\\IDP\\engineer_a\\.agents\\tasks\\probe-scripts-review.md"
+}

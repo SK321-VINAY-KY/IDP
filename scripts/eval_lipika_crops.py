@@ -5,8 +5,8 @@ Purpose: DEVELOPER-ONLY, OFFLINE eval harness for the lipika script ONNX model.
          under three input strategies on real dataset word crops + Latin line
          crops rendered from the English PDFs in dataset/.
 
-           A  full-crop letterbox = the CURRENT observer path
-              (replicates script_classifier._letterbox EXACTLY:
+           A  full-crop letterbox = the shared observer preprocessing
+              (src.ai.layer1_probe.windows.letterbox_square:
                white pad to square, cv2.resize INTER_CUBIC, /255, NCHW).
            B  square-ish windows cut along each crop (aspect 1:1..2:1),
               letterbox each window as in A, mean the softmax over windows.
@@ -50,6 +50,13 @@ if _REPO_ROOT not in sys.path:
 
 from src.ai.layer1_probe import imaging
 from src.ai.layer1_probe.line_crops import extract_line_crops
+# Strategy A/B preprocessing now lives in the library module so the line-wise
+# observer and this eval harness run byte-identical tensors (no duplication).
+from src.ai.layer1_probe.windows import (
+    _INPUT_SIZE,
+    letterbox_square as _letterbox_A,
+    square_windows as _windows_B,
+)
 
 # ---------------------------------------------------------------------------
 # Paths / constants
@@ -64,7 +71,6 @@ _FP32_PATH = os.path.join(_MODELS_DIR, "lipika_script.onnx")
 _INT8_PATH = os.path.join(_MODELS_DIR, "lipika_script.int8.onnx")
 _REPORT_PATH = os.path.join(_REPO, ".agents", "tasks", "lipika-eval-results.md")
 
-_INPUT_SIZE = 224
 _OTHER = "other"
 
 # Authoritative dataset language folder -> probe script label (context.json).
@@ -317,52 +323,10 @@ def produce_crops(row: ManifestRow, max_pages: int = 4) -> List[np.ndarray]:
 # ---------------------------------------------------------------------------
 # Strategies (produce model input tensors [N,3,224,224] float32)
 # ---------------------------------------------------------------------------
-def _letterbox_A(rgb: np.ndarray, size: int = _INPUT_SIZE) -> np.ndarray:
-    """Strategy A: EXACT replica of script_classifier._letterbox (mean 0 std 1):
-    white pad to max(h,w) square, cv2.resize INTER_CUBIC, /255, NCHW."""
-    h, w = rgb.shape[:2]
-    side = max(h, w, 1)
-    canvas = np.full((side, side, 3), 255, dtype=np.uint8)
-    y0 = (side - h) // 2
-    x0 = (side - w) // 2
-    canvas[y0:y0 + h, x0:x0 + w] = rgb
-    resized = cv2.resize(canvas, (size, size), interpolation=cv2.INTER_CUBIC)
-    x = resized.astype(np.float32) / 255.0
-    return np.transpose(x, (2, 0, 1))[None, :, :, :].astype(np.float32)
-
-
-def _windows_B(rgb: np.ndarray) -> List[np.ndarray]:
-    """Strategy B: cut square-ish windows along the longer axis of the crop.
-
-    Windows have aspect between 1:1 and 2:1 (long:short). Slides a window of the
-    short-side length along the long axis with ~50% overlap. Returns a list of
-    RGB window sub-images; the caller letterboxes each with A and means the
-    softmax before argmax.
-    """
-    h, w = rgb.shape[:2]
-    if h == 0 or w == 0:
-        return []
-    short = min(h, w)
-    long_ = max(h, w)
-    if long_ <= 2 * short:
-        # already square-ish (<= 2:1): one window = the whole crop.
-        return [rgb]
-    win = 2 * short            # 2:1 window along the long axis
-    step = max(1, short)       # ~50% overlap
-    windows: List[np.ndarray] = []
-    pos = 0
-    horizontal = w >= h
-    while pos < long_:
-        end = min(pos + win, long_)
-        start = max(0, end - win)
-        if horizontal:
-            windows.append(rgb[:, start:end].copy())
-        else:
-            windows.append(rgb[start:end, :].copy())
-        if end >= long_:
-            break
-        pos += step
-    return windows
+# Strategy A (`_letterbox_A`) and Strategy B (`_windows_B`) are imported from
+# src.ai.layer1_probe.windows (letterbox_square / square_windows) so the eval and
+# the observer share ONE implementation. Only Strategy C lives here (it is the
+# fontrecog-replica path, not used by the runtime observer).
 
 
 def _letterbox_C(rgb: np.ndarray, size: int = _INPUT_SIZE) -> np.ndarray:
@@ -516,8 +480,8 @@ def write_report(path: str, results: Dict[Tuple[str, str], StratResult],
                      "Re-run without --min-per-script/--per-script-cap limits for final numbers.")
         lines.append("")
     lines.append("## Strategies")
-    lines.append("- **A** — full-crop letterbox = current observer path "
-                 "(`script_classifier._letterbox`: white pad to square, "
+    lines.append("- **A** — full-crop letterbox = shared observer preprocessing "
+                 "(`windows.letterbox_square`: white pad to square, "
                  "cv2.resize INTER_CUBIC, /255, NCHW).")
     lines.append("- **B** — square-ish windows (aspect 1:1..2:1) cut along the "
                  "longer axis, each letterboxed as A; softmax averaged over windows.")

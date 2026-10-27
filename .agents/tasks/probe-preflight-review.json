@@ -1,0 +1,18 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "label": "HARMFUL line wording",
+      "severity": "cosmetic",
+      "confidence": "confirmed",
+      "detail": "The summarizer HARMFUL report line reads 'labelled non-Latin page routed to a Paddle engine' while the count is now computed from the FINAL post-escalation engine. Non-blocking and already documented in a code comment that keeps the wording stable for existing tooling. Optional: align the wording with final-engine semantics."
+    },
+    {
+      "label": "Escalation fixture packs harmful+near-miss in one doc",
+      "severity": "informational",
+      "confidence": "confirmed",
+      "detail": "logs_final_engine.ndjson asserts HARMFUL=1 and near-miss=1 together (docF p1 harmful, p2 near-miss) rather than the brief's phrasing of HARMFUL=0/near-miss=1 split. This is a superset assertion that proves both the non-zero exit path and the near-miss in one run; acceptable as-is."
+    }
+  ],
+  "reviewDoc": "c:\\Users\\Dell\\Desktop\\IDP\\engineer_a\\.agents\\tasks\\probe-preflight-review.md"
+}

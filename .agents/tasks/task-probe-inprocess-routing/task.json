@@ -1,0 +1,7 @@
+{
+  "task_id": "task-probe-inprocess-routing",
+  "task_description": "Make a per-document probe drive routing inside the production in-process pipeline (process_document/process_page), flag-guarded by settings.probe_enabled (IDP_PROBE_ENABLED), OFF by default and byte-identical when off. Option B, user-approved. Refactor probe.py into a shared Phase-B/C core reused by both the standalone Lambda (probe_document) and a new in-memory entry point (probe_document_images); add magic-byte image-format detection at the VLM boundary; add per-lang caching in scanned._get_paddle_engine; keep the existing per-page ONNX hook dormant.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002"],
+  "blocked_reason": null
+}

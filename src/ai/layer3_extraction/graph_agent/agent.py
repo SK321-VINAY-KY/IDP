@@ -5,6 +5,9 @@ Purpose: Graph Extraction Agent processing pages sequentially and maintaining co
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextvars
+import functools
 import re
 import uuid
 from typing import Any, Dict, List, Optional, Set
@@ -80,11 +83,13 @@ class GraphExtractionAgent:
         total_pages: int,
         context: List[Dict[str, Any]],
         blocks: Optional[List[Block]] = None,
+        executor: Optional[concurrent.futures.Executor] = None,
     ) -> PageDelta:
         """
         Extract page graph asynchronously into an isolated PageDelta.
         STATELESS with respect to self.graph: MUST NOT mutate self.graph.
-        Calls the synchronous LLM via asyncio.to_thread().
+        Calls the synchronous LLM in a worker thread: the given executor when
+        provided, otherwise asyncio.to_thread() (loop default executor).
         """
         clean_md = (markdown or "").strip()
         if not clean_md:
@@ -99,14 +104,28 @@ class GraphExtractionAgent:
             context_nodes_count=len(context),
         )
         self.llm_call_count += 1
-        llm_output = await asyncio.to_thread(
-            self.llm.extract_graph_from_page,
-            page_md=clean_md,
-            schema_fields=self.schema_fields,
-            existing_nodes=context,
-            page_number=page_number,
-            total_pages=total_pages,
-        )
+        if executor is None:
+            llm_output = await asyncio.to_thread(
+                self.llm.extract_graph_from_page,
+                page_md=clean_md,
+                schema_fields=self.schema_fields,
+                existing_nodes=context,
+                page_number=page_number,
+                total_pages=total_pages,
+            )
+        else:
+            # copy_context().run keeps the logger's correlation_id visible in the
+            # worker thread, as asyncio.to_thread() does.
+            call = functools.partial(
+                contextvars.copy_context().run,
+                self.llm.extract_graph_from_page,
+                page_md=clean_md,
+                schema_fields=self.schema_fields,
+                existing_nodes=context,
+                page_number=page_number,
+                total_pages=total_pages,
+            )
+            llm_output = await asyncio.get_running_loop().run_in_executor(executor, call)
 
         entities = llm_output.get("entities", [])
         relationships = llm_output.get("relationships", [])

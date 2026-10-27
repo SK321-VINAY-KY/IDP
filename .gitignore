@@ -20,6 +20,7 @@ dataset_uploads/
 .venv
 venv/
 env/
+rollback_*.json
 
 # Local debug / credential-bearing scratch artifacts (never commit)
 _*.txt
@@ -46,6 +47,9 @@ tests/fixtures/*.md
 *.bin
 *.safetensors
 
+# Model binaries (never commit)
+*.onnx
+
 # Kiro / IDE
 .kiro/
 
@@ -66,6 +70,7 @@ DEMO_GUIDE.md
 repomix-output.*
 repomix-output.xml
 repomix-layer3.*
+repomix-layer12.*
 repomix.*.json
 scratch_*.json
 

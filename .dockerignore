@@ -27,8 +27,13 @@ node_modules/
 
 # Environment and secrets
 .env*
+**/.env*
 *.db
 *.sqlite3
+rollback_*.json
+.secrets.baseline
+**/*.pem
+**/*.key
 
 # Model and local caches
 .cache/

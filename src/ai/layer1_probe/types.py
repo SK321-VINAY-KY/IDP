@@ -80,6 +80,17 @@ class ProbeConfig:
     onnx_min_conf: float = 0.80
     vlm_enabled: bool = True
     min_script_conf: float = 0.60
+    # Max sample observers (and thus VLM Bedrock calls) run in parallel during
+    # Phase B. <=0 means "one thread per sampled page in the wave" (the prior
+    # implicit behaviour). Applies to BOTH the initial sample wave and the
+    # disagreement-widening second wave. Env: IDP_PROBE_VLM_CONCURRENCY.
+    vlm_concurrency: int = 0
+    # --- lipika line-wise observer gates (additional early-None path INSIDE the
+    #     observer; do NOT change onnx_min_conf behaviour in probe.py) ---
+    lipika_min_windows: int = 8          # fewer total windows -> observer returns None
+    lipika_min_conf: float = 0.60        # mean-softmax top-1 below this -> None
+    lipika_min_margin: float = 0.20      # top1-top2 margin below this -> None
+    lipika_max_windows: int = 32         # cap; keep an even round-robin spread across lines
 
     # --- handwriting (flag-gated; re-added in Phase 2 item 4) ---
     vlm_for_handwriting: bool = True     # IDP_PROBE_VLM_FOR_HANDWRITING
@@ -109,6 +120,11 @@ class ProbeConfig:
         c.max_samples = int(_env("MAX_SAMPLES", str(c.max_samples)))
         c.vlm_enabled = _env("VLM_ENABLED", "1") == "1"
         c.min_script_conf = float(_env("MIN_SCRIPT_CONF", str(c.min_script_conf)))
+        c.vlm_concurrency = int(_env("VLM_CONCURRENCY", str(c.vlm_concurrency)))
+        c.lipika_min_windows = int(_env("LIPIKA_MIN_WINDOWS", str(c.lipika_min_windows)))
+        c.lipika_min_conf = float(_env("LIPIKA_MIN_CONF", str(c.lipika_min_conf)))
+        c.lipika_min_margin = float(_env("LIPIKA_MIN_MARGIN", str(c.lipika_min_margin)))
+        c.lipika_max_windows = int(_env("LIPIKA_MAX_WINDOWS", str(c.lipika_max_windows)))
         c.vlm_for_handwriting = _env("VLM_FOR_HANDWRITING", "1") == "1"
         c.hw_threshold = float(_env("HW_THRESHOLD", str(c.hw_threshold)))
         c.onnx_model_path = os.environ.get("IDP_PROBE_ONNX_MODEL") or None

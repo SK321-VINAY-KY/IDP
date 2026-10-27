@@ -1,0 +1,11 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    "Window-count latency (informational): Strategy B emits 200-600 windows/page at 144 DPI, ~44 s/page fp32 CPU inference. Flagged by author for owner go/no-go; not a correctness defect and out of scope to change here.",
+    ".onnx not gitignored (possible): fp32/int8 models are untracked but not matched by .gitignore, so a future 'git add .' could stage them against the rule. Add a *.onnx ignore entry.",
+    "Unrelated bundled changes (likely): working tree mixes in a layer3 save_document_graph(owner=...) fix + test, S3 settings in src/config/settings.py, a sentence-transformers==3.3.1 pin, a schema_chatbot_v2 pipeline test, and AGENTS.md/.gitignore edits. None violate path rules but should land as separate commits.",
+    "Untracked file under step_functions/ (possible): step_functions/state_machine_with_probe.asl.json is a new untracked file, not a tracked edit and not referenced by this task; confirm it was not produced by this work before any commit since step_functions/ is a forbidden path.",
+    "Two pre-existing test failures (confirmed, not blocking): test_no_handwriting_field_on_contracts and test_contract_fields_removed_and_signature_script_only fail because SampleObs.handwriting_prob was added by earlier commit 705fe37; author verified they fail on the clean baseline too. Out of scope."
+  ],
+  "reviewDoc": "c:\\Users\\Dell\\Desktop\\IDP\\engineer_a/.agents/tasks/probe-linewise-review.md"
+}

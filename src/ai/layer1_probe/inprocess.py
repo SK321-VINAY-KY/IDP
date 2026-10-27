@@ -24,7 +24,8 @@ _OBSERVER: Optional[LipikaOnnxScriptObserver] = None
 def _get_observer() -> LipikaOnnxScriptObserver:
     global _OBSERVER
     if _OBSERVER is None:
-        _OBSERVER = LipikaOnnxScriptObserver()
+        # Pass a from_env cfg so live runs honour IDP_PROBE_LIPIKA_* gate overrides.
+        _OBSERVER = LipikaOnnxScriptObserver(cfg=ProbeConfig.from_env())
     return _OBSERVER
 
 

@@ -305,3 +305,170 @@ def test_vlm_probe_call_count_is_n_samples(monkeypatch):
     _process(pages)
 
     assert len(vlm.calls) == 3
+
+
+# ============================================================================= probe.page_decision event (item 2)
+class _LogRecorder:
+    """Records (event, kwargs) for every logger method call, delegating to real."""
+    def __init__(self, real):
+        self._real = real
+        self.events = []
+
+    def info(self, event, **fields):
+        self.events.append((event, fields))
+        self._real.info(event, **fields)
+
+    def warning(self, event, **fields):
+        self.events.append((event, fields))
+        self._real.warning(event, **fields)
+
+    def error(self, event, **fields):
+        self.events.append((event, fields))
+        self._real.error(event, **fields)
+
+    def exception(self, event, **fields):
+        self.events.append((event, fields))
+        self._real.exception(event, **fields)
+
+    def debug(self, event, **fields):
+        self.events.append((event, fields))
+        self._real.debug(event, **fields)
+
+
+def _install_recorder(monkeypatch):
+    rec = _LogRecorder(pipeline.logger)
+    monkeypatch.setattr(pipeline, "logger", rec)
+    return rec
+
+
+def _page_decisions(rec):
+    return [kw for ev, kw in rec.events if ev == "probe.page_decision"]
+
+
+def test_probe_page_decision_emitted_on_probed_page(monkeypatch):
+    """Flag ON + a probed printed page -> exactly one probe.page_decision event
+    whose fields mirror the probe dict and the FINAL output values."""
+    rec = _install_recorder(monkeypatch)
+    vlm = StubVLM(script="latin", conf=0.95)
+    _wire(monkeypatch, {1: _scanned_profile(1, "unknown")}, vlm=vlm)
+
+    pages = [_page_data(1, _ink_image())]
+    out, meta = pipeline.process_document(
+        pages=pages, llm_client=StubLLM(), document_id="doc-42",
+    )[0]
+
+    decisions = _page_decisions(rec)
+    assert len(decisions) == 1
+    d = decisions[0]
+    probe = pages[0]["context"]["probe"]
+    assert d["document_id"] == "doc-42"
+    assert d["page_number"] == 1
+    assert d["probe_route"] == probe["route"] == "paddleocr_printed"
+    assert d["probe_ocr_lang"] == probe["ocr_lang"]
+    assert d["probe_script"] == probe["script"] == "latin"
+    assert d["probe_script_confidence"] == probe["script_confidence"]
+    assert d["probe_handwriting_prob"] == probe["handwriting_prob"]
+    assert d["probe_has_table"] == probe["has_table"]
+    assert d["probe_is_blank"] == probe["is_blank"]
+    # final post-ladder values match the returned output
+    assert d["engine_used"] == (out.engines_used[0] if out.engines_used else None)
+    assert d["confidence"] == out.confidence
+    assert d["escalated"] == out.escalated
+    # additive fields: full engines list + adopted final engine (no escalation
+    # here, so final_engine == the sole primary engine).
+    assert d["engines_used"] == out.engines_used == ["paddleocr_printed"]
+    assert d["final_engine"] == "paddleocr_printed"
+    # purely additive: no image bytes / no text content leaked
+    assert "image_bytes" not in d and "markdown" not in d and "text" not in d
+
+
+def test_probe_page_decision_shows_post_ladder_values(monkeypatch):
+    """Flag ON, a probed latin page whose primary Paddle engine returns empty
+    text -> the escalation ladder fires and the VLM is adopted. The event must
+    carry the POST-ladder final values: escalated flips True, confidence becomes
+    the adopted VLM confidence, and engine_used/engines_used reflect the final
+    engines_used list (the pre-ladder-only state would have escalated=False and
+    no vlm_transcribe present). engine_used follows the existing final-engine
+    convention (engines_used[0], same source as pipeline.page_complete /
+    PageMetadata.set_final_result): the primary engine stays at index 0 and the
+    adopted escalation engine is appended, so engine_used stays the primary
+    while escalated/confidence/engines_used prove the ladder ran post-hoc."""
+    rec = _install_recorder(monkeypatch)
+    vlm = StubVLM(script="latin", conf=0.95)
+    captured = []
+    _wire(monkeypatch, {1: _scanned_profile(1, "unknown")}, vlm=vlm, captured=captured)
+
+    # Force the primary paddle engine to yield empty text so the ladder escalates.
+    def _empty_invoke(image_array, page_number, mode, image_bytes=None, ocr_lang=None):
+        return ("", 0.0, [])
+    monkeypatch.setattr(scanned, "_invoke_paddle_lambda", _empty_invoke)
+
+    pages = [_page_data(1, _ink_image())]
+    out, meta = pipeline.process_document(
+        pages=pages, llm_client=StubLLM(), document_id="doc-esc",
+    )[0]
+
+    # pre-ladder probe route was paddle; the ladder then escalated and adopted VLM.
+    assert pages[0]["context"]["probe"]["route"] == "paddleocr_printed"
+    assert out.escalated is True
+    assert "vlm_transcribe" in out.engines_used        # VLM adopted post-ladder
+
+    decisions = _page_decisions(rec)
+    assert len(decisions) == 1
+    d = decisions[0]
+    assert d["probe_route"] == "paddleocr_printed"     # pre-ladder (what probe chose)
+    # POST-ladder final values (would be escalated=False / conf=0.0 pre-ladder):
+    assert d["escalated"] is True
+    assert d["escalated"] == out.escalated
+    assert d["confidence"] == out.confidence == 0.95    # adopted VLM confidence
+    # engine_used follows the existing engines_used[0] convention (post-ladder list):
+    assert d["engine_used"] == out.engines_used[0]
+    # additive: engines_used is the full post-ladder list and final_engine is the
+    # ADOPTED VLM (not engines_used[0], which is still the paddle primary).
+    assert d["engines_used"] == out.engines_used
+    assert "vlm_transcribe" in d["engines_used"]
+    assert d["final_engine"] == "vlm_transcribe"
+
+
+def test_probe_page_decision_printed_escalates_to_vlm_final_engine(monkeypatch):
+    """Primary paddleocr_printed on a probed latin page; the primary returns empty
+    text so the ladder escalates and ADOPTS vlm_transcribe. Asserts the new fields:
+    engines_used == [paddleocr_printed, vlm_transcribe] (the real post-ladder
+    order), final_engine == vlm_transcribe (adopted winner), engine_used ==
+    engines_used[0] == paddleocr_printed (unchanged primary), escalated True."""
+    rec = _install_recorder(monkeypatch)
+    vlm = StubVLM(script="latin", conf=0.95)
+    captured = []
+    _wire(monkeypatch, {1: _scanned_profile(1, "unknown")}, vlm=vlm, captured=captured)
+
+    def _empty_invoke(image_array, page_number, mode, image_bytes=None, ocr_lang=None):
+        return ("", 0.0, [])
+    monkeypatch.setattr(scanned, "_invoke_paddle_lambda", _empty_invoke)
+
+    pages = [_page_data(1, _ink_image())]
+    out, meta = pipeline.process_document(
+        pages=pages, llm_client=StubLLM(), document_id="doc-esc2",
+    )[0]
+
+    decisions = _page_decisions(rec)
+    assert len(decisions) == 1
+    d = decisions[0]
+    assert d["probe_route"] == "paddleocr_printed"
+    assert d["engine_used"] == out.engines_used[0] == "paddleocr_printed"
+    assert d["engines_used"] == out.engines_used == ["paddleocr_printed", "vlm_transcribe"]
+    assert d["final_engine"] == "vlm_transcribe"
+    assert d["escalated"] is True
+
+
+def test_probe_page_decision_not_emitted_flag_off(monkeypatch):
+    """Flag OFF: no 'probe' key -> NO probe.page_decision event and unchanged routing."""
+    rec = _install_recorder(monkeypatch)
+    captured = []
+    _wire(monkeypatch, {1: _scanned_profile(1, "latin")}, captured=captured, probe_enabled=False)
+
+    pages = [_page_data(1, _ink_image())]
+    _out, meta = pipeline.process_document(pages=pages, llm_client=StubLLM())[0]
+
+    assert _page_decisions(rec) == []
+    assert "probe" not in pages[0]["context"]
+    assert meta.selected_engine == "paddleocr_printed"

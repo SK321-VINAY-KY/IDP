@@ -494,6 +494,14 @@ def process_page(
     mergeable_results = [(t, m, c, l) for t, m, c, l, _b in raw_results]
     markdown, confidence, engines_used = _merge_results(mergeable_results)
 
+    # Track the engine whose OUTPUT is actually ADOPTED as the ladder runs. This
+    # is additive observability state only — it feeds the probe.page_decision
+    # event's `final_engine` field and changes NO routing/output/metadata. It is
+    # NOT always engines_used[-1] (the VLM-loses branch appends vlm_transcribe
+    # without adopting it) nor always engines_used[0] (the VLM-wins branch
+    # adopts the appended VLM). Start at the merged primary.
+    final_engine = engines_used[0] if engines_used else None
+
     # ── Step 7: escalation fallback ─────────────────────────────────────────
     # Only 1 engine runs initially; if confidence < threshold or text is empty,
     # route directly to VLM without chaining intermediate OCR rungs.
@@ -567,6 +575,7 @@ def process_page(
                     page_blocks = list(esc_blocks)
                     if escalation_engine not in engines_used:
                         engines_used.append(escalation_engine)
+                    final_engine = escalation_engine  # VLM output adopted
                 else:
                     # VLM loses: keep the prior OCR markdown AND its blocks; do not
                     # mix in VLM blocks that contradict the kept text.
@@ -578,6 +587,9 @@ def process_page(
                     page_blocks.extend(esc_blocks)
                 all_results = mergeable_results + [(esc_task, esc_markdown, esc_confidence, esc_latency)]
                 markdown, confidence, engines_used = _merge_results(all_results)
+                # re-merge rebuilds engines_used (dominant/primary first); the
+                # adopted dominant engine is engines_used[0].
+                final_engine = engines_used[0] if engines_used else final_engine
 
         escalation_attempts += 1
         escalated = True
@@ -624,6 +636,33 @@ def process_page(
         low_confidence=output.low_confidence,
         total_latency_ms=round(total_latency_ms, 1),
     )
+
+    # ── Additive probe observability (flag-agnostic; fires ONLY when a probe
+    # decision was attached to this page). With the probe flag OFF, page_context
+    # has no "probe" key and this block is skipped entirely, so flag-off
+    # behaviour is byte-identical. Emits the FINAL post-ladder engine/confidence/
+    # escalated values (same source as pipeline.page_complete above). No image
+    # bytes and no extracted text are logged.
+    if "probe" in page_context:
+        _p = page_context["probe"]
+        logger.info(
+            "probe.page_decision",
+            document_id=document_id or None,
+            page_number=page_number,
+            probe_route=_p["route"],
+            probe_ocr_lang=_p.get("ocr_lang"),
+            probe_script=_p.get("script"),
+            probe_script_confidence=_p.get("script_confidence"),
+            probe_handwriting_prob=_p.get("handwriting_prob"),
+            probe_has_table=_p.get("has_table"),
+            probe_is_blank=_p.get("is_blank"),
+            engine_used=output.engines_used[0] if output.engines_used else None,
+            engines_used=output.engines_used,
+            final_engine=final_engine,
+            confidence=output.confidence,
+            escalated=output.escalated,
+        )
+
     return output, metadata
 
 

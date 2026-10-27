@@ -1,5 +1,7 @@
+import json
 import threading
 import time
+from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 import pytest
 
@@ -237,6 +239,65 @@ def test_pipeline_markdown_recovery_when_conversion_empty(tmp_path):
         assert success["chars"] > 0
         assert success["extracted_data"] == {"patient_name": "John Doe"}
         assert existing_md_file.read_text(encoding="utf-8") == existing_md_text
+
+
+def test_pipeline_int_or_non_string_markdown_does_not_fail(tmp_path):
+    """Verify that integer markdown values or dicts without string markdown do not raise AttributeError: 'int' object has no attribute 'strip'."""
+    from app.api.pipeline_routes import _run_pipeline_job, _pipeline_jobs, _job_controls, JobControl
+
+    job_id = "test-job-int-markdown"
+    fake_pdf = tmp_path / "sample.pdf"
+    fake_pdf.write_bytes(b"%PDF-1.4 dummy")
+
+    fake_schema_file = tmp_path / "schema.json"
+    schema_record = {
+        "schema_id": "test_schema",
+        "document_type": "TestDoc",
+        "schema": {"fields": []},
+    }
+    fake_schema_file.write_text(json.dumps(schema_record), encoding="utf-8")
+
+    _pipeline_jobs[job_id] = {
+        "status": "queued",
+        "created_at": "2026-08-29T10:00:00+00:00",
+        "targets": [fake_pdf.name],
+        "successes": [],
+        "failures": [],
+    }
+    _job_controls[job_id] = JobControl()
+
+    # Mock output where markdown might be an integer or have non-string attributes
+    mock_output = MagicMock()
+    mock_output.page_number = 1
+    mock_output.markdown = 0  # int instead of str
+    mock_output.confidence = 0.95
+    mock_output.engines_used = ["paddleocr_printed"]
+    mock_output.capabilities = ["has_printed_scan"]
+    mock_output.escalated = False
+    mock_output.low_confidence = False
+    mock_meta = MagicMock()
+
+    with patch("app.api.pipeline_routes.OUTPUT_DIR", tmp_path), \
+         patch("app.api.pipeline_routes.resolve_owner_output_dir", return_value=tmp_path), \
+         patch("app.api.pipeline_routes._build_pages_for_pdf", return_value=[{"page": 1}]), \
+         patch("app.api.pipeline_routes.process_document", return_value=[(mock_output, mock_meta)]), \
+         patch("src.adapters.llm.extraction_factory.get_extraction_client"), \
+         patch("src.ai.layer3_extraction.extractor.extract_document") as mock_extract, \
+         patch("src.ai.layer3_extraction.storage.save_extraction_run", return_value=99), \
+         patch("src.ai.layer3_extraction.storage.save_markdown_record", return_value=1):
+
+        mock_extract.return_value = MagicMock(model_dump=lambda: {"status": "ok"})
+
+        _run_pipeline_job(job_id, [fake_pdf], fake_schema_file, schema_record)
+
+        assert len(_pipeline_jobs[job_id]["successes"]) == 1
+        success = _pipeline_jobs[job_id]["successes"][0]
+        assert success["chars"] == 0
+        ref_file = tmp_path / f"{fake_pdf.stem}.schema_ref.json"
+        assert ref_file.exists()
+        ref_data = json.loads(ref_file.read_text(encoding="utf-8"))
+        assert ref_data["pages"][0]["chars"] == 0
+
 
 
 
